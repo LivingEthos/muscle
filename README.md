@@ -72,7 +72,7 @@ Install MUSCLE as a Claude Code plugin for slash command integration:
 /plugin marketplace add LivingEthos/muscle
 
 # Install the plugin
-/plugin install muscle@muscle
+/plugin install muscle@muscle-marketplace
 ```
 
 Then use the slash commands in any Claude Code session:
@@ -161,7 +161,7 @@ MUSCLE provides a Claude Code plugin with slash commands.
 
 ```bash
 /plugin marketplace add LivingEthos/muscle
-/plugin install muscle@muscle
+/plugin install muscle@muscle-marketplace
 ```
 
 ### Or load locally for development

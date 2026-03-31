@@ -139,17 +139,29 @@ install_package() {
 
 verify_install() {
     export PATH="$HOME/.local/bin:$PATH"
+    MUSCLE_BIN=""
 
     if check_cmd muscle; then
         ok "MUSCLE CLI available: $(muscle --version 2>/dev/null || echo 'installed')"
-    elif [ "$SKIP_UV" != "1" ] && [ -d "$INSTALL_DIR/.venv" ]; then
-        local muscle_bin="$INSTALL_DIR/.venv/bin/muscle"
-        if [ -x "$muscle_bin" ]; then
-            ok "MUSCLE installed at $muscle_bin"
-            info "Add to PATH: export PATH=\"$INSTALL_DIR/.venv/bin:\$PATH\""
+        return
+    fi
+
+    if [ "$SKIP_UV" != "1" ] && [ -d "$INSTALL_DIR/.venv" ]; then
+        MUSCLE_BIN="$INSTALL_DIR/.venv/bin/muscle"
+    fi
+
+    if [ -n "$MUSCLE_BIN" ] && [ -x "$MUSCLE_BIN" ]; then
+        mkdir -p "$HOME/.local/bin"
+        ln -sf "$MUSCLE_BIN" "$HOME/.local/bin/muscle"
+        ok "Symlinked muscle to ~/.local/bin/muscle"
+
+        if check_cmd muscle; then
+            ok "MUSCLE CLI on PATH: $(muscle --version 2>/dev/null)"
+        else
+            info "Add to your shell: export PATH=\"$HOME/.local/bin:\$PATH\""
         fi
     else
-        warn "Could not verify muscle on PATH. You may need to activate a venv or re-login."
+        warn "Could not find muscle binary. You may need to activate a venv or re-login."
     fi
 }
 
@@ -164,7 +176,7 @@ print_plugin_instructions() {
     printf "\n"
     printf "  Option B: Install from marketplace\n"
     printf "    /plugin marketplace add %s\n" "$REPO"
-    printf "    /plugin install muscle@muscle\n"
+    printf "    /plugin install muscle@muscle-marketplace\n"
     printf "\n"
     printf "  Then use the slash commands:\n"
     printf "    /muscle:review     Standard review\n"

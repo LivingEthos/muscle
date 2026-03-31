@@ -8,7 +8,7 @@
   },
   "plugins": [
     {
-      "name": "muscle",
+  "name": "muscle-marketplace",
       "source": {
         "source": "git-subdir",
         "url": "https://github.com/LivingEthos/muscle.git",

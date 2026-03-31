@@ -1,12 +1,16 @@
 {
-  "name": "muscle-hooks",
   "description": "MUSCLE post-task review hooks",
-  "hooks": [
-    {
-      "name": "stop",
-      "description": "Run MUSCLE review after Claude Code task completion",
-      "trigger": "stop",
-      "command": "muscle review --post-task --mode {mode}"
-    }
-  ]
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "muscle review --target \"$CLAUDE_PROJECT_DIR\" --mode review --severity low 2>&1 || true",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
 }
