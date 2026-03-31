@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="SCLE - Self-Correcting Loop Engine for autonomous code generation">
+    <title>SCLE - Self-Correcting Loop Engine</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <a href="#main-content" class="sr-only">Skip to main content</a>
+    <div class="app-container">
+        <aside class="sidebar" role="navigation" aria-label="Sessions">
+            <div class="sidebar-header">
+                <h1>SCLE</h1>
+                <button class="new-chat-btn" id="newChatBtn" aria-label="Start new session">+ New Session</button>
+            </div>
+            <div class="session-list" id="sessionList" role="list" aria-label="Previous sessions">
+                <!-- Sessions will be populated here -->
+            </div>
+            <div class="sidebar-footer">
+                <div class="api-status" id="apiStatus" role="status" aria-live="polite">
+                    <span class="status-dot" aria-hidden="true"></span>
+                    <span>API Connected</span>
+                </div>
+            </div>
+        </aside>
+        
+        <main class="main-content" id="main-content">
+            <header class="chat-header">
+                <div class="session-info">
+                    <h2 id="sessionTitle">New Session</h2>
+                    <span class="session-stats" id="sessionStats" aria-live="polite"></span>
+                </div>
+                <div class="header-actions">
+                    <button class="icon-btn" id="settingsBtn" title="Settings" aria-label="Open settings">⚙️</button>
+                </div>
+            </header>
+            
+            <div class="chat-messages" id="chatMessages" role="log" aria-live="polite" aria-label="Chat messages">
+                <div class="message system-message">
+                    <div class="message-content">
+                        <p>👋 Welcome to SCLE! Enter a task below to start generating code.</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="streaming-indicator" id="streamingIndicator" style="display: none;" role="status" aria-live="polite" aria-label="Generation in progress">
+                <div class="spinner" aria-hidden="true"></div>
+                <span>Generating code...</span>
+            </div>
+            
+            <footer class="chat-input-area">
+                <form class="input-container" id="inputForm" aria-label="Task input">
+                    <label for="taskInput" class="sr-only">Task description</label>
+                    <textarea 
+                        id="taskInput" 
+                        placeholder="Describe the code you want to generate..."
+                        rows="1"
+                        aria-describedby="taskInputHint"
+                        required
+                    ></textarea>
+                    <span id="taskInputHint" class="sr-only">Press Enter to send or Shift+Enter for new line</span>
+                    <button type="submit" class="send-btn" id="sendBtn" aria-label="Send task">Send</button>
+                </form>
+                <div class="input-options">
+                    <label><input type="checkbox" id="interactiveMode" checked> Interactive</label>
+                    <label><input type="checkbox" id="gitIntegration"> Git Commit</label>
+                    <label for="evalMode" class="sr-only">Evaluation mode</label>
+                    <select id="evalMode" aria-label="Evaluation mode">
+                        <option value="all">Eval: All</option>
+                        <option value="parallel">Eval: Parallel</option>
+                        <option value="sequential">Eval: Sequential</option>
+                    </select>
+                </div>
+            </footer>
+        </main>
+        
+        <aside class="settings-panel" id="settingsPanel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" hidden>
+            <div class="settings-header">
+                <h3 id="settingsTitle">Settings</h3>
+                <button class="close-btn" id="closeSettings" aria-label="Close settings">×</button>
+            </div>
+            <div class="settings-content">
+                <div class="setting-group">
+                    <label for="maxIterations">Max Iterations</label>
+                    <input type="number" id="maxIterations" value="20" min="1" max="100" aria-describedby="maxIterationsDesc">
+                    <span id="maxIterationsDesc" class="sr-only">Between 1 and 100 iterations</span>
+                </div>
+                <div class="setting-group">
+                    <label for="budgetMode">Budget Mode</label>
+                    <select id="budgetMode">
+                        <option value="unlimited">Unlimited</option>
+                        <option value="auto">Auto (from Token Plan)</option>
+                        <option value="fixed">Fixed Token Limit</option>
+                    </select>
+                </div>
+                <div class="setting-group">
+                    <label for="fixedBudget">Fixed Budget (tokens)</label>
+                    <input type="number" id="fixedBudget" value="100000" min="1000">
+                </div>
+                <div class="setting-group">
+                    <label for="webhookUrl">Webhook URL</label>
+                    <input type="url" id="webhookUrl" placeholder="https://...">
+                </div>
+                <div class="setting-group">
+                    <label for="outputDir">Output Directory</label>
+                    <input type="text" id="outputDir" value="./output">
+                </div>
+            </div>
+        </aside>
+    </div>
+    
+    <script src="js/app.js"></script>
+</body>
+</html>

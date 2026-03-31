@@ -1,0 +1,12 @@
+{
+  "name": "muscle-hooks",
+  "description": "MUSCLE post-task review hooks",
+  "hooks": [
+    {
+      "name": "stop",
+      "description": "Run MUSCLE review after Claude Code task completion",
+      "trigger": "stop",
+      "command": "muscle review --post-task --mode {mode}"
+    }
+  ]
+}

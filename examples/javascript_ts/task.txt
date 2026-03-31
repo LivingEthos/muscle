@@ -1,0 +1,1 @@
+Create an Express.js REST API with TypeScript, input validation, and PostgreSQL connection

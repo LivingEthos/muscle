@@ -1,0 +1,214 @@
+"""
+Project Manager - Auto-detect projects and manage .muscle/ directories.
+
+Handles:
+- Project auto-detection from git/package files
+- Creating .muscle/ directories
+- Managing project configurations
+- Multi-project support
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    pass
+
+DEFAULT_MUSCLE_DIR = ".muscle"
+CONFIG_FILE = "config.yaml"
+PROJECT_DB = "project.db"
+STRATEGY_KB = "strategy_kb.json"
+CLAUDE_MEMORY = "CLAUDE.md"
+AGENT_MEMORY = "AGENT.md"
+MEMORY_MEMORY = "MEMORY.md"
+SKILLS_DIR = "skills"
+LOGS_DIR = "logs"
+
+
+@dataclass
+class ProjectConfig:
+    name: str
+    path: Path
+    languages: list[str] = field(default_factory=list)
+    automation_level: str = "auto-fix"
+    review_gate: str = "block+fix"
+    triggers: list[str] = field(default_factory=list)
+    github_enabled: bool = False
+    memory_location: str = DEFAULT_MUSCLE_DIR
+    initialized: bool = False
+
+
+class ProjectManager:
+    def __init__(self, base_path: Path | None = None):
+        self.base_path = base_path or Path.cwd()
+        self._current_project: ProjectConfig | None = None
+
+    def detect_project(self) -> ProjectConfig | None:
+        git_root = self._find_git_root()
+        if git_root:
+            name = git_root.name
+            languages = self._detect_languages(git_root)
+            self._current_project = ProjectConfig(
+                name=name,
+                path=git_root,
+                languages=languages,
+            )
+            return self._current_project
+
+        if self.base_path.exists():
+            name = self.base_path.name
+            languages = self._detect_languages(self.base_path)
+            self._current_project = ProjectConfig(
+                name=name,
+                path=self.base_path,
+                languages=languages,
+            )
+            return self._current_project
+
+        return None
+
+    def _find_git_root(self) -> Path | None:
+        current = self.base_path
+        while current != current.parent:
+            if (current / ".git").exists():
+                return current
+            current = current.parent
+        return None
+
+    def _detect_languages(self, path: Path) -> list[str]:
+        languages = []
+        indicators = {
+            "Python": ["pyproject.toml", "setup.py", "requirements.txt", "*.py"],
+            "TypeScript": ["tsconfig.json", "package.json"],
+            "JavaScript": ["package.json"],
+            "Go": ["go.mod", "go.sum"],
+            "Rust": ["Cargo.toml", "Cargo.lock"],
+            "Java": ["pom.xml", "build.gradle"],
+            "C/C++": ["CMakeLists.txt", "*.cmake"],
+        }
+        for lang, patterns in indicators.items():
+            for pattern in patterns:
+                if pattern.startswith("*."):
+                    if any(path.rglob(pattern[1:])):
+                        languages.append(lang)
+                        break
+                elif (path / pattern).exists():
+                    languages.append(lang)
+                    break
+        return languages
+
+    def init_project(self, config: ProjectConfig) -> bool:
+        muscle_dir = config.path / DEFAULT_MUSCLE_DIR
+        try:
+            muscle_dir.mkdir(exist_ok=True)
+            (muscle_dir / SKILLS_DIR).mkdir(exist_ok=True)
+            (muscle_dir / LOGS_DIR).mkdir(exist_ok=True)
+
+            self._write_config(config, muscle_dir)
+            self._create_memory_files(muscle_dir)
+            self._init_knowledge_base(muscle_dir)
+
+            config.initialized = True
+            self._current_project = config
+            return True
+        except Exception as e:
+            print(f"Failed to initialize project: {e}")
+            return False
+
+    def _write_config(self, config: ProjectConfig, muscle_dir: Path) -> None:
+        config_path = muscle_dir / CONFIG_FILE
+        config_data = {
+            "project": {
+                "name": config.name,
+                "languages": config.languages,
+                "automation_level": config.automation_level,
+                "review_gate": config.review_gate,
+                "triggers": config.triggers,
+                "github_enabled": config.github_enabled,
+                "memory_location": config.memory_location,
+            }
+        }
+        with open(config_path, "w") as f:
+            json.dump(config_data, f, indent=2)
+
+    def _create_memory_files(self, muscle_dir: Path) -> None:
+        claude_md = muscle_dir / CLAUDE_MEMORY
+        if not claude_md.exists():
+            claude_md.write_text("""<!-- MUSCLE_LEARNED_START -->
+<!-- MUSCLE_LEARNED_END -->
+""")
+
+        agent_md = muscle_dir / AGENT_MEMORY
+        if not agent_md.exists():
+            agent_md.write_text("""<!-- MUSCLE_AGENTS_START -->
+<!-- MUSCLE_AGENTS_END -->
+""")
+
+        memory_md = muscle_dir / MEMORY_MEMORY
+        if not memory_md.exists():
+            memory_md.write_text("""# MUSCLE Memory
+
+<!-- MUSCLE_MEMORY_START -->
+<!-- MUSCLE_MEMORY_END -->
+""")
+
+    def _init_knowledge_base(self, muscle_dir: Path) -> None:
+        strategy_path = muscle_dir / STRATEGY_KB
+        if not strategy_path.exists():
+            strategy_data = {
+                "version": "1.0",
+                "strategies": [],
+                "evolution_history": [],
+            }
+            with open(strategy_path, "w") as f:
+                json.dump(strategy_data, f, indent=2)
+
+    def get_current_project(self) -> ProjectConfig | None:
+        if self._current_project is None:
+            return self.detect_project()
+        return self._current_project
+
+    def get_muscle_dir(self, project_path: Path | None = None) -> Path | None:
+        path = (
+            project_path or self._current_project.path if self._current_project else self.base_path
+        )
+        muscle_dir = path / DEFAULT_MUSCLE_DIR
+        if muscle_dir.exists():
+            return muscle_dir
+        return None
+
+    def load_config(self, project_path: Path) -> ProjectConfig | None:
+        muscle_dir = project_path / DEFAULT_MUSCLE_DIR
+        config_path = muscle_dir / CONFIG_FILE
+        if not config_path.exists():
+            return None
+
+        with open(config_path) as f:
+            data = json.load(f)["project"]
+
+        return ProjectConfig(
+            name=data["name"],
+            path=project_path,
+            languages=data.get("languages", []),
+            automation_level=data.get("automation_level", "auto-fix"),
+            review_gate=data.get("review_gate", "block+fix"),
+            triggers=data.get("triggers", []),
+            github_enabled=data.get("github_enabled", False),
+            memory_location=data.get("memory_location", DEFAULT_MUSCLE_DIR),
+            initialized=True,
+        )
+
+    def find_all_projects(self) -> list[ProjectConfig]:
+        projects = []
+        home = Path.home()
+        for muscle_dir in home.rglob(DEFAULT_MUSCLE_DIR):
+            project_path = muscle_dir.parent
+            if project_path.exists():
+                project = self.load_config(project_path)
+                if project:
+                    projects.append(project)
+        return projects

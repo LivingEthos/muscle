@@ -1,0 +1,10 @@
+{
+  "name": "muscle",
+  "description": "MUSCLE - MiniMax Unified Self-Correcting Learning Engine. Self-learning code review that gets smarter with every task.",
+  "version": "0.1.0",
+  "author": {
+    "name": "MUSCLE Team"
+  },
+  "homepage": "https://github.com/minimax-ai/muscle",
+  "repository": "https://github.com/minimax-ai/muscle"
+}

@@ -1,0 +1,1 @@
+Create a FastAPI REST API with JWT authentication, user registration, login, and CRUD operations for a todo list
