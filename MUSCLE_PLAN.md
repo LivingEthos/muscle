@@ -4,44 +4,7 @@
 
 **Version:** 0.1.0
 **Last Updated:** 2026-03-31
-**Status:** Phase 7 - Polish & Cloud Sync (Ready for use)
-
----
-
-## Implementation Progress
-
-### Phase 1: Core Infrastructure ✅ COMPLETE
-- [x] Rename SCLE → MUSCLE globally
-- [x] Create `.muscle/` directory structure
-- [x] Implement SQLite KB schema
-- [x] Basic memory file management
-- [x] Guided init flow
-- [x] JSON recovery improved for truncated responses
-- [x] Self-review tested and working
-
-### Phase 2: TUI ✅ COMPLETE
-- [x] `muscle init` command with guided setup
-- [x] Dashboard view with project health
-- [x] Reviews view
-- [x] History view
-- [x] Settings view
-- [x] Knowledge base view
-- [x] Fixes view
-- [x] Project switcher
-- [x] Arrow key navigation
-- [x] Project auto-detection
-- [x] `.muscle/` directory creation with all necessary files
-
-### Self-Review Results
-
-MUSCLE successfully ran self-review on `code_reviewer.py`:
-- Found **12 issues** (2 critical, 5 high, 5 medium)
-- JSON recovery successfully extracts findings from truncated responses
-- Issues identified include:
-  - SYSTEM_PROMPT not protected against prompt injection
-  - Shared M27Client across threads without synchronization
-  - No timeout on M27Client.chat() calls
-  - JSON recovery heuristics could discard valid findings
+**Status:** v0.1.0 — Functional, in active development
 
 ---
 
@@ -59,6 +22,31 @@ MUSCLE is a self-learning code review companion that:
 
 ---
 
+## Installation
+
+### One-liner (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/install.sh | bash
+```
+
+### Claude Code Plugin marketplace
+
+```bash
+/plugin marketplace add LivingEthos/muscle
+/plugin install muscle@muscle-marketplace
+```
+
+### Manual
+
+```bash
+git clone https://github.com/LivingEthos/muscle.git
+cd muscle
+uv sync && uv pip install -e .
+```
+
+---
+
 ## The Compounding Advantage
 
 ```
@@ -66,42 +54,52 @@ Review #1 → Review #2 → Review #3 → ... → Review #N
 (learns)   (remembers)   (evolves)       (expert)
    ↓          ↓           ↓               ↓
 "Auth here"  "Known      "Pressure       "This repo
-was missed"  pattern"    works better"   knows no bugs"
+was missed"   pattern"    works better"   knows no bugs"
 ```
 
 ---
 
 ## Feature Set
 
-### Core Features (P0)
+### Core Features (P0) ✅
 
-| Feature | Description |
-|---------|-------------|
-| **Post-Task Verification** | Review gate runs after every Claude Code task |
-| **Root Cause Tracing** | M2.7 traces issues to specific decisions |
-| **Auto-Fix / Propose** | Configurable per severity level |
-| **Memory File Updates** | CLAUDE.md, AGENT.md, MEMORY.md management |
-| **Per-Project KB** | SQLite-based pattern and fix storage |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **Post-Task Verification** | ✅ | Review gate runs after every Claude Code task |
+| **Root Cause Tracing** | ✅ | M2.7 traces issues to specific decisions |
+| **Auto-Fix / Propose** | ✅ | Configurable per severity level |
+| **Memory File Updates** | ✅ | CLAUDE.md, AGENT.md, MEMORY.md management |
+| **Per-Project KB** | ✅ | SQLite-based pattern and fix storage |
 
-### Important Features (P1)
+### Important Features (P1) ✅
 
-| Feature | Description |
-|---------|-------------|
-| **Strategy Evolution** | Evolves when validated effective |
-| **TUI Interface** | Dashboard, reviews, history, settings |
-| **Claude Code Plugin** | Slash commands, subagents, hooks |
-| **Multi-Project Support** | Auto-detect + TUI switcher |
-| **Dynamic Skill Generation** | Creates project-specific skills automatically |
-| **Dynamic Agent Generation** | Creates specialized sub-agents for complex tasks |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **Strategy Evolution** | ✅ | Evolves when validated effective |
+| **TUI Interface** | ✅ | Dashboard, reviews, history, settings |
+| **Claude Code Plugin** | ✅ | Slash commands, subagents, hooks |
+| **Multi-Project Support** | ✅ | Auto-detect + TUI switcher |
+| **Dynamic Skill Generation** | ✅ | Creates project-specific skills automatically |
+| **Dynamic Agent Generation** | ✅ | Creates specialized sub-agents for complex tasks |
+
+### Adapters & Integrations (P1)
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **GitHub Adapter** | ✅ | PRs, comments, issues, status checks |
+| **GitLab Adapter** | ✅ | MRs, pipelines (basic) |
+| **Jenkins Adapter** | ✅ | Build triggers, artifact retrieval |
+| **Git Adapter** | ✅ | diff, status, branch operations |
+| **MCP Client** | ✅ | MCP server integration |
+| **Claude Code Plugin** | ✅ | See plugin integration below |
 
 ### Future Features (P2-P3)
 
-| Feature | Description |
-|---------|-------------|
-| **GitHub Integration** | PRs, comments, issues |
-| **Nightly Cron** | Background analysis with morning reports |
-| **Cloud Sync** | Optional cross-machine sync |
-| **Agent Knowledge Base** | Knowledge base of well-designed agents/skills to reference |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **Cloud Sync** | ❌ Future | Optional cross-machine sync |
+| **Nightly Cron Reports** | ⚠️ Partial | `nightly_runner.py` exists, cron not wired |
+| **Shadow Worker Background Jobs** | ⚠️ Partial | Broker/worker exist, need daemonization |
 
 ---
 
@@ -123,11 +121,12 @@ was missed"  pattern"    works better"   knows no bugs"
 │   ├── AGENT.md             # Agent-specific memory
 │   ├── MEMORY.md            # Miscellaneous learnings
 │   ├── skills/              # Dynamically generated project skills
-│   │   ├── auth-review.md  # Project-specific auth patterns
-│   │   ├── api-standards.md # API design patterns
 │   │   └── ...
-│   └── logs/                # Review logs
-│
+│   ├── agents/              # Dynamically generated sub-agents
+│   │   └── ...
+│   ├── reports/             # Nightly review reports
+│   ├── logs/                # Review logs
+│   └── agent_kb/            # Cached agent knowledge base
 └── .git/
 ```
 
@@ -166,27 +165,20 @@ was missed"  pattern"    works better"   knows no bugs"
 
 ### Marker System
 
-```markdown
-<!-- MUSCLE_LEARNED_START -->
-<!-- Content managed by MUSCLE -->
-<!-- MUSCLE_LEARNED_END -->
-```
+Each memory file has its own marker pair:
 
-### What Gets Updated
-
-| File | Contents | Format |
-|------|----------|--------|
-| `CLAUDE.md` | Project conventions, patterns to avoid, coding standards | Human-readable |
-| `AGENT.md` | Agent-specific learnings, review strategies, tool preferences | Structured for agents |
-| `MEMORY.md` | Miscellaneous learnings, past issues, verification results | Chronological |
+| File | Markers |
+|------|---------|
+| `CLAUDE.md` | `<!-- MUSCLE_LEARNED_START -->` / `<!-- MUSCLE_LEARNED_END -->` |
+| `AGENT.md` | `<!-- MUSCLE_AGENTS_START -->` / `<!-- MUSCLE_AGENTS_END -->` |
+| `MEMORY.md` | `<!-- MUSCLE_MEMORY_START -->` / `<!-- MUSCLE_MEMORY_END -->` |
 
 ### Update Rules
 
 1. **Bounded sections** - Only edit within markers
 2. **No bloat** - Prune old entries when new ones supersede
 3. **No duplicates** - Check before adding
-4. **Structured format** - Easy to parse and search
-5. **User content preserved** - Never modify outside markers
+4. **User content preserved** - Never modify outside markers
 
 ---
 
@@ -201,201 +193,7 @@ was missed"  pattern"    works better"   knows no bugs"
 | **Strategy KB** | `strategy_kb.json` | Evolve review approach | When validated |
 | **Memory Files** | `.muscle/*.md` | Human-readable learnings | Continuous |
 | **Generated Skills** | `.muscle/skills/*.md` | Project-specific agent skills | When validated |
-
----
-
-## Dynamic Skill Generation
-
-MUSCLE can automatically create and maintain specialized skills for the project that the main coding agent can use.
-
-### What It Does
-
-1. **Detects patterns** - Learns recurring issues or conventions in the project
-2. **Creates skills** - Generates `.md` skill files tailored to project needs
-3. **Updates CLAUDE.md/AGENT.md** - References skills so coding agent uses them automatically
-4. **Validates effectiveness** - Tracks if skill usage improves outcomes
-
-### Example Generated Skills
-
-```
-.muscle/skills/
-├── auth-patterns.md      # "When working with auth, check X, Y, Z"
-├── api-conventions.md     # "Our API always uses pagination with cursor"
-├── db-migrations.md      # "Always use transactions for multi-table updates"
-├── error-handling.md      # "Our error response format is {code, message, data}"
-└── testing-standards.md  # "Unit tests must mock external APIs"
-```
-
-### Skill Format
-
-```markdown
----
-name: auth-patterns
-description: Project-specific authentication patterns and pitfalls
-triggers:
-  - "auth"
-  - "login"
-  - "token"
-  - "jwt"
-  - "session"
----
-
-# Auth Patterns for This Project
-
-## Token Validation
-When validating auth tokens, always:
-1. Check expiration first
-2. Verify issuer matches `AUTH_ISSUER`
-3. Validate signature using `AUTH_SECRET`
-
-## Common Mistakes to Avoid
-- Don't cache token validation results
-- Don't log tokens (even partially)
-- Don't skip CSRF validation on state-changing endpoints
-
-## Related Files
-- `src/auth/tokens.py` - Token utilities
-- `src/middleware/auth.py` - Auth middleware
-```
-
-### Skill Generation Trigger
-
-Skills are generated when:
-- MUSCLE detects a pattern 3+ times
-- Pattern has been verified by successful fixes
-- Skill would improve future code quality
-
-### Integration with Coding Agent
-
-```markdown
-<!-- MUSCLE_SKILLS_START -->
-<!-- Use skills from .muscle/skills/ directory when working with auth, APIs, etc -->
-<!-- MUSCLE_SKILLS_END -->
-```
-
-### Configuration
-
-```yaml
-skill_generation:
-  enabled: true           # Toggle skill generation
-  min_pattern_count: 3    # Patterns seen N times before skill created
-  auto_reference: true    # Auto-add to CLAUDE.md/AGENT.md
-  validation_required: true # Only create skill after successful fix
-```
-
-### Phase Integration
-
-Skill generation is part of Phase 4 (Self-Learning Engine):
-- [ ] Skill detector (pattern → skill trigger)
-- [ ] Skill generator (M2.7 generates skill content)
-- [ ] Skill validator (track usage, validate effectiveness)
-- [ ] CLAUDE.md/AGENT.md integration
-
----
-
-## Dynamic Agent Generation (Future Feature)
-
-MUSCLE can dynamically create specialized sub-agents that the main coding model can invoke for better performance on complex tasks.
-
-### What It Does
-
-1. **Detects complex patterns** - Identifies tasks requiring specialized handling
-2. **Creates agents** - Generates Claude Code sub-agent definitions tailored to project needs
-3. **Improves over time** - Tracks agent effectiveness and refines them
-4. **Learns from best practices** - References knowledge base of well-designed agents
-
-### Example Generated Agents
-
-```
-.muscle/agents/
-├── auth-specialist.md      # "Expert at auth implementation, follows our patterns"
-├── api-designer.md        # "Designs APIs matching our conventions"
-├── db-migration-expert.md  # "Safe database migrations with rollback"
-├── security-auditor.md    # "Deep security review specialist"
-└── test-architect.md      # "Designs comprehensive test suites"
-```
-
-### Agent Format
-
-```markdown
----
-name: auth-specialist
-description: Authentication expert for this project
-triggers:
-  - "auth"
-  - "login"
-  - "jwt"
-  - "oauth"
-  - "session"
-capabilities:
-  - Implement auth endpoints
-  - Review auth code for vulnerabilities
-  - Design token refresh flows
-system_prompt: |
-  You are an authentication specialist for this project.
-  Always follow our auth patterns defined in .muscle/skills/auth-patterns.md
-  Common mistakes to avoid: ...
----
-
-# Auth Specialist Agent
-
-## This Project's Auth Patterns
-[References .muscle/skills/auth-patterns.md]
-
-## Capabilities
-- Implement JWT-based auth with refresh tokens
-- Add OAuth2 support for Google/GitHub
-- Audit existing auth code for vulnerabilities
-```
-
-### Agent Knowledge Base
-
-Reference repos for well-designed agents:
-- https://github.com/VoltAgent/awesome-claude-code-subagents
-- https://github.com/travisvn/awesome-claude-skills
-
-Research needed to:
-1. Catalog common agent patterns
-2. Identify best practices for agent design
-3. Determine which agents are most useful for code review
-4. Build templates MUSCLE can refine for project needs
-
-### Agent Generation Trigger
-
-Agents are generated when:
-- Complex pattern detected in 3+ reviews
-- Task would benefit from specialized handling
-- No existing agent handles this domain
-- Generated agent validated by successful task completion
-
-### Integration with Main Model
-
-```markdown
-<!-- MUSCLE_AGENTS_START -->
-<!-- Available agents: auth-specialist, api-designer, security-auditor -->
-<!-- Invoke with: /agent auth-specialist -->
-<!-- MUSCLE_AGENTS_END -->
-```
-
-### Configuration
-
-```yaml
-agent_generation:
-  enabled: true              # Toggle agent generation
-  min_complexity: 3          # Complexity score before creating agent
-  max_agents: 10            # Limit agents per project
-  auto_reference: true      # Auto-add to CLAUDE.md/AGENT.md
-  use_knowledge_base: true   # Reference agent KB for best practices
-```
-
-### Phase Integration
-
-Agent generation is part of Phase 4 (Self-Learning Engine):
-- [ ] Agent detector (complex pattern → agent trigger)
-- [ ] Agent generator (M2.7 generates agent definition)
-- [ ] Agent validator (track usage, validate effectiveness)
-- [ ] Agent knowledge base integration (future research)
-- [ ] CLAUDE.md/AGENT.md integration
+| **Agent KB** | `.muscle/agent_kb/` | Community agent patterns | From awesome-claude-* repos |
 
 ---
 
@@ -425,12 +223,59 @@ Agent generation is part of Phase 4 (Self-Learning Engine):
 |---------|-------------|
 | `/muscle:review` | Standard review on changes |
 | `/muscle:pressure` | Adversarial review |
-| `/muscle:rescue` | Delegate investigation |
+| `/muscle:rescue` | Delegate deep-dive investigation |
 | `/muscle:status` | Check job status |
-| `/muscle:result` | Get results |
-| `/muscle:cancel` | Cancel job |
-| `/muscle:setup` | Configure |
-| `/muscle:help` | Help |
+| `/muscle:result` | Get job results |
+| `/muscle:cancel` | Cancel running jobs |
+| `/muscle:setup` | Configure review gate |
+
+### Plugin Components
+- **Commands**: 7 slash commands (review, pressure, rescue, status, result, cancel, setup)
+- **Agents**: rescue_agent.md, verification_agent.md
+- **Skills**: code-review/SKILL.md (model-invoked skill)
+- **Hooks**: Stop event hook runs `muscle review` after each task completion
+
+### Marketplace Distribution
+
+The plugin is distributed via Claude Code's plugin marketplace:
+
+```bash
+/plugin marketplace add LivingEthos/muscle
+/plugin install muscle@muscle-marketplace
+```
+
+Uses `git-subdir` source to pull from the main repo's `tools/muscle/plugin/` directory.
+
+---
+
+## CLI Commands
+
+| Command | Status | Description |
+|---------|--------|-------------|
+| `muscle init` | ✅ | Initialize MUSCLE for the current project |
+| `muscle review` | ✅ | Review code for issues (5 modes) |
+| `muscle tui` | ✅ | Terminal User Interface |
+| `muscle run` | ✅ | Start a new generation session |
+| `muscle history` | ✅ | List all sessions |
+| `muscle resume` | ⚠️ Partial | Loads session, full resume WIP |
+| `muscle abort` | ❌ | Stub |
+| `muscle check` | ❌ | Stub |
+| `muscle kb` | ✅ | stats / export / import / clear |
+| `muscle cost` | ✅ | stats / clear |
+| `muscle improve` | ✅ | report / export / import / clear / prompt |
+| `muscle probe` | ✅ | Shadow job status |
+| `muscle diagnosis` | ✅ | Shadow job results |
+| `muscle lifeline` | ✅ | Deep-dive investigation |
+
+### Review Modes
+
+| Mode | Description |
+|------|-------------|
+| `review` | Standard review, reports issues |
+| `auto-fix` | Automatically applies fixes for auto-fixable issues |
+| `plan` | Generates handoff plan for manual fixes |
+| `hybrid` | Auto-fix safe issues, plan for complex ones |
+| `pressure` | Adversarial review that challenges design decisions |
 
 ---
 
@@ -442,66 +287,72 @@ Agent generation is part of Phase 4 (Self-Learning Engine):
 - [x] Implement SQLite KB schema
 - [x] Basic memory file management
 - [x] Guided init flow
+- [x] JSON recovery for truncated responses
 
 ### Phase 2: TUI ✅ COMPLETE
-- [x] Dashboard view
-- [x] Review history view
+- [x] `muscle init` command with guided setup
+- [x] Dashboard view with project health
+- [x] Reviews view
+- [x] History view
 - [x] Settings view
 - [x] Knowledge base view
+- [x] Fixes view
 - [x] Project switcher
-- [x] Arrow + Enter navigation
+- [x] Arrow key navigation
+- [x] Project auto-detection
 
 ### Phase 3: Claude Code Plugin ✅ COMPLETE
 - [x] Plugin manifest (`plugin.json`)
-- [x] Slash commands (`review`, `pressure`, `rescue`, `status`, `result`, `cancel`, `setup`)
-- [x] Subagents (`rescue_agent.md`, `verification_agent.md`)
+- [x] Slash commands (7 commands)
+- [x] Subagents (rescue_agent, verification_agent)
 - [x] Stop hook (`hooks/hooks.json` for review gate)
+- [x] Agent-invoked skill (code-review/SKILL.md)
+- [x] Marketplace distribution (`marketplace.json`)
 
 ### Phase 4: Self-Learning Engine ✅ COMPLETE
-- [x] **Pattern Detection** - `pattern_detector.py` identifies recurring issues (3+ occurrences)
-- [x] **Dynamic Skill Generation** - `skill_generator.py` creates `.md` skills in `.muscle/skills/`
-- [x] **Dynamic Agent Generation** - `agent_generator.py` creates sub-agents in `.muscle/agents/`
-- [x] **Memory Manager** - `memory_manager.py` handles CLAUDE.md/AGENT.md/MEMORY.md updates
-- [x] **Fix Tracking & Validation** - `fix_tracker.py` tracks fix attempts and outcomes
-- [x] **Strategy Evolution** - `strategy_evolver.py` evolves strategies based on effectiveness
-- [x] **Agent Knowledge Base** - `agent_kb_fetcher.py` fetches from awesome-claude-* repos
-- [x] **Memory File Pruning/Dedup** - Built into `memory_manager.py`
-- [x] **Skill/Agent Validator** - Built into generators with validation methods
-- [x] **CLAUDE.md/AGENT.md Integration** - Memory manager handles updates
+- [x] **Pattern Detection** - `pattern_detector.py` (3+ occurrence threshold)
+- [x] **Dynamic Skill Generation** - `skill_generator.py`
+- [x] **Dynamic Agent Generation** - `agent_generator.py`
+- [x] **Memory Manager** - `memory_manager.py` (3 marker types)
+- [x] **Fix Tracking & Validation** - `fix_tracker.py`
+- [x] **Strategy Evolution** - `strategy_evolver.py`
+- [x] **Agent Knowledge Base** - `agent_kb_fetcher.py` (VoltAgent/travisvn repos)
+- [x] **CLAUDE.md/AGENT.md/MEMORY.md Integration**
 
-### Phase 5: GitHub Integration ✅ COMPLETE
-- [x] PR creation with fixes - `github.create_pull_request()`
-- [x] PR commenting - `github.create_review()`
-- [x] Issue creation - `github.create_issue()`, `github.create_issue_comment()`
-- [x] Review status checks - `github.create_check_run()`, `github.update_check_run()`
-- [x] GitHub integration layer - `github_integration.py` ties adapter to review workflow
+### Phase 5: External Integrations ✅ COMPLETE
+- [x] GitHub adapter (PRs, issues, comments, checks)
+- [x] GitLab adapter (MRs, pipelines)
+- [x] Jenkins adapter (build triggers, artifacts)
+- [x] Git adapter (diff, status, branch ops)
+- [x] MCP client (server integration)
+- [x] GitHub integration layer (`github_integration.py`)
 
-### Phase 6: Background Jobs ✅ COMPLETE
-- [x] Nightly cron - `nightly_runner.py` with configurable schedule
-- [x] Morning reports - JSON and markdown reports in `.muscle/reports/`
-- [x] Shadow mode - ShadowBroker/ShadowWorker already implemented
+### Phase 6: Background & Nightly ✅ PARTIAL
+- [x] Shadow mode broker/worker (`shadow_broker.py`, `shadow_worker.py`)
+- [x] Nightly runner (`nightly_runner.py`)
+- [x] Morning reports (JSON + markdown)
+- [ ] Cron daemonization (future)
 
-### Phase 7: Polish & Cloud Sync
-- [ ] Cloud sync architecture (future)
+### Phase 7: Polish & Future ❌ INCOMPLETE
+- [ ] Cloud sync architecture
 - [ ] Performance optimization
-- [ ] Comprehensive testing
-- [ ] Documentation
+- [ ] Comprehensive test coverage
+- [ ] Daemonized background worker
 
 ---
 
-## Change Log
+## Self-Review Results
 
-| Date | Version | Changes |
-|------|---------|---------|
-| 2026-03-31 | 0.1.0 | Initial plan created |
-| 2026-03-31 | 0.1.1 | Phase 1 complete: SCLE renamed to MUSCLE, self-review working |
-| 2026-03-31 | 0.1.2 | Dynamic Skill Generation feature added to Phase 4 |
-| 2026-03-31 | 0.1.3 | Phase 2 complete: TUI with dashboard, views, navigation |
-| 2026-03-31 | 0.1.4 | Dynamic Agent Generation and Agent Knowledge Base features added |
-| 2026-03-31 | 0.1.5 | Phase 3 complete: Claude Code plugin with 7 commands, 2 agents, hooks |
-| 2026-03-31 | 0.1.6 | Phase 4 complete: Self-learning engine with pattern detection, skill/agent generation, strategy evolution, agent KB |
-| 2026-03-31 | 0.1.7 | Phase 5 complete: GitHub integration with PRs, issues, comments, status checks |
-| 2026-03-31 | 0.1.8 | Phase 6 complete: Nightly runner, morning reports, shadow mode |
+MUSCLE ran self-review on `code_reviewer.py`:
+- Found **12 issues** (2 critical, 5 high, 5 medium)
+- JSON recovery successfully extracts findings from truncated responses
+- Pressure mode identifies design weaknesses
+
+**Issues identified:**
+- SYSTEM_PROMPT not protected against prompt injection
+- Shared M27Client across threads without synchronization
+- No timeout on M27Client.chat() calls
+- JSON recovery heuristics could discard valid findings
 
 ---
 
@@ -523,12 +374,14 @@ All code must pass before merging:
 | Date | Version | Changes |
 |------|---------|---------|
 | 2026-03-31 | 0.1.0 | Initial plan created |
-| 2026-03-31 | 0.1.1 | Phase 1 complete: SCLE renamed to MUSCLE, self-review working |
-| 2026-03-31 | 0.1.2 | Dynamic Skill Generation feature added to Phase 4 |
-| 2026-03-31 | 0.1.3 | Phase 2 complete: TUI with dashboard, views, navigation |
-| 2026-03-31 | 0.1.4 | Dynamic Agent Generation and Agent Knowledge Base features added |
-| 2026-03-31 | 0.1.5 | Phase 3 complete: Claude Code plugin with 7 commands, 2 agents, hooks |
-| 2026-03-31 | 0.1.6 | Phase 4 complete: Self-learning engine with pattern detection, skill/agent generation, strategy evolution, agent KB |
+| 2026-03-31 | 0.1.1 | Phase 1 complete: Core infrastructure |
+| 2026-03-31 | 0.1.2 | Phase 2 complete: TUI with dashboard, views, navigation |
+| 2026-03-31 | 0.1.3 | Phase 3 complete: Claude Code plugin with 7 commands, 2 agents |
+| 2026-03-31 | 0.1.4 | Phase 4 complete: Self-learning engine (pattern detection, skill/agent generation, strategy evolution) |
+| 2026-03-31 | 0.1.5 | Phase 5 complete: External integrations (GitHub, GitLab, Jenkins, MCP) |
+| 2026-03-31 | 0.1.6 | Phase 6 partial: Shadow mode, nightly runner, morning reports |
+| 2026-03-31 | 0.1.7 | Add curl installer, Claude Code marketplace, code-review SKILL.md |
+| 2026-03-31 | 0.1.8 | Fix hooks.json format, marketplace naming, PATH symlink |
 
 ---
 
