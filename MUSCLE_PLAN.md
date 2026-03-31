@@ -258,14 +258,15 @@ Uses `git-subdir` source to pull from the main repo's `tools/muscle/plugin/` dir
 | `muscle run` | ✅ | Start a new generation session |
 | `muscle history` | ✅ | List all sessions |
 | `muscle resume` | ⚠️ Partial | Loads session, full resume WIP |
-| `muscle abort` | ❌ | Stub |
-| `muscle check` | ❌ | Stub |
-| `muscle kb` | ✅ | stats / export / import / clear |
+| `muscle abort` | ✅ | Abort running session (SIGTERM + status update) |
+| `muscle check` | ✅ | Single-shot validation (compiler/linter/tests) |
+| `muscle kb` | ✅ | stats / export / import / clear / knowledge-add |
 | `muscle cost` | ✅ | stats / clear |
 | `muscle improve` | ✅ | report / export / import / clear / prompt |
 | `muscle probe` | ✅ | Shadow job status |
 | `muscle diagnosis` | ✅ | Shadow job results |
 | `muscle lifeline` | ✅ | Deep-dive investigation |
+| `muscle nightly` | ✅ | enable / disable / status / run / reports / cleanup |
 
 ### Review Modes
 
@@ -327,17 +328,15 @@ Uses `git-subdir` source to pull from the main repo's `tools/muscle/plugin/` dir
 - [x] MCP client (server integration)
 - [x] GitHub integration layer (`github_integration.py`)
 
-### Phase 6: Background & Nightly ✅ PARTIAL
+### Phase 6: Background & Nightly ✅ COMPLETE
 - [x] Shadow mode broker/worker (`shadow_broker.py`, `shadow_worker.py`)
 - [x] Nightly runner (`nightly_runner.py`)
 - [x] Morning reports (JSON + markdown)
-- [ ] Cron daemonization (future)
+- [x] Nightly CLI (`muscle nightly enable/disable/status/run/reports/cleanup`)
 
 ### Phase 7: Polish & Future ❌ INCOMPLETE
 - [ ] Cloud sync architecture
-- [ ] Performance optimization
-- [ ] Comprehensive test coverage
-- [ ] Daemonized background worker
+- [ ] Comprehensive test coverage (current: 142 unit tests)
 
 ---
 
@@ -382,6 +381,7 @@ All code must pass before merging:
 | 2026-03-31 | 0.1.6 | Phase 6 partial: Shadow mode, nightly runner, morning reports |
 | 2026-03-31 | 0.1.7 | Add curl installer, Claude Code marketplace, code-review SKILL.md |
 | 2026-03-31 | 0.1.8 | Fix hooks.json format, marketplace naming, PATH symlink |
+| 2026-03-31 | 0.1.9 | Implement muscle abort (SIGTERM + PID tracking), check (single-shot eval), kb knowledge-add (strategy entry), nightly CLI (enable/disable/status/run/reports/cleanup) |
 
 ---
 

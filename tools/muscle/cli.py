@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 import sys
 from pathlib import Path
 from typing import Any
@@ -518,24 +519,114 @@ def resume(session_id: str) -> None:
 @cli.command()
 @click.argument("session_id")
 def abort(session_id: str) -> None:
-    """Abort a running session"""
-    console.print(f"[yellow]Abort not yet implemented for session {session_id}[/yellow]")
+    """Abort a running session.
+
+    Sends SIGTERM to the running MUSCLE process and marks the session as aborted.
+
+    Examples:
+
+        muscle abort 20260331_ab12
+    """
+    from pathlib import Path
+
+    pid_file = Path.home() / ".muscle" / f"{session_id}.pid"
+
+    if not pid_file.exists():
+        console.print(f"[yellow]No running session found with ID: {session_id}[/yellow]")
+        console.print("Run 'muscle history' to see active sessions.")
+        sys.exit(1)
+
+    try:
+        pid_str = pid_file.read_text(encoding="utf-8").strip()
+        pid = int(pid_str)
+    except (ValueError, OSError) as e:
+        console.print(f"[red]Failed to read PID file: {e}[/red]")
+        sys.exit(1)
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        console.print(f"[yellow]Process {pid} not found (may have already exited)[/yellow]")
+        pid_file.unlink(missing_ok=True)
+        console.print("[green]Cleaned up stale PID file.[/green]")
+        sys.exit(0)
+    except PermissionError:
+        console.print(f"[red]Permission denied sending SIGTERM to process {pid}[/red]")
+        sys.exit(1)
+
+    console.print(f"[cyan]Sent SIGTERM to process {pid}[/cyan]")
+    console.print(f"[green]Session {session_id} marked for abort.[/green]")
+    console.print("(The session will exit cleanly at the next iteration boundary.)")
 
 
 @cli.command()
-def check() -> None:
-    """Single-shot validation (no loop)"""
-    console.print("[yellow]Check command not yet implemented[/yellow]")
+@click.option("--target", "-t", required=True, help="Target path to validate (file or directory)")
+@click.option(
+    "--language", "-l", default=None, help="Programming language (auto-detected if not specified)"
+)
+@click.option(
+    "--format", "-f", default="text", type=click.Choice(["text", "json"]), help="Output format"
+)
+def check(target: str, language: str | None, format: str) -> None:
+    """Run a single-shot validation against a file or directory.
 
+    Runs compiler, linter, and test checks once without any iteration loop.
+    Returns exit code 0 if all checks pass, non-zero otherwise.
 
-@cli.command()
-@click.option("--pattern", "-p", required=True, help="Error pattern")
-@click.option("--solution", "-s", required=True, help="Solution strategy")
-def knowledge_add(pattern: str, solution: str) -> None:
-    """Add a global knowledge base entry"""
-    console.print("[yellow]Knowledge add not yet implemented[/yellow]")
-    console.print(f"Pattern: {pattern}")
-    console.print(f"Solution: {solution}")
+    Examples:
+
+        muscle check --target ./src
+
+        muscle check --target ./src --language python --format json
+
+        muscle check --target ./tests --format text
+    """
+    from .evaluator_registry import EvaluatorRegistry
+
+    target_path = Path(target)
+    if not target_path.exists():
+        console.print(f"[red]Error: Target does not exist: {target}[/red]")
+        sys.exit(1)
+
+    registry = EvaluatorRegistry()
+    result = registry.evaluate(str(target_path), language=language)
+
+    if format == "json":
+        output = {
+            "passed": result.passed,
+            "compiler_errors": result.compiler_errors,
+            "test_failures": result.test_failures,
+            "linter_warnings": result.linter_warnings,
+            "assertion_failures": result.assertion_failures,
+        }
+        console.print(json.dumps(output, indent=2))
+    else:
+        if result.passed:
+            console.print("[green]All checks passed[/green]")
+        else:
+            console.print("[red]Checks failed:[/red]")
+
+        if result.compiler_errors:
+            console.print(f"\n[red]Compiler Errors ({len(result.compiler_errors)}):[/red]")
+            for err in result.compiler_errors:
+                console.print(f"  • {err}")
+
+        if result.test_failures:
+            console.print(f"\n[red]Test Failures ({len(result.test_failures)}):[/red]")
+            for err in result.test_failures:
+                console.print(f"  • {err}")
+
+        if result.assertion_failures:
+            console.print(f"\n[red]Assertion Failures ({len(result.assertion_failures)}):[/red]")
+            for err in result.assertion_failures:
+                console.print(f"  • {err}")
+
+        if result.linter_warnings:
+            console.print(f"\n[yellow]Linter Warnings ({len(result.linter_warnings)}):[/yellow]")
+            for err in result.linter_warnings:
+                console.print(f"  • {err}")
+
+    sys.exit(0 if result.passed else 1)
 
 
 @cli.group(name="kb")
@@ -563,6 +654,47 @@ def kb_stats(path: str | None) -> None:
         console.print(table)
     except Exception as e:
         console.print(f"[red]Failed to get KB stats: {e}[/red]")
+
+
+@kb_group.command(name="knowledge-add")
+@click.option("--pattern", "-p", required=True, help="Error pattern (what went wrong)")
+@click.option("--solution", "-s", required=True, help="Solution strategy (how to fix it)")
+@click.option("--root-cause", "-r", default=None, help="Root cause analysis (optional)")
+@click.option("--language", "-l", default=None, help="Programming language (optional)")
+@click.option("--path", default=None, help="Knowledge base path (optional)")
+def kb_knowledge_add(
+    pattern: str, solution: str, root_cause: str | None, language: str | None, path: str | None
+) -> None:
+    """Add a strategy to the global knowledge base.
+
+    This allows manual contribution of patterns and solutions that MUSCLE
+    learns from.
+
+    Examples:
+
+        muscle kb knowledge-add --pattern "Auth token expired" --solution "Refresh token and retry"
+
+        muscle kb knowledge-add -p "NullPointer in getUser" -s "Add null check" -l python
+    """
+    from .strategy_kb import GlobalKnowledgeBase
+
+    try:
+        gkb = GlobalKnowledgeBase(path)
+        root = root_cause or f"Pattern: {pattern}"
+        strategy_id = gkb.add_solution(
+            error_pattern=pattern,
+            root_cause=root,
+            solution=solution,
+            language=language,
+        )
+        if strategy_id > 0:
+            console.print(f"[green]Added strategy #{strategy_id}: {pattern[:50]}[/green]")
+        else:
+            console.print("[red]Failed to add strategy[/red]")
+            sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]Failed to add strategy: {e}[/red]")
+        sys.exit(1)
 
 
 @kb_group.command(name="export")
@@ -1269,6 +1401,147 @@ def diagnosis(job_id: str | None) -> None:
 
     else:
         console.print(result)
+
+
+@cli.group(name="nightly")
+def nightly_group() -> None:
+    """Nightly cron and report management."""
+    pass
+
+
+@nightly_group.command(name="enable")
+@click.option("--time", "-t", default="03:00", help="Run time in HH:MM format (default: 03:00)")
+@click.option("--target", default=None, help="Target path to review (default: current directory)")
+def nightly_enable(time: str, target: str | None) -> None:
+    """Enable nightly review at a scheduled time.
+
+    Examples:
+
+        muscle nightly enable                  # Enable at 03:00 AM
+
+        muscle nightly enable --time 02:30      # Enable at 02:30 AM
+
+        muscle nightly enable --target ./src    # Review ./src directory
+    """
+    from .code_review.nightly_runner import NightlyConfig, NightlyRunner, ScheduleManager
+
+    project_path = target or str(Path.cwd())
+    schedule_mgr = ScheduleManager(project_path)
+    schedule_mgr.enable_nightly(run_time=time)
+    console.print(f"[green]Nightly review enabled at {time}[/green]")
+    console.print(f"Project: {project_path}")
+
+    runner = NightlyRunner(project_path, NightlyConfig(enabled=True, run_time=time))
+    report = runner.run_nightly()
+    if report:
+        console.print(
+            f"[cyan]Immediate run completed: {report.get('total_issues', 0)} issues found[/cyan]"
+        )
+    else:
+        console.print("[yellow]Nightly scheduled but no report generated yet.[/yellow]")
+
+
+@nightly_group.command(name="disable")
+def nightly_disable() -> None:
+    """Disable nightly review schedule."""
+    from .code_review.nightly_runner import ScheduleManager
+
+    schedule_mgr = ScheduleManager(str(Path.cwd()))
+    schedule_mgr.disable_nightly()
+    console.print("[green]Nightly review disabled.[/green]")
+
+
+@nightly_group.command(name="status")
+def nightly_status() -> None:
+    """Show nightly schedule status."""
+    from .code_review.nightly_runner import ScheduleManager
+
+    schedule_mgr = ScheduleManager(str(Path.cwd()))
+    schedule = schedule_mgr.get_schedule()
+
+    table = Table(title="Nightly Schedule Status")
+    table.add_column("Setting", style="cyan")
+    table.add_column("Value", style="green")
+
+    nightly = schedule.get("nightly", {})
+    enabled = nightly.get("enabled", False)
+    table.add_row("Enabled", f"[{'green' if enabled else 'red'}]" + ("Yes" if enabled else "No"))
+    table.add_row("Run Time", nightly.get("run_time", "Not set"))
+    table.add_row("Next Run", nightly.get("next_run", "Not scheduled"))
+
+    console.print(table)
+
+
+@nightly_group.command(name="run")
+@click.option("--target", "-t", default=None, help="Target path to review")
+def nightly_run(target: str | None) -> None:
+    """Run nightly review immediately (one-shot)."""
+    from .code_review.nightly_runner import NightlyConfig, NightlyRunner
+
+    project_path = target or str(Path.cwd())
+    runner = NightlyRunner(project_path, NightlyConfig(enabled=True))
+    console.print(f"[cyan]Running nightly review on {project_path}...[/cyan]")
+
+    result = runner.run_nightly()
+    if result:
+        console.print(f"[green]Completed: {result.get('total_issues', 0)} issues found[/green]")
+        console.print(f"Duration: {result.get('duration_seconds', 0):.1f}s")
+        critical = len(result.get("critical_issues", []))
+        high = len(result.get("high_issues", []))
+        if critical:
+            console.print(f"[red]Critical: {critical}[/red]")
+        if high:
+            console.print(f"[red]High: {high}[/red]")
+    else:
+        console.print("[yellow]No report generated.[/yellow]")
+
+
+@nightly_group.command(name="reports")
+@click.option("--limit", "-n", default=7, help="Number of reports to show")
+def nightly_reports(limit: int) -> None:
+    """List recent nightly reports."""
+    from .code_review.nightly_runner import NightlyRunner
+
+    runner = NightlyRunner(str(Path.cwd()))
+    reports = runner.list_reports(limit=limit)
+
+    if not reports:
+        console.print("[yellow]No nightly reports found.[/yellow]")
+        console.print("Run 'muscle nightly run' to generate the first report.")
+        return
+
+    table = Table(title=f"Recent Nightly Reports (last {len(reports)})")
+    table.add_column("Date", style="cyan")
+    table.add_column("Total Issues", style="yellow")
+    table.add_column("Critical", style="red")
+    table.add_column("High", style="red")
+
+    for report in reports:
+        table.add_row(
+            report.get("date", "unknown"),
+            str(report.get("total_issues", 0)),
+            str(report.get("critical_count", 0)),
+            str(report.get("high_count", 0)),
+        )
+
+    console.print(table)
+
+
+@nightly_group.command(name="cleanup")
+@click.option("--days", "-d", default=30, help="Keep reports for N days")
+@click.option("--force", is_flag=True, help="Skip confirmation")
+def nightly_cleanup(days: int, force: bool) -> None:
+    """Clean up old nightly reports."""
+    from .code_review.nightly_runner import NightlyRunner
+
+    runner = NightlyRunner(str(Path.cwd()))
+    if not force:
+        if not click.confirm(f"Remove reports older than {days} days?"):
+            console.print("[yellow]Aborted.[/yellow]")
+            return
+
+    removed = runner.cleanup_old_reports(days_to_keep=days)
+    console.print(f"[green]Removed {removed} old reports.[/green]")
 
 
 def _get_status_color(status: str) -> str:

@@ -11,11 +11,14 @@ Architecture Decision Record (ADR):
 """
 
 import logging
+import os
+import signal
 import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 
 from .adapters.git_adapter import GitAdapter
 from .interactive import InteractiveChoice, InteractiveHandler
@@ -385,6 +388,28 @@ class LoopController:
         )
         return result
 
+    def _sigterm_handler(self, signum: int, frame: object) -> None:
+        logger.info("SIGTERM received, requesting abort")
+        self._abort_requested = True
+
+    def _write_session_pid(self, session_id: str) -> None:
+        pid_file = Path.home() / ".muscle" / f"{session_id}.pid"
+        try:
+            pid_file.parent.mkdir(parents=True, exist_ok=True)
+            pid_file.write_text(str(os.getpid()), encoding="utf-8")
+            logger.debug(f"Wrote PID {os.getpid()} to {pid_file}")
+        except OSError as e:
+            logger.warning(f"Could not write PID file: {e}")
+
+    def _remove_session_pid(self, session_id: str | None = None) -> None:
+        if session_id is None:
+            return
+        pid_file = Path.home() / ".muscle" / f"{session_id}.pid"
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     def run(self, streaming_callback: Callable[[str], None] | None = None) -> LoopContext:
         self._validate_config(self.config)
 
@@ -399,114 +424,121 @@ class LoopController:
             f"{self._truncate(self.config.task, MAX_TASK_PREVIEW_LENGTH)}..."
         )
 
-        if self.webhook_notifier and self.webhook_notifier.enabled:
-            self.webhook_notifier.send_session_start(
-                ctx.session_id,
-                self.config.task,
-                {
-                    "max_iterations": self.config.max_iterations,
-                    "timeout_seconds": self.config.timeout_seconds,
-                    "budget_tokens": self.config.budget_tokens,
-                },
-            )
+        self._write_session_pid(ctx.session_id)
+        original_sigterm = signal.signal(signal.SIGTERM, self._sigterm_handler)
 
-        while True:
-            should_cont, reason = self._should_continue(ctx)
-            if not should_cont:
-                if self._abort_requested:
-                    ctx.stats.status = SessionStatus.ABORTED
-                    self._emit(
-                        LoopEvent.SESSION_ABORT, {"reason": reason or "User requested abort"}
-                    )
-                else:
-                    ctx.stats.status = SessionStatus.FAILED if reason else SessionStatus.ABORTED
-                    self._emit(
-                        LoopEvent.SESSION_COMPLETE,
-                        {"reason": reason, "status": ctx.stats.status.value},
-                    )
-                    if reason and self.webhook_notifier and self.webhook_notifier.enabled:
-                        self.webhook_notifier.send_session_failure(ctx.session_id, reason)
-                break
-
-            ctx.current_iteration += 1
-            iteration_result = self._run_iteration(ctx, streaming_callback)
-            ctx.iterations.append(iteration_result)
-            ctx.stats.total_iterations = ctx.current_iteration
-            ctx.stats.total_tokens += iteration_result.token_cost
-            ctx.stats.total_duration_seconds += iteration_result.duration_seconds
-
+        try:
             if self.webhook_notifier and self.webhook_notifier.enabled:
-                self.webhook_notifier.send_iteration_complete(
+                self.webhook_notifier.send_session_start(
                     ctx.session_id,
-                    iteration_result.iteration,
-                    iteration_result.success,
-                    iteration_result.token_cost,
-                )
-
-            if iteration_result.success:
-                ctx.stats.status = SessionStatus.SUCCESS
-                self._emit(LoopEvent.SESSION_COMPLETE, {"status": SessionStatus.SUCCESS.value})
-                if self.webhook_notifier and self.webhook_notifier.enabled:
-                    self.webhook_notifier.send_session_success(
-                        ctx.session_id,
-                        ctx.stats.total_iterations,
-                        ctx.stats.total_tokens,
-                    )
-                self._auto_commit(ctx)
-                break
-
-            budget_ok, budget_reason = self._check_budget(iteration_result.token_cost)
-            if not budget_ok:
-                ctx.stats.status = SessionStatus.BUDGET_EXCEEDED
-                self._emit(LoopEvent.SESSION_ABORT, {"reason": budget_reason})
-                if self.webhook_notifier and self.webhook_notifier.enabled:
-                    self.webhook_notifier.send_budget_exceeded(ctx.session_id)
-                break
-
-            if ctx.current_iteration > 1 and ctx.current_iteration % 5 == 0:
-                self._emit(
-                    LoopEvent.BUDGET_WARNING,
+                    self.config.task,
                     {
-                        "iteration": ctx.current_iteration,
-                        "total_tokens": ctx.stats.total_tokens,
+                        "max_iterations": self.config.max_iterations,
+                        "timeout_seconds": self.config.timeout_seconds,
+                        "budget_tokens": self.config.budget_tokens,
                     },
                 )
+
+            while True:
+                should_cont, reason = self._should_continue(ctx)
+                if not should_cont:
+                    if self._abort_requested:
+                        ctx.stats.status = SessionStatus.ABORTED
+                        self._emit(
+                            LoopEvent.SESSION_ABORT, {"reason": reason or "User requested abort"}
+                        )
+                    else:
+                        ctx.stats.status = SessionStatus.FAILED if reason else SessionStatus.ABORTED
+                        self._emit(
+                            LoopEvent.SESSION_COMPLETE,
+                            {"reason": reason, "status": ctx.stats.status.value},
+                        )
+                        if reason and self.webhook_notifier and self.webhook_notifier.enabled:
+                            self.webhook_notifier.send_session_failure(ctx.session_id, reason)
+                    break
+
+                ctx.current_iteration += 1
+                iteration_result = self._run_iteration(ctx, streaming_callback)
+                ctx.iterations.append(iteration_result)
+                ctx.stats.total_iterations = ctx.current_iteration
+                ctx.stats.total_tokens += iteration_result.token_cost
+                ctx.stats.total_duration_seconds += iteration_result.duration_seconds
+
                 if self.webhook_notifier and self.webhook_notifier.enabled:
-                    self.webhook_notifier.send_budget_warning(
+                    self.webhook_notifier.send_iteration_complete(
                         ctx.session_id,
-                        float(ctx.stats.total_tokens) / float(self.config.budget_tokens)
-                        if self.config.budget_tokens > 0
-                        else 0.0,
-                        self.config.budget_tokens - ctx.stats.total_tokens
-                        if self.config.budget_tokens > 0
-                        else 0,
+                        iteration_result.iteration,
+                        iteration_result.success,
+                        iteration_result.token_cost,
                     )
 
-        logger.info(
-            f"Session {ctx.session_id} complete: "
-            f"status={ctx.stats.status.value}, "
-            f"iterations={ctx.stats.total_iterations}, "
-            f"tokens={ctx.stats.total_tokens}"
-        )
+                if iteration_result.success:
+                    ctx.stats.status = SessionStatus.SUCCESS
+                    self._emit(LoopEvent.SESSION_COMPLETE, {"status": SessionStatus.SUCCESS.value})
+                    if self.webhook_notifier and self.webhook_notifier.enabled:
+                        self.webhook_notifier.send_session_success(
+                            ctx.session_id,
+                            ctx.stats.total_iterations,
+                            ctx.stats.total_tokens,
+                        )
+                    self._auto_commit(ctx)
+                    break
 
-        self._build_session_report(ctx)
+                budget_ok, budget_reason = self._check_budget(iteration_result.token_cost)
+                if not budget_ok:
+                    ctx.stats.status = SessionStatus.BUDGET_EXCEEDED
+                    self._emit(LoopEvent.SESSION_ABORT, {"reason": budget_reason})
+                    if self.webhook_notifier and self.webhook_notifier.enabled:
+                        self.webhook_notifier.send_budget_exceeded(ctx.session_id)
+                    break
 
-        all_errors: list[str] = []
-        for it_result in ctx.iterations:
-            all_errors.extend(it_result.errors)
+                if ctx.current_iteration > 1 and ctx.current_iteration % 5 == 0:
+                    self._emit(
+                        LoopEvent.BUDGET_WARNING,
+                        {
+                            "iteration": ctx.current_iteration,
+                            "total_tokens": ctx.stats.total_tokens,
+                        },
+                    )
+                    if self.webhook_notifier and self.webhook_notifier.enabled:
+                        self.webhook_notifier.send_budget_warning(
+                            ctx.session_id,
+                            float(ctx.stats.total_tokens) / float(self.config.budget_tokens)
+                            if self.config.budget_tokens > 0
+                            else 0.0,
+                            self.config.budget_tokens - ctx.stats.total_tokens
+                            if self.config.budget_tokens > 0
+                            else 0,
+                        )
 
-        self._self_improver.log_session(
-            session_id=ctx.session_id,
-            task=ctx.config.task,
-            status=ctx.stats.status.value,
-            iterations=ctx.stats.total_iterations,
-            tokens=ctx.stats.total_tokens,
-            duration=ctx.stats.total_duration_seconds,
-            errors=all_errors,
-            strategy=ctx.evolved_strategy,
-        )
+            logger.info(
+                f"Session {ctx.session_id} complete: "
+                f"status={ctx.stats.status.value}, "
+                f"iterations={ctx.stats.total_iterations}, "
+                f"tokens={ctx.stats.total_tokens}"
+            )
 
-        return ctx
+            self._build_session_report(ctx)
+
+            all_errors: list[str] = []
+            for it_result in ctx.iterations:
+                all_errors.extend(it_result.errors)
+
+            self._self_improver.log_session(
+                session_id=ctx.session_id,
+                task=ctx.config.task,
+                status=ctx.stats.status.value,
+                iterations=ctx.stats.total_iterations,
+                tokens=ctx.stats.total_tokens,
+                duration=ctx.stats.total_duration_seconds,
+                errors=all_errors,
+                strategy=ctx.evolved_strategy,
+            )
+
+            return ctx
+        finally:
+            signal.signal(signal.SIGTERM, original_sigterm)
+            self._remove_session_pid(ctx.session_id)
 
     def _build_session_report(self, ctx: LoopContext) -> None:
         budget_info: BudgetInfo | None = None
