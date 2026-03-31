@@ -92,6 +92,23 @@ LANGUAGE_TOOLS: dict[str, list[dict[str, Any]]] = {
             },
         },
     ],
+    "svelte": [
+        {
+            "name": "svelte-check",
+            "cmd": [
+                "svelte-check",
+                "--tsconfig",
+                "./tsconfig.json",
+                "--output",
+                "machine-readable",
+            ],
+            "parser": "_parse_svelte_check_json",
+            "severity_map": {
+                "error": "HIGH",
+                "warning": "MEDIUM",
+            },
+        },
+    ],
     "go": [
         {
             "name": "golangci-lint",
@@ -175,6 +192,7 @@ class StaticAnalyzer:
                 ".ts": "typescript",
                 ".jsx": "javascript",
                 ".tsx": "typescript",
+                ".svelte": "svelte",
                 ".go": "go",
                 ".rs": "rust",
                 ".cpp": "cpp",
@@ -188,6 +206,8 @@ class StaticAnalyzer:
             files = list(path.rglob("*"))
             extensions = {f.suffix.lower() for f in files if f.is_file() and f.suffix}
 
+            if ".svelte" in extensions:
+                return "svelte"
             if ".py" in extensions:
                 return "python"
             if ".js" in extensions:
@@ -522,6 +542,43 @@ class StaticAnalyzer:
                         category="style",
                     )
                 )
+        return issues
+
+    def _parse_svelte_check_json(
+        self, output: str, severity_map: dict[str, str]
+    ) -> list[StaticIssue]:
+        issues: list[StaticIssue] = []
+        try:
+            data = json.loads(output)
+            if isinstance(data, dict) and "messages" in data:
+                for msg in data.get("messages", []):
+                    severity_str = msg.get("severity", "warning").upper()
+                    issues.append(
+                        StaticIssue(
+                            file_path=msg.get("file", ""),
+                            line_number=msg.get("startLine", msg.get("line", 0)),
+                            severity=severity_map.get(severity_str.lower(), "MEDIUM"),
+                            rule_id=msg.get("code", ""),
+                            message=msg.get("message", ""),
+                            category=msg.get("source", "svelte"),
+                        )
+                    )
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        severity_str = item.get("severity", "warning").upper()
+                        issues.append(
+                            StaticIssue(
+                                file_path=item.get("file", ""),
+                                line_number=item.get("line", 0),
+                                severity=severity_map.get(severity_str.lower(), "MEDIUM"),
+                                rule_id=item.get("code", ""),
+                                message=item.get("message", ""),
+                                category=item.get("source", "svelte"),
+                            )
+                        )
+        except json.JSONDecodeError:
+            pass
         return issues
 
     def _parse_generic(self, output: str, severity_map: dict[str, str]) -> list[StaticIssue]:

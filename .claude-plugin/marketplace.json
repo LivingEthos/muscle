@@ -1,0 +1,29 @@
+{
+  "name": "muscle",
+  "owner": {
+    "name": "MUSCLE Team"
+  },
+  "metadata": {
+    "description": "MUSCLE - Self-learning code review that gets smarter with every task. Powered by MiniMax M2.7."
+  },
+  "plugins": [
+    {
+      "name": "muscle",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/LivingEthos/muscle.git",
+        "path": "tools/muscle/plugin"
+      },
+      "description": "Self-learning code review companion. Slash commands: /muscle:review, /muscle:pressure, /muscle:rescue, /muscle:setup",
+      "version": "0.1.0",
+      "author": {
+        "name": "MUSCLE Team"
+      },
+      "homepage": "https://github.com/LivingEthos/muscle",
+      "repository": "https://github.com/LivingEthos/muscle",
+      "license": "MIT",
+      "keywords": ["code-review", "self-improving", "ai", "minimax", "quality"],
+      "category": "code-quality"
+    }
+  ]
+}

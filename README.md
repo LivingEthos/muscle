@@ -5,7 +5,7 @@
 **Self-learning code review that gets smarter with every task.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Supported Languages: Python, JavaScript, TypeScript, Go, Java, Rust, C++](https://img.shields.io/badge/Languages-Python%20%7C%20JavaScript%20%7C%20TypeScript%20%7C%20Go%20%7C%20Java%20%7C%20Rust%20%7C%20C++-blue.svg)](https://github.com/minimax-ai/muscle)
+[![Supported Languages: Python, JavaScript, TypeScript, Go, Java, Rust, C++](https://img.shields.io/badge/Languages-Python%20%7C%20JavaScript%20%7C%20TypeScript%20%7C%20Go%20%7C%20Java%20%7C%20Rust%20%7C%20C++-blue.svg)](https://github.com/LivingEthos/muscle)
 
 ## Overview
 
@@ -38,9 +38,62 @@ MUSCLE is a self-learning code review companion that:
 
 ## Installation
 
+### Option 1: One-liner install (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/install.sh | bash
+```
+
+This installs the `muscle` CLI to `~/.muscle/src` and makes it available on your PATH.
+
+**Environment variables to customize the install:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MUSCLE_INSTALL_DIR` | `~/.muscle/src` | Installation directory |
+| `MUSCLE_BRANCH` | `main` | Git branch or tag to install |
+| `MUSCLE_SKIP_UV` | `0` | Set to `1` to use pip instead of uv |
+| `MUSCLE_NO_INIT` | `0` | Set to `1` to skip running `muscle init` |
+
+**Reinstall or update:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/install.sh | bash
+```
+
+The script is idempotent — re-running it updates an existing installation.
+
+### Option 2: Claude Code Plugin
+
+Install MUSCLE as a Claude Code plugin for slash command integration:
+
+```bash
+# Add the marketplace
+/plugin marketplace add LivingEthos/muscle
+
+# Install the plugin
+/plugin install muscle@muscle
+```
+
+Then use the slash commands in any Claude Code session:
+
+```
+/muscle:review     # Standard code review
+/muscle:pressure   # Adversarial review
+/muscle:rescue     # Deep-dive investigation
+/muscle:status     # Check job status
+/muscle:result     # Get job results
+/muscle:cancel     # Cancel running jobs
+/muscle:setup      # Configure review gate
+```
+
+> **Note:** The plugin's slash commands shell out to the `muscle` CLI under the hood. Install the CLI (Option 1) first.
+
+### Option 3: Manual install
+
 ```bash
 # Clone repository
-git clone https://github.com/minimax-ai/muscle.git
+git clone https://github.com/LivingEthos/muscle.git
 cd muscle
 
 # Install dependencies
@@ -53,6 +106,9 @@ uv pip install -e .
 ## Quick Start
 
 ```bash
+# Install MUSCLE
+curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/install.sh | bash
+
 # Set your API key
 export MINIMAX_API_KEY="your-token-plan-api-key"
 export ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic"
@@ -99,7 +155,22 @@ muscle tui
 
 ## Claude Code Plugin
 
-MUSCLE provides a Claude Code plugin with slash commands:
+MUSCLE provides a Claude Code plugin with slash commands.
+
+### Install from marketplace
+
+```bash
+/plugin marketplace add LivingEthos/muscle
+/plugin install muscle@muscle
+```
+
+### Or load locally for development
+
+```bash
+claude --plugin-dir ./tools/muscle/plugin
+```
+
+### Available commands
 
 ```bash
 /muscle:review     # Standard review on changes

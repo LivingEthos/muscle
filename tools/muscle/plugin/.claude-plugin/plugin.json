@@ -1,10 +1,13 @@
 {
   "name": "muscle",
-  "description": "MUSCLE - MiniMax Unified Self-Correcting Learning Engine. Self-learning code review that gets smarter with every task.",
+  "description": "MUSCLE - Self-learning code review that gets smarter with every task. Slash commands: /muscle:review, /muscle:pressure, /muscle:rescue, /muscle:status, /muscle:result, /muscle:cancel, /muscle:setup",
   "version": "0.1.0",
   "author": {
-    "name": "MUSCLE Team"
+    "name": "MUSCLE Team",
+    "email": "muscle@minimax.io"
   },
-  "homepage": "https://github.com/minimax-ai/muscle",
-  "repository": "https://github.com/minimax-ai/muscle"
+  "homepage": "https://github.com/LivingEthos/muscle",
+  "repository": "https://github.com/LivingEthos/muscle",
+  "license": "MIT",
+  "keywords": ["code-review", "self-improving", "ai", "minimax", "quality", "auto-fix"]
 }
