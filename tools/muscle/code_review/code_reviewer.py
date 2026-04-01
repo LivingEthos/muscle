@@ -164,7 +164,31 @@ class CodeReviewer:
             "info": 0,
         }
 
-        for file_path, file_issues in issues_by_file.items():
+        if issues_by_file:
+            files_to_review = issues_by_file
+        else:
+            files_to_review = {}
+            if target.is_file():
+                files_to_review[str(target)] = []
+            else:
+                for ext in (
+                    ".py",
+                    ".js",
+                    ".ts",
+                    ".jsx",
+                    ".tsx",
+                    ".go",
+                    ".rs",
+                    ".cpp",
+                    ".cc",
+                    ".c",
+                    ".java",
+                ):
+                    for f in sorted(target.rglob(f"*{ext}")):
+                        rel = str(f.relative_to(base_dir)) if f.parent != base_dir else f.name
+                        files_to_review[rel] = []
+
+        for file_path, file_issues in files_to_review.items():
             file_issues = file_issues[: self.max_issues_per_batch]
             code_content = ""
             try:

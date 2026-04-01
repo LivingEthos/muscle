@@ -298,9 +298,23 @@ class LoopController:
         self._emit(LoopEvent.GENERATION_START, {"strategy": ctx.evolved_strategy})
 
         output_path = Path(ctx.config.output_dir)
+        cache_names = {
+            ".pytest_cache",
+            ".ruff_cache",
+            "__pycache__",
+            ".mypy_cache",
+            ".tox",
+            ".coverage",
+            "node_modules",
+        }
         pre_existing = set()
         if output_path.exists() and output_path.is_dir():
-            pre_existing = {p.name for p in output_path.iterdir()}
+            pre_existing = {
+                p.name
+                for p in output_path.iterdir()
+                if not (p.is_dir() and p.name in cache_names)
+                and not (p.is_file() and p.name.endswith(".pyc"))
+            }
 
         if streaming_callback:
             gen_streaming = getattr(self.code_generator, "generate_streaming", None)
@@ -343,7 +357,12 @@ class LoopController:
 
         post_files: set[str] = set()
         if output_path.exists() and output_path.is_dir():
-            post_files = {p.name for p in output_path.iterdir()}
+            post_files = {
+                p.name
+                for p in output_path.iterdir()
+                if not (p.is_dir() and p.name in cache_names)
+                and not (p.is_file() and p.name.endswith(".pyc"))
+            }
         new_files = sorted(post_files - pre_existing)
 
         result = IterationResult(
@@ -552,6 +571,7 @@ class LoopController:
 
             if self._session_manager and self._session_report:
                 self._session_manager.save_session_report(ctx.session_id, self._session_report)
+                self._session_manager.save_final_context(ctx)
 
             all_errors: list[str] = []
             for it_result in ctx.iterations:

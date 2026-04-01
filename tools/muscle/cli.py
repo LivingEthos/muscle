@@ -593,7 +593,7 @@ def check(target: str, language: str | None, format: str) -> None:
         console.print(f"[red]Error: Target does not exist: {target}[/red]")
         sys.exit(1)
 
-    eval_target = str(target_path.parent) if target_path.is_file() else str(target_path)
+    eval_target = str(target_path)
     registry = EvaluatorRegistry()
     result = registry.evaluate(eval_target, language=language)
 

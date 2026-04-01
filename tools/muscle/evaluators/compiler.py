@@ -35,7 +35,12 @@ class PythonCompiler(BaseEvaluator):
         errors = []
         path = Path(output_dir)
 
-        for py_file in path.rglob("*.py"):
+        if path.is_file():
+            files_to_check = [path]
+        else:
+            files_to_check = list(path.rglob("*.py"))
+
+        for py_file in files_to_check:
             try:
                 py_compile.compile(str(py_file), doraise=True)
             except py_compile.PyCompileError as e:
@@ -61,7 +66,12 @@ class NodeCompiler(BaseEvaluator):
         errors = []
         path = Path(output_dir)
 
-        for js_file in path.rglob("*.js"):
+        if path.is_file():
+            files_to_check = [path]
+        else:
+            files_to_check = list(path.rglob("*.js"))
+
+        for js_file in files_to_check:
             code, stdout, stderr = self._run_command(["node", "--check", str(js_file)], output_dir)
             if code != 0:
                 errors.append(f"{js_file}: {stderr or stdout}")
@@ -136,7 +146,12 @@ class RustCompiler(BaseEvaluator):
         errors = []
         path = Path(output_dir)
 
-        for rs_file in path.rglob("*.rs"):
+        if path.is_file():
+            files_to_check = [path]
+        else:
+            files_to_check = list(path.rglob("*.rs"))
+
+        for rs_file in files_to_check:
             code, stdout, stderr = self._run_command(
                 ["rustc", "--emit=metadata", str(rs_file)], output_dir
             )
@@ -163,17 +178,26 @@ class GppCompiler(BaseEvaluator):
         errors = []
         path = Path(output_dir)
 
-        for cpp_file in path.rglob("*.cpp"):
-            code, stdout, stderr = self._run_command(
-                ["g++", "-fsyntax-only", "-std=c++17", str(cpp_file)], output_dir
+        if path.is_file():
+            if path.suffix in (".cpp", ".cc", ".cxx"):
+                files_to_check = [path]
+            elif path.suffix == ".c":
+                files_to_check = [path]
+            else:
+                files_to_check = []
+        else:
+            cpp_files = (
+                list(path.rglob("*.cpp")) + list(path.rglob("*.cc")) + list(path.rglob("*.cxx"))
             )
-            if code != 0:
-                errors.append(f"{cpp_file}: {stderr or stdout}")
+            c_files = list(path.rglob("*.c"))
+            files_to_check = cpp_files + c_files
 
-        for c_file in path.rglob("*.c"):
-            code, stdout, stderr = self._run_command(
-                ["gcc", "-fsyntax-only", str(c_file)], output_dir
-            )
+        for c_file in files_to_check:
+            if c_file.suffix == ".c":
+                compiler, flags = "gcc", ["-fsyntax-only"]
+            else:
+                compiler, flags = "g++", ["-fsyntax-only", "-std=c++17"]
+            code, stdout, stderr = self._run_command([compiler] + flags + [str(c_file)], output_dir)
             if code != 0:
                 errors.append(f"{c_file}: {stderr or stdout}")
 
@@ -197,7 +221,12 @@ class JavacCompiler(BaseEvaluator):
         errors = []
         path = Path(output_dir)
 
-        for java_file in path.rglob("*.java"):
+        if path.is_file():
+            files_to_check = [path] if path.suffix == ".java" else []
+        else:
+            files_to_check = list(path.rglob("*.java"))
+
+        for java_file in files_to_check:
             code, stdout, stderr = self._run_command(["javac", str(java_file)], output_dir)
             if code != 0:
                 errors.append(f"{java_file}: {stderr or stdout}")
