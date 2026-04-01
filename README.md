@@ -187,6 +187,28 @@ claude --plugin-dir ./tools/muscle/plugin
 /muscle:setup      # Configure review gate
 ```
 
+### OpenCode Integration
+
+MUSCLE also works with OpenCode. After installing MUSCLE, run the setup script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/scripts/opencode-setup.sh | bash
+```
+
+This script:
+1. Verifies MUSCLE is installed
+2. Configures your API key
+3. Initializes the project
+4. Installs the `muscle-review` skill for OpenCode
+
+After setup, restart OpenCode and use:
+
+```
+/muscle-review              # Standard review
+/muscle-review src          # Review specific path
+/muscle-review src pressure # Pressure mode review
+```
+
 ## Architecture
 
 ```
