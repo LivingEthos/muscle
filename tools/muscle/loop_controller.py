@@ -166,7 +166,7 @@ class LoopController:
             logger.warning(f"Not a git repo: {self.git_repo_path}")
             return
 
-        branch_name = f"scle/session-{ctx.session_id}"
+        branch_name = f"muscle/session-{ctx.session_id}"
         if git.create_branch(branch_name):
             logger.info(f"Created branch: {branch_name}")
         else:
@@ -447,14 +447,17 @@ class LoopController:
                         self._emit(
                             LoopEvent.SESSION_ABORT, {"reason": reason or "User requested abort"}
                         )
-                    else:
-                        ctx.stats.status = SessionStatus.FAILED if reason else SessionStatus.ABORTED
+                    elif reason:
+                        ctx.stats.status = SessionStatus.FAILED
                         self._emit(
                             LoopEvent.SESSION_COMPLETE,
                             {"reason": reason, "status": ctx.stats.status.value},
                         )
-                        if reason and self.webhook_notifier and self.webhook_notifier.enabled:
+                        if self.webhook_notifier and self.webhook_notifier.enabled:
                             self.webhook_notifier.send_session_failure(ctx.session_id, reason)
+                    else:
+                        ctx.stats.status = SessionStatus.ABORTED
+                        self._emit(LoopEvent.SESSION_ABORT, {"reason": "Unknown reason"})
                     break
 
                 ctx.current_iteration += 1

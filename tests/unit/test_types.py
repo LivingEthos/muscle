@@ -1,15 +1,15 @@
 """
 Unit tests for SCLE types.
 """
-import pytest
-from tools.scle.types import (
-    RunConfig,
-    EvaluationResult,
-    SessionStatus,
+
+from tools.muscle.types import (
     BudgetMode,
     EvalMode,
+    EvaluationResult,
     IterationResult,
     LoopStats,
+    RunConfig,
+    SessionStatus,
 )
 
 

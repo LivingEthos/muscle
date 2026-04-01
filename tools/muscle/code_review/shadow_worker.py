@@ -330,7 +330,7 @@ class WorkerManager:
         return cls._instance
 
     def __init__(self, broker: ShadowBroker | None = None):
-        if hasattr(self, "_worker") and self.__class__._initialized:
+        if self.__dict__.get("_initialized"):
             return
 
         from .shadow_broker import ShadowBroker as ShadowBrokerBase

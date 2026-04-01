@@ -29,9 +29,7 @@ class BlackLinter(BaseEvaluator):
             logger.warning("black not found, skipping formatting check")
             return EvaluatorResult(success=True)
 
-        code, stdout, stderr = self._run_command(
-            ["black", "--check", "--diff", output_dir], output_dir
-        )
+        code, stdout, stderr = self._run_command(["black", "--check", "--diff", "."], output_dir)
 
         warnings = []
         if code != 0:
@@ -55,7 +53,7 @@ class RuffLinter(BaseEvaluator):
             logger.warning("ruff not found, skipping lint check")
             return EvaluatorResult(success=True)
 
-        code, stdout, stderr = self._run_command(["ruff", "check", output_dir], output_dir)
+        code, stdout, stderr = self._run_command(["ruff", "check", "."], output_dir)
 
         warnings = []
         if code != 0:
@@ -79,9 +77,7 @@ class EslintLinter(BaseEvaluator):
             logger.warning("eslint not found, skipping lint check")
             return EvaluatorResult(success=True)
 
-        code, stdout, stderr = self._run_command(
-            ["eslint", "--format", "compact", output_dir], output_dir
-        )
+        code, stdout, stderr = self._run_command(["eslint", "--format", "compact", "."], output_dir)
 
         warnings = []
         if code != 0:

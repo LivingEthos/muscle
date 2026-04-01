@@ -83,9 +83,7 @@ class TscCompiler(BaseEvaluator):
             logger.warning("tsc not found, skipping TypeScript check")
             return EvaluatorResult(success=True)
 
-        code, stdout, stderr = self._run_command(
-            ["tsc", "--noEmit", "--project", output_dir], output_dir
-        )
+        code, stdout, stderr = self._run_command(["tsc", "--noEmit"], output_dir)
 
         errors = []
         if code != 0:

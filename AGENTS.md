@@ -233,15 +233,16 @@ export ANTHROPIC_BASE_URL="https://api.minimaxi.com/anthropic"
 | `muscle run` | ✅ | Start a new generation session |
 | `muscle history` | ✅ | List all sessions |
 | `muscle resume` | ⚠️ Partial | Loads session but full resume not yet implemented |
-| `muscle abort` | ❌ Stub | Not yet implemented |
-| `muscle check` | ❌ Stub | Not yet implemented |
+| `muscle abort` | ✅ | Abort a running session (SIGTERM + PID file) |
+| `muscle check` | ✅ | Single-shot validation (compiler/linter/tester) |
 | `muscle kb` | ✅ | Knowledge base management (stats/export/import/clear) |
 | `muscle cost` | ✅ | Cost optimizer (stats/clear) |
 | `muscle improve` | ✅ | Self-improvement (report/export/import/clear/prompt) |
 | `muscle probe` | ✅ | Shadow job status |
 | `muscle diagnosis` | ✅ | Shadow job results |
 | `muscle lifeline` | ✅ | Deep-dive investigation |
-| `muscle kb knowledge-add` | ❌ Stub | Not yet implemented |
+| `muscle kb knowledge-add` | ✅ | Add strategy to global knowledge base |
+| `muscle nightly` | ✅ | Nightly cron management (enable/disable/run/reports/cleanup) |
 
 ---
 
@@ -335,15 +336,31 @@ Files managed:
 ## Self-Review Results
 
 MUSCLE has been tested on itself:
-- Found **12 real issues** (2 critical, 5 high, 5 medium)
+- Found **14 real issues** (2 critical, 6 high, 6 medium)
 - JSON recovery successfully extracts findings from truncated responses
 - Pressure mode identifies design weaknesses
+- All 509 tests pass (7 skipped - Jenkins/mock complexity)
 
 ### Notable issues found in self-review
-- SYSTEM_PROMPT not protected against prompt injection
-- Shared M27Client across threads without synchronization
-- No timeout on M27Client.chat() calls
-- JSON recovery heuristics could discard valid findings
+
+#### Critical
+- `check` command silently used DummyEvaluator for `"python"` language (not `".py"`) — added `LANGUAGE_ALIASES` including `"py"`, `"js"`, `"ts"`, `"rs"`, `"cs"`
+- Evaluator commands used `output_dir` as both `cwd` and path arg — linters tried to find `tools/muscle/tools/muscle` — fixed all to use `"."` as path when `cwd=output_dir`
+
+#### High
+- `scle/session-` branch naming in LoopController — fixed to `muscle/session-`
+- `WorkerManager` singleton bug — class-level `_initialized` caused subsequent instances to skip `__init__` — fixed to `self.__dict__.get("_initialized")`
+- `LoopController._should_continue` returned FAILED status even when abort was requested — fixed with proper precedence
+- `DummyGenerator` abort race — 100 iterations completed before abort flag checked — fixed with `time.sleep(0.01)`
+
+#### Medium
+- `PyCompileError` signature used string instead of `BaseException` — fixed to `py_compile.PyCompileError(msg, exc_value, file)`
+- FileNotFoundError return code is `-2`, not `-1` — updated base.py `_run_command`
+- `_should_retry` used string equality instead of substring matching
+- `get_max_tokens` returned 1024/2048 instead of actual 500/2000 for SIMPLE/MEDIUM
+- Webhook async tests used wrong `AsyncMock` stacking for nested `async with` context managers
+
+*Last updated: 2026-04-01*
 
 ---
 

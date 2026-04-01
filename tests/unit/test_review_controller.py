@@ -9,16 +9,14 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
-
-from tools.scle.code_review.code_reviewer import CodeReviewer
-from tools.scle.code_review.fix_generator import FixGenerator, FixResult
-from tools.scle.code_review.handoff_generator import HandoffGenerator
-from tools.scle.code_review.review_controller import ReviewContext, ReviewController
-from tools.scle.code_review.static_analyzer import StaticAnalyzer
-from tools.scle.code_review.types import (
+from tools.muscle.code_review.code_reviewer import CodeReviewer
+from tools.muscle.code_review.fix_generator import FixGenerator, FixResult
+from tools.muscle.code_review.handoff_generator import HandoffGenerator
+from tools.muscle.code_review.review_controller import ReviewContext, ReviewController
+from tools.muscle.code_review.static_analyzer import StaticAnalyzer
+from tools.muscle.code_review.types import (
     HandoffPlan,
     IssueCategory,
     ReviewConfig,
@@ -30,7 +28,7 @@ from tools.scle.code_review.types import (
     StaticAnalysisResult,
     StaticIssue,
 )
-from tools.scle.m27_client import M27Client
+from tools.muscle.m27_client import M27Client
 
 
 class MockM27Client(M27Client):
@@ -113,9 +111,7 @@ class TestReviewModes:
             )
         ]
 
-        with patch.object(
-            controller.static_analyzer, "analyze", return_value=mock_static_result
-        ):
+        with patch.object(controller.static_analyzer, "analyze", return_value=mock_static_result):
             with patch.object(
                 controller.code_reviewer,
                 "review",
@@ -150,9 +146,7 @@ class TestReviewModes:
             )
         ]
 
-        with patch.object(
-            controller.static_analyzer, "analyze", return_value=mock_static_result
-        ):
+        with patch.object(controller.static_analyzer, "analyze", return_value=mock_static_result):
             with patch.object(
                 controller.code_reviewer,
                 "review",
@@ -198,9 +192,7 @@ class TestReviewModes:
             )
         ]
 
-        with patch.object(
-            controller.static_analyzer, "analyze", return_value=mock_static_result
-        ):
+        with patch.object(controller.static_analyzer, "analyze", return_value=mock_static_result):
             with patch.object(
                 controller.code_reviewer, "review", return_value=([issue], "summary")
             ):
@@ -245,9 +237,7 @@ class TestReviewModes:
             )
         ]
 
-        with patch.object(
-            controller.static_analyzer, "analyze", return_value=mock_static_result
-        ):
+        with patch.object(controller.static_analyzer, "analyze", return_value=mock_static_result):
             with patch.object(
                 controller.code_reviewer, "review", return_value=([issue], "summary")
             ):
@@ -297,9 +287,7 @@ class TestReviewModes:
 
 class TestSeverityFiltering:
     def test_filter_by_severity_threshold(self):
-        config = ReviewConfig(
-            target_path="/tmp/test", severity_threshold=Severity.HIGH
-        )
+        config = ReviewConfig(target_path="/tmp/test", severity_threshold=Severity.HIGH)
         mock_client = MockM27Client()
         controller = ReviewController(config=config, m27_client=mock_client, use_kb=False)
 
@@ -334,9 +322,7 @@ class TestSeverityFiltering:
         assert filtered[0].severity == Severity.CRITICAL
 
     def test_filter_includes_equal_threshold(self):
-        config = ReviewConfig(
-            target_path="/tmp/test", severity_threshold=Severity.MEDIUM
-        )
+        config = ReviewConfig(target_path="/tmp/test", severity_threshold=Severity.MEDIUM)
         mock_client = MockM27Client()
         controller = ReviewController(config=config, m27_client=mock_client, use_kb=False)
 
@@ -404,9 +390,7 @@ class TestGetReviewResult:
             auto_fixable=False,
         )
 
-        with patch.object(
-            controller.static_analyzer, "analyze", return_value=mock_static_result
-        ):
+        with patch.object(controller.static_analyzer, "analyze", return_value=mock_static_result):
             with patch.object(
                 controller.code_reviewer,
                 "review",

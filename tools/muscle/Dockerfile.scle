@@ -1,7 +1,7 @@
 FROM python:3.10-slim
 
-LABEL maintainer="SCLE Team"
-LABEL description="Self-Correcting Loop Engine - M2.7 optimized code generation"
+LABEL maintainer="MUSCLE Team"
+LABEL description="MUSCLE - MiniMax Unified Self-Correcting Learning Engine"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.cargo/bin:/root/.local/bin:$PATH"
 
-RUN useradd -m -s /bin/bash scle
+RUN useradd -m -s /bin/bash muscle
 WORKDIR /app
 
 COPY pyproject.toml uv.lock* ./
@@ -48,10 +48,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     valgrind \
     && rm -rf /var/lib/apt/lists/*
 
-USER scle
+USER muscle
 
 ENV MINIMAX_API_KEY=""
 ENV ANTHROPIC_BASE_URL="https://api.minimaxi.com/anthropic"
 
-ENTRYPOINT ["scle"]
+ENTRYPOINT ["muscle"]
 CMD ["--help"]

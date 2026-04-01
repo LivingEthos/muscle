@@ -30,9 +30,7 @@ class PytestRunner(BaseEvaluator):
             logger.warning("pytest not found, skipping test run")
             return EvaluatorResult(success=True)
 
-        code, stdout, stderr = self._run_command(
-            ["pytest", "--tb=short", "-v", output_dir], output_dir
-        )
+        code, stdout, stderr = self._run_command(["pytest", "--tb=short", "-v", "."], output_dir)
 
         errors = []
         if code != 0:
@@ -63,9 +61,7 @@ class JestRunner(BaseEvaluator):
             logger.warning("jest not found, skipping test run")
             return EvaluatorResult(success=True)
 
-        code, stdout, stderr = self._run_command(
-            ["jest", "--testPathPattern", output_dir], output_dir
-        )
+        code, stdout, stderr = self._run_command(["jest", "."], output_dir)
 
         errors = []
         if code != 0:

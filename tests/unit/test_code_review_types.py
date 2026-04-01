@@ -2,20 +2,19 @@
 Unit tests for code_review types.
 """
 
-import pytest
-from tools.scle.code_review.types import (
-    Severity,
-    IssueCategory,
-    ReviewIssue,
-    ReviewResult,
-    ReviewConfig,
-    ReviewMode,
+from tools.muscle.code_review.types import (
     HandoffIssue,
     HandoffPlan,
-    StaticIssue,
-    StaticAnalysisResult,
+    IssueCategory,
+    ReviewConfig,
     ReviewEvent,
+    ReviewIssue,
+    ReviewMode,
+    ReviewResult,
     ReviewStats,
+    Severity,
+    StaticAnalysisResult,
+    StaticIssue,
 )
 
 

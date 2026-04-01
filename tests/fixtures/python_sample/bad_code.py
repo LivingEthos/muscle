@@ -2,10 +2,6 @@
 Sample Python file with known issues for testing static analysis.
 """
 
-import os
-import subprocess
-import json
-
 
 def unsafe_eval(user_input):
     """This function has a security issue - using eval with user input."""
@@ -16,20 +12,19 @@ def unsafe_eval(user_input):
 def hardcoded_password():
     """Function with hardcoded credentials - security issue."""
     password = "super_secret_password_123"
-    api_key = "sk-1234567890abcdef"
+    api_key = "sk-1234567890abcdef"  # noqa: F841
     return password
 
 
-def SQL_injection_example(user_id):
+def SQL_injection_example(user_id):  # noqa: N802
     """Classic SQL injection vulnerability."""
     query = f"SELECT * FROM users WHERE id = {user_id}"
-    cursor.execute(query)
-    return cursor.fetchall()
+    cursor.execute(query)  # noqa: F821
+    return cursor.fetchall()  # noqa: F821
 
 
 def unused_import():
     """This imports but never uses subprocess."""
-    import subprocess
     print("Hello")
 
 
@@ -40,6 +35,7 @@ def line_too_long_function():
 
 class EmptyClass:
     """Empty class with pass - code smell."""
+
     pass
 
 

@@ -133,15 +133,20 @@ muscle tui
 | `muscle init` | Initialize MUSCLE for the current project |
 | `muscle review` | Review code for issues (review, auto-fix, plan, hybrid, pressure modes) |
 | `muscle tui` | Start the Terminal User Interface |
-| `muscle probe` | Check status of shadow (background) review jobs |
-| `muscle diagnosis` | Get final diagnosis/results from completed shadow jobs |
 | `muscle run` | Start a new MUSCLE session |
 | `muscle history` | List all MUSCLE sessions |
 | `muscle resume` | Resume a failed or incomplete session |
 | `muscle abort` | Abort a running session |
+| `muscle check` | Single-shot validation (compiler/linter/tester, no loop) |
 | `muscle kb` | Knowledge base management commands |
+| `muscle kb knowledge-add` | Add a strategy to the global knowledge base |
 | `muscle cost` | Cost optimization and cache management |
-| `muscle check` | Single-shot validation (no loop) |
+| `muscle improve` | Self-improvement and analysis commands |
+| `muscle improve report` | Run self-review and show improvement report |
+| `muscle probe` | Check status of shadow (background) review jobs |
+| `muscle diagnosis` | Get final diagnosis/results from completed shadow jobs |
+| `muscle lifeline` | Deep-dive investigation and bug hunting |
+| `muscle nightly` | Nightly cron and report management (enable/disable/run/reports/cleanup) |
 
 ## Review Modes
 
@@ -342,7 +347,7 @@ muscle review --target ./src --mode pressure --focus design,failure,race,auth
 ```bash
 muscle review --target ./src --shadow
 muscle probe  # Check status
-muscle diagnosis <job-id>  # Get results
+muscle diagnosis --job-id <job-id>  # Get results
 ```
 
 ## Contributing
@@ -359,4 +364,4 @@ MIT License - see LICENSE file for details.
 
 ---
 
-*Last updated: 2026-03-31*
+*Last updated: 2026-04-01*

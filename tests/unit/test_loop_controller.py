@@ -1,11 +1,11 @@
 """
 Unit tests for SCLE loop controller.
 """
-import pytest
-from unittest.mock import Mock, MagicMock
 
-from tools.scle.types import RunConfig, EvaluationResult, SessionStatus, EvalMode, BudgetMode
-from tools.scle.loop_controller import LoopController, LoopContext, LoopEvent
+from unittest.mock import MagicMock
+
+from tools.muscle.loop_controller import LoopController
+from tools.muscle.types import BudgetMode, EvaluationResult, RunConfig, SessionStatus
 
 
 class DummyEvaluator:
@@ -30,6 +30,9 @@ class DummyGenerator:
 
     def __call__(self, task: str, evolved_strategy: str, output_dir: str):
         self.call_count += 1
+        import time
+
+        time.sleep(0.01)
         return f"Generated code iteration {self.call_count}", MagicMock(total=1000)
 
 
@@ -184,8 +187,8 @@ def test_loop_controller_abort():
         budget_manager=budget_manager,
     )
 
-    import time
     import threading
+    import time
 
     abort_called = False
 
@@ -201,4 +204,6 @@ def test_loop_controller_abort():
     ctx = controller.run()
     thread.join()
 
-    assert ctx.stats.status == SessionStatus.ABORTED or ctx.current_iteration < 100, f"Abort not triggered properly. Status: {ctx.stats.status}, iterations: {ctx.current_iteration}"
+    assert ctx.stats.status == SessionStatus.ABORTED or ctx.current_iteration < 100, (
+        f"Abort not triggered properly. Status: {ctx.stats.status}, iterations: {ctx.current_iteration}"
+    )

@@ -2,11 +2,12 @@
 Unit tests for ReviewKB.
 """
 
-import pytest
 import tempfile
 from pathlib import Path
 
-from tools.scle.code_review.review_kb import ReviewKB, GlobalReviewKB
+import pytest
+
+from tools.muscle.code_review.review_kb import GlobalReviewKB, ReviewKB
 
 
 @pytest.fixture
@@ -21,7 +22,7 @@ class TestReviewKBInitialization:
 
     def test_init_creates_directory(self, temp_kb_dir):
         """Test that KB initializes and creates its directory."""
-        kb = ReviewKB(str(temp_kb_dir))
+        _kb = ReviewKB(str(temp_kb_dir))
         assert temp_kb_dir.exists()
         assert (temp_kb_dir / "review_kb.db").exists()
 

@@ -1011,17 +1011,17 @@ def review(
 
     Examples:
 
-        scle review --target ./src --language python
+        muscle review --target ./src --language python
 
-        scle review --target ./src --mode hybrid --severity high
+        muscle review --target ./src --mode hybrid --severity high
 
-        scle review --target ./src --mode plan --output handoff.md
+        muscle review --target ./src --mode plan --output handoff.md
 
-        scle review --target ./src --mode pressure --intensity intensive
+        muscle review --target ./src --mode pressure --intensity intensive
 
-        scle review --target ./src --shadow  # Run in background
+        muscle review --target ./src --shadow  # Run in background
 
-        scle review --target ./src --mode pressure --focus design,failure,race
+        muscle review --target ./src --mode pressure --focus design,failure,race
     """
     from .code_review import (
         Intensity,
@@ -1073,8 +1073,8 @@ def review(
             intensity=intensity_map.get(intensity, Intensity.MODERATE),
         )
         console.print(f"[cyan]Shadow job created: {job_id}[/cyan]")
-        console.print("Check status with: scle probe")
-        console.print("Get results with: scle diagnosis")
+        console.print("Check status with: muscle probe")
+        console.print("Get results with: muscle diagnosis")
         console.print("[dim]Worker started in background...[/dim]")
         return
 
@@ -1204,11 +1204,11 @@ def lifeline(target: str, prompt: str, model: str | None, intensity: str) -> Non
 
     Examples:
 
-        scle lifeline --target ./src --prompt "investigate why auth is failing"
+        muscle lifeline --target ./src --prompt "investigate why auth is failing"
 
-        scle lifeline --target ./tests --prompt "debug the flaky integration test"
+        muscle lifeline --target ./tests --prompt "debug the flaky integration test"
 
-        scle lifeline --target ./src/auth.py --prompt "suggest improvements to error handling"
+        muscle lifeline --target ./src/auth.py --prompt "suggest improvements to error handling"
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("MINIMAX_API_KEY")
     if not api_key:
@@ -1277,9 +1277,9 @@ def probe(job_id: str | None) -> None:
 
     Examples:
 
-        scle probe                    # Show all recent jobs
+        muscle probe                    # Show all recent jobs
 
-        scle probe --job-id abc12345  # Show specific job status
+        muscle probe --job-id abc12345  # Show specific job status
     """
     from .code_review.shadow_broker import ShadowBroker
 
@@ -1309,7 +1309,7 @@ def probe(job_id: str | None) -> None:
 
         if not recent_jobs:
             console.print("[yellow]No shadow jobs found[/yellow]")
-            console.print("Run 'scle review --shadow' to start a background review")
+            console.print("Run 'muscle review --shadow' to start a background review")
             return
 
         console.print("[bold]Shadow Jobs:[/bold]\n")
@@ -1336,9 +1336,9 @@ def diagnosis(job_id: str | None) -> None:
 
     Examples:
 
-        scle diagnosis                    # Show most recent results
+        muscle diagnosis                    # Show most recent results
 
-        scle diagnosis --job-id abc12345  # Show specific job results
+        muscle diagnosis --job-id abc12345  # Show specific job results
     """
     from .code_review.shadow_broker import ShadowBroker
 
@@ -1360,7 +1360,7 @@ def diagnosis(job_id: str | None) -> None:
     if job["status"] != "completed":
         console.print(f"[yellow]Job {job_id} is not completed yet: {job['status']}[/yellow]")
         if job["status"] == "running":
-            console.print(f"Use 'scle probe --job-id {job_id}' to check progress")
+            console.print(f"Use 'muscle probe --job-id {job_id}' to check progress")
         return
 
     result = job.get("result")

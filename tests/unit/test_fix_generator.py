@@ -2,13 +2,14 @@
 Unit tests for FixGenerator.
 """
 
-import pytest
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from tools.scle.code_review.fix_generator import FixGenerator, FixResult
-from tools.scle.code_review.types import ReviewIssue, Severity, IssueCategory
+import pytest
+
+from tools.muscle.code_review.fix_generator import FixGenerator, FixResult
+from tools.muscle.code_review.types import IssueCategory, ReviewIssue, Severity
 
 
 class MockM27Client:
@@ -61,7 +62,7 @@ def review_issue_sql_injection(python_file):
         cwe_id="CWE-89",
         title="SQL Injection vulnerability",
         description="User input directly interpolated into SQL query",
-        code_snippet='result = eval(user_input)',
+        code_snippet="result = eval(user_input)",
         suggested_fix="result = ast.literal_eval(user_input)",
         auto_fixable=True,
     )

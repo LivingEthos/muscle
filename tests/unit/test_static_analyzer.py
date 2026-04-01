@@ -2,13 +2,16 @@
 Unit tests for StaticAnalyzer.
 """
 
-import json
-import pytest
-import shutil
 import tempfile
 from pathlib import Path
 
-from tools.scle.code_review.static_analyzer import StaticAnalyzer, LANGUAGE_TOOLS, AUTO_FIXABLE_TOOLS
+import pytest
+
+from tools.muscle.code_review.static_analyzer import (
+    AUTO_FIXABLE_TOOLS,
+    LANGUAGE_TOOLS,
+    StaticAnalyzer,
+)
 
 
 @pytest.fixture

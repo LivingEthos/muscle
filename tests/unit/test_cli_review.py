@@ -7,15 +7,13 @@ arguments and calls the ReviewController.
 
 from __future__ import annotations
 
-import json
 import os
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from click.testing import CliRunner
 
-from tools.scle.cli import cli
+from tools.muscle.cli import cli
 
 
 class TestReviewCommand:
@@ -42,7 +40,7 @@ class TestReviewCommand:
         mock_instance.run.return_value = mock_run_result
         mock_instance.get_review_result.return_value = mock_result
 
-        with patch("tools.scle.code_review.review_controller.ReviewController") as mock_class:
+        with patch("tools.muscle.code_review.review_controller.ReviewController") as mock_class:
             mock_class.return_value = mock_instance
             yield mock_instance
 

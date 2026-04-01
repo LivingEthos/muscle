@@ -3,7 +3,7 @@
 > "Give your code more muscle"
 
 **Version:** 0.1.0
-**Last Updated:** 2026-03-31
+**Last Updated:** 2026-04-01
 **Status:** v0.1.0 — Functional, in active development
 
 ---
@@ -382,6 +382,7 @@ All code must pass before merging:
 | 2026-03-31 | 0.1.7 | Add curl installer, Claude Code marketplace, code-review SKILL.md |
 | 2026-03-31 | 0.1.8 | Fix hooks.json format, marketplace naming, PATH symlink |
 | 2026-03-31 | 0.1.9 | Implement muscle abort (SIGTERM + PID tracking), check (single-shot eval), kb knowledge-add (strategy entry), nightly CLI (enable/disable/status/run/reports/cleanup) |
+| 2026-04-01 | 0.1.10 | Fix `muscle check` broken for all languages: added missing short-form language aliases (py, js, ts, rs, cs), fixed evaluator commands using output_dir as both cwd and path arg (doubling the path), fixed TscCompiler redundant --project flag, all 509 tests pass |
 
 ---
 

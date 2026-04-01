@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 LANGUAGE_EVALUATORS = {
-    ".py": ["python_compiler", "pytest_runner", "black_linter", "ruff_linter"],
+    ".py": ["python_compiler", "pytest_runner", "ruff_linter"],
     ".js": ["node_compiler", "jest_runner", "eslint_linter"],
     ".ts": ["tsc_compiler", "jest_runner", "eslint_linter"],
     ".go": ["go_compiler", "go_test_runner", "golangci_linter"],
@@ -51,15 +51,36 @@ def detect_language(output_dir: str) -> str | None:
     return None
 
 
+LANGUAGE_ALIASES: dict[str, str] = {
+    "python": ".py",
+    "javascript": ".js",
+    "typescript": ".ts",
+    "go": ".go",
+    "rust": ".rs",
+    "java": ".java",
+    "cpp": ".cpp",
+    "c": ".c",
+    "csharp": ".cs",
+    "py": ".py",
+    "js": ".js",
+    "ts": ".ts",
+    "rs": ".rs",
+    "cs": ".cs",
+}
+
+
 class EvaluatorRegistry:
     def __init__(self) -> None:
         self._evaluators: dict[str, BaseEvaluator] = {}
 
     def get_evaluators(self, language: str | None) -> list[BaseEvaluator]:
-        if language and language.startswith("."):
+        if not language:
+            evaluator_names = []
+        elif language.startswith("."):
             evaluator_names = LANGUAGE_EVALUATORS.get(language, [])
         else:
-            evaluator_names = []
+            normalized = LANGUAGE_ALIASES.get(language.lower())
+            evaluator_names = LANGUAGE_EVALUATORS.get(normalized, []) if normalized else []
 
         evaluators = []
         for name in evaluator_names:

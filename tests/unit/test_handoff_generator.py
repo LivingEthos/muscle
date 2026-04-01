@@ -2,18 +2,17 @@
 Unit tests for HandoffGenerator.
 """
 
-import pytest
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from tools.scle.code_review.handoff_generator import HandoffGenerator
-from tools.scle.code_review.types import (
-    HandoffIssue,
-    HandoffPlan,
+import pytest
+
+from tools.muscle.code_review.handoff_generator import HandoffGenerator
+from tools.muscle.code_review.types import (
+    IssueCategory,
     ReviewIssue,
     Severity,
-    IssueCategory,
 )
 
 
@@ -38,6 +37,7 @@ class MockM27Client:
             "context_needed": "This is a legacy module",
         }
         import json
+
         return json.dumps(response), MagicMock(total=100)
 
 
@@ -52,12 +52,12 @@ def temp_dir():
 def sample_issue(temp_dir):
     """Create a sample review issue."""
     code_file = temp_dir / "auth.py"
-    code_file.write_text('''
+    code_file.write_text("""
 def authenticate(user_id):
     query = f"SELECT * FROM users WHERE id = {user_id}"
     cursor.execute(query)
     return cursor.fetchall()
-''')
+""")
 
     return ReviewIssue(
         file_path=str(code_file),

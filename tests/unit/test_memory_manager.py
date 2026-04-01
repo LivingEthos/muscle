@@ -2,9 +2,7 @@
 Tests for memory_manager.py
 """
 
-import pytest
 import tempfile
-import os
 from pathlib import Path
 
 

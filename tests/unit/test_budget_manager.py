@@ -1,13 +1,12 @@
 """
 Unit tests for SCLE budget manager.
 """
-import pytest
+
 import tempfile
-import os
 from pathlib import Path
 
-from tools.scle.budget_manager import BudgetManager, BudgetInfo
-from tools.scle.types import BudgetMode
+from tools.muscle.budget_manager import BudgetManager
+from tools.muscle.types import BudgetMode
 
 
 def test_budget_manager_unlimited():

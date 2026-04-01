@@ -2,10 +2,6 @@
 Tests for pattern_detector.py
 """
 
-import pytest
-from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
-
 
 class TestPatternDetector:
     """Tests for PatternDetector class."""
