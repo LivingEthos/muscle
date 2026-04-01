@@ -200,7 +200,10 @@ class CodeReviewer:
             except Exception as e:
                 logger.warning(f"Could not read {file_path}: {e}")
 
-            reviews, file_summary = self._review_file(file_path, code_content, file_issues)
+            proactive = not issues_by_file
+            reviews, file_summary = self._review_file(
+                file_path, code_content, file_issues, proactive
+            )
             all_reviews.extend(reviews)
 
             summary["total_reviewed"] += file_summary["total_reviewed"]
@@ -220,8 +223,28 @@ class CodeReviewer:
         file_path: str,
         code_content: str,
         issues: list[dict],
+        proactive: bool = False,
     ) -> tuple[list[ReviewIssue], dict]:
-        user_prompt = f"""Review this file: {file_path}
+        if proactive:
+            user_prompt = f"""Proactively review this file for bugs, security vulnerabilities, and code quality issues: {file_path}
+
+Source code:
+```{self._get_lang_from_ext(file_path)}
+{self._truncate_code(code_content, 500)}
+```
+
+No static analysis issues were found, so conduct a thorough semantic review looking for:
+- Logic errors and bugs
+- Security vulnerabilities (injection, authentication, authorization issues)
+- Race conditions and concurrency issues
+- Memory safety problems
+- Error handling gaps
+- Performance anti-patterns
+- API misuse patterns
+
+Provide your findings in JSON format."""
+        else:
+            user_prompt = f"""Review this file: {file_path}
 
 Source code:
 ```{self._get_lang_from_ext(file_path)}
