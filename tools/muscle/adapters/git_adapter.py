@@ -74,6 +74,28 @@ class GitAdapter:
         )
         return result.returncode == 0
 
+    def get_changed_files(self) -> list[str]:
+        """Return changed files, including untracked files."""
+        result = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return []
+
+        files: list[str] = []
+        for line in result.stdout.splitlines():
+            if len(line) < 4:
+                continue
+            path = line[3:].strip()
+            if " -> " in path:
+                path = path.split(" -> ", maxsplit=1)[1].strip()
+            if path:
+                files.append(path)
+        return files
+
     def get_diff(self, files: list[str] | None = None) -> str:
         """Get diff of files or all changes."""
         cmd = ["git", "diff"]

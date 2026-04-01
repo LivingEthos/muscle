@@ -35,6 +35,10 @@ class TestProjectBuilder:
         lang = ProjectBuilder.detect_language_from_task("build something with xyz framework")
         assert lang is None
 
+    def test_detect_language_does_not_match_ts_inside_tests(self):
+        lang = ProjectBuilder.detect_language_from_task("investigate flaky tests in backend")
+        assert lang is None
+
     def test_build_python(self, tmp_path):
         builder = ProjectBuilder(language="python", project_name="testproject")
         files = builder.build(str(tmp_path))
@@ -52,3 +56,9 @@ class TestProjectBuilder:
         builder = ProjectBuilder(language="python", project_name="MyApp")
         files = builder.build(str(tmp_path), description="A test application")
         assert isinstance(files, list)
+
+    def test_build_uses_custom_description(self, tmp_path):
+        builder = ProjectBuilder(language="python", project_name="MyApp")
+        builder.build(str(tmp_path), description="A test application")
+        readme = (tmp_path / "README.md").read_text()
+        assert "A test application" in readme

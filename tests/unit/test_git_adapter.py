@@ -88,6 +88,15 @@ class TestGitAdapter:
         mock_subprocess.return_value = Mock(returncode=0, stdout="", stderr="")
         assert adapter.get_diff() == ""
 
+    def test_get_changed_files_includes_untracked_and_renamed(self, mock_subprocess):
+        adapter = GitAdapter("/fake/repo")
+        mock_subprocess.return_value = Mock(
+            returncode=0,
+            stdout=" M tracked.py\n?? newfile.py\nR  old.py -> renamed.py\n",
+            stderr="",
+        )
+        assert adapter.get_changed_files() == ["tracked.py", "newfile.py", "renamed.py"]
+
     def test_checkout_success(self, mock_subprocess):
         adapter = GitAdapter("/fake/repo")
         mock_subprocess.return_value = Mock(returncode=0)

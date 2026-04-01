@@ -2,9 +2,9 @@
 
 > "Give your code more muscle"
 
-**Version:** 0.1.0
+**Version:** 0.1.12
 **Last Updated:** 2026-04-01
-**Status:** v0.1.0 — Functional, in active development
+**Status:** v0.1.12 — Functional, in active development
 
 ---
 
@@ -336,22 +336,50 @@ Uses `git-subdir` source to pull from the main repo's `tools/muscle/plugin/` dir
 
 ### Phase 7: Polish & Future ❌ INCOMPLETE
 - [ ] Cloud sync architecture
-- [ ] Comprehensive test coverage (current: 142 unit tests)
+- [ ] Comprehensive test coverage (current: 917 unit tests, 77% coverage)
 
 ---
 
 ## Self-Review Results
 
-MUSCLE ran self-review on `code_reviewer.py`:
-- Found **12 issues** (2 critical, 5 high, 5 medium)
+MUSCLE has been tested on itself:
+- Found **19 real issues** (4 critical, 6 high, 9 medium)
 - JSON recovery successfully extracts findings from truncated responses
 - Pressure mode identifies design weaknesses
+- All **917 tests pass** (77% overall line coverage)
 
-**Issues identified:**
-- SYSTEM_PROMPT not protected against prompt injection
-- Shared M27Client across threads without synchronization
-- No timeout on M27Client.chat() calls
-- JSON recovery heuristics could discard valid findings
+### Notable issues found in self-review
+
+#### Critical (Patched)
+- `check` command silently used DummyEvaluator for `"python"` language (not `".py"`) — added `LANGUAGE_ALIASES`
+- Evaluator commands used `output_dir` as both `cwd` and path arg — fixed to use `"."` as path when `cwd=output_dir`
+- `muscle run` sessions not persisted — LoopController.run() never called SessionManager methods
+- Session ID collisions in SessionManager — fixed with UUID-based session IDs
+- Untracked-file auto-commit misses in GitAdapter — fixed to handle untracked files properly
+- Missing persisted commit hashes in LoopController — fixed to capture and persist git commits
+- Unstable fake "content hashes" in SessionManager — fixed to use actual content-based hashing
+
+#### High (Patched)
+- `scle/session-` branch naming — fixed to `muscle/session-`
+- `DummyGenerator` abort race — 100 iterations completed before abort flag checked
+- `files_generated` always empty in reports — _build_session_report() hard-coded empty list
+- Iteration off-by-one — first iteration reported as "Iteration 2" — fixed to use ctx.current_iteration directly
+- False TypeScript match on test files in ProjectBuilder — fixed to exclude test files
+- Ignored project descriptions in ProjectBuilder — fixed to actually use provided descriptions
+
+#### Medium (Patched)
+- Standard review skips LLM when static analyzers find nothing — removed guard so LLM review always runs
+- `get_max_tokens` returned 1024/2048 instead of actual 500/2000 for SIMPLE/MEDIUM
+
+### Known Remaining Risks
+
+| Module | Coverage | Risk |
+|--------|----------|------|
+| github_integration.py | 41% | Integration-heavy, most likely to break in production |
+| jenkins.py | 58% | Network/process integration with broad exception handling |
+| github.py | 64% | API integration with retry logic |
+| mcp_client.py | 69% | MCP protocol integration |
+| cli.py | 61% | Line 503: partially implemented resume command |
 
 ---
 
@@ -383,6 +411,8 @@ All code must pass before merging:
 | 2026-03-31 | 0.1.8 | Fix hooks.json format, marketplace naming, PATH symlink |
 | 2026-03-31 | 0.1.9 | Implement muscle abort (SIGTERM + PID tracking), check (single-shot eval), kb knowledge-add (strategy entry), nightly CLI (enable/disable/status/run/reports/cleanup) |
 | 2026-04-01 | 0.1.10 | Fix `muscle check` broken for all languages: added missing short-form language aliases (py, js, ts, rs, cs), fixed evaluator commands using output_dir as both cwd and path arg (doubling the path), fixed TscCompiler redundant --project flag, all 509 tests pass |
+| 2026-04-01 | 0.1.11 | Expanded test coverage from 509 to 912 tests (77% coverage). Added comprehensive tests for m27_client.py (58 tests, 88% coverage), code_generator.py (31 tests, 66% coverage), loop_controller.py (12 tests, 69% coverage), cli.py run command (7 new tests), static_analyzer.py (56 tests, 77% coverage). All quality gates passing. |
+| 2026-04-01 | 0.1.12 | Patched confirmed bugs: Session ID collisions (UUID-based), untracked-file auto-commit misses, missing persisted commit hashes, unstable content hashes, false TypeScript match on tests, ignored project descriptions. Added regression coverage in test_session_manager.py, test_git_adapter.py, test_loop_controller.py, test_project_builder.py. 917 tests pass, 77% coverage. |
 
 ---
 

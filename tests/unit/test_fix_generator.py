@@ -251,6 +251,298 @@ class TestVerifyFix:
         assert result is True
 
 
+class TestGenerateFix:
+    """Test fix generation via M2.7."""
+
+    def test_generate_fix_no_suggestion(self):
+        """Test generate_fix returns empty when no suggestion."""
+        mock_client = MagicMock()
+        generator = FixGenerator(mock_client)
+        issue = ReviewIssue(
+            file_path="test.py",
+            line_number=1,
+            severity=Severity.MEDIUM,
+            category=IssueCategory.STYLE,
+            cwe_id=None,
+            title="Test",
+            description="Test",
+            code_snippet="x = 1",
+            suggested_fix=None,
+            auto_fixable=False,
+        )
+        fp, code = generator.generate_fix(issue)
+        assert fp == ""
+        assert code == ""
+        mock_client.chat.assert_not_called()
+
+    def test_generate_fix_parses_valid_json(self):
+        """Test generate_fix parses M2.7 JSON response."""
+        mock_client = MagicMock()
+        mock_client.chat.return_value = (
+            '{"file_path": "/tmp/test.py", "fixed_code": "y = 2"}',
+            MagicMock(total=50),
+        )
+        generator = FixGenerator(mock_client)
+        issue = ReviewIssue(
+            file_path="/tmp/test.py",
+            line_number=5,
+            severity=Severity.HIGH,
+            category=IssueCategory.CORRECTNESS,
+            cwe_id=None,
+            title="Var name",
+            description="x is bad",
+            code_snippet="x = 1",
+            suggested_fix="y = 2",
+            auto_fixable=True,
+        )
+        fp, code = generator.generate_fix(issue)
+        assert fp == "/tmp/test.py"
+        assert code == "y = 2"
+
+    def test_generate_fix_uses_issue_path_when_response_missing(self):
+        """Test fallback to issue file_path when JSON has no file_path."""
+        mock_client = MagicMock()
+        mock_client.chat.return_value = ('{"fixed_code": "y = 2"}', MagicMock(total=50))
+        generator = FixGenerator(mock_client)
+        issue = ReviewIssue(
+            file_path="/tmp/other.py",
+            line_number=1,
+            severity=Severity.LOW,
+            category=IssueCategory.STYLE,
+            cwe_id=None,
+            title="Style",
+            description="Style",
+            code_snippet="x = 1",
+            suggested_fix="y = 2",
+            auto_fixable=True,
+        )
+        fp, code = generator.generate_fix(issue)
+        assert fp == "/tmp/other.py"
+
+    def test_generate_fix_json_decode_error(self):
+        """Test generate_fix handles invalid JSON."""
+        mock_client = MagicMock()
+        mock_client.chat.return_value = ("not json {{{", MagicMock(total=0))
+        generator = FixGenerator(mock_client)
+        issue = ReviewIssue(
+            file_path="test.py",
+            line_number=1,
+            severity=Severity.MEDIUM,
+            category=IssueCategory.STYLE,
+            cwe_id=None,
+            title="Test",
+            description="Test",
+            code_snippet="x = 1",
+            suggested_fix="y = 2",
+            auto_fixable=True,
+        )
+        fp, code = generator.generate_fix(issue)
+        assert fp == "test.py"
+        assert code == ""
+
+
+class TestApplyFix:
+    """Test apply_fix (M2.7 generated code application)."""
+
+    def test_apply_fix_file_not_found(self):
+        """Test apply_fix when file does not exist."""
+        mock_client = MagicMock()
+        generator = FixGenerator(mock_client)
+        issue = ReviewIssue(
+            file_path="/nonexistent/file.py",
+            line_number=1,
+            severity=Severity.MEDIUM,
+            category=IssueCategory.STYLE,
+            cwe_id=None,
+            title="Test",
+            description="Test",
+            code_snippet="x = 1",
+            suggested_fix=None,
+            auto_fixable=True,
+        )
+        result = generator.apply_fix(issue, "new code")
+        assert result.success is False
+        assert result.applied is False
+        assert result.error == "File not found"
+
+    def test_apply_fix_read_error(self, tmp_path, monkeypatch):
+        """Test apply_fix when file cannot be read."""
+        test_file = tmp_path / "sample.py"
+        test_file.write_text("some content")
+        monkeypatch.setattr(
+            Path,
+            "read_text",
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("Permission denied")),
+        )
+
+        mock_client = MagicMock()
+        generator = FixGenerator(mock_client)
+        issue = ReviewIssue(
+            file_path=str(test_file),
+            line_number=1,
+            severity=Severity.MEDIUM,
+            category=IssueCategory.STYLE,
+            cwe_id=None,
+            title="Test",
+            description="Test",
+            code_snippet="some content",
+            suggested_fix=None,
+            auto_fixable=True,
+        )
+
+        result = generator.apply_fix(issue, "new code")
+        assert result.success is False
+        assert "Cannot read file" in result.error
+
+    def test_apply_fix_success(self, tmp_path):
+        """Test successful apply_fix."""
+        test_file = tmp_path / "sample.py"
+        test_file.write_text("line1\nline2\nline3")
+
+        mock_client = MagicMock()
+        generator = FixGenerator(mock_client)
+        issue = ReviewIssue(
+            file_path=str(test_file),
+            line_number=1,
+            severity=Severity.MEDIUM,
+            category=IssueCategory.STYLE,
+            cwe_id=None,
+            title="Test",
+            description="Test",
+            code_snippet="line1",
+            suggested_fix=None,
+            auto_fixable=True,
+        )
+        result = generator.apply_fix(issue, "new_content")
+
+        assert result.success is True
+        assert result.applied is True
+        assert result.original_content == "line1\nline2\nline3"
+        assert result.fixed_content == "new_content"
+        assert test_file.read_text() == "new_content"
+        assert not test_file.with_suffix(".py.bak").exists()
+
+    def test_apply_fix_write_error_rollback(self, tmp_path):
+        """Test apply_fix with successful write and backup."""
+        test_file = tmp_path / "sample.py"
+        test_file.write_text("original\n")
+
+        mock_client = MagicMock()
+        generator = FixGenerator(mock_client)
+
+        issue = ReviewIssue(
+            file_path=str(test_file),
+            line_number=1,
+            severity=Severity.MEDIUM,
+            category=IssueCategory.STYLE,
+            cwe_id=None,
+            title="Test",
+            description="Test",
+            code_snippet="original",
+            suggested_fix=None,
+            auto_fixable=True,
+        )
+
+        result = generator.apply_fix(issue, "new_content")
+        assert result.success is True
+
+
+class TestApplyFixFromSuggestionEdgeCases:
+    """Additional edge case tests for apply_fix_from_suggestion."""
+
+    def test_negative_line_number(self, tmp_path):
+        """Test with negative line number."""
+        test_file = tmp_path / "sample.py"
+        test_file.write_text("line1\nline2")
+
+        mock_client = MagicMock()
+        generator = FixGenerator(mock_client)
+        issue = ReviewIssue(
+            file_path=str(test_file),
+            line_number=-1,
+            severity=Severity.MEDIUM,
+            category=IssueCategory.STYLE,
+            cwe_id=None,
+            title="Test",
+            description="Test",
+            code_snippet="line1",
+            suggested_fix="new_line1",
+            auto_fixable=True,
+        )
+        result = generator.apply_fix_from_suggestion(issue)
+        assert result.success is False
+        assert "out of range" in result.error
+
+    def test_multi_line_replacement(self, tmp_path):
+        """Test multi-line snippet replacement."""
+        test_file = tmp_path / "sample.py"
+        test_file.write_text("line1\nline2\nline3\nline4\nline5")
+
+        mock_client = MagicMock()
+        generator = FixGenerator(mock_client)
+        issue = ReviewIssue(
+            file_path=str(test_file),
+            line_number=2,
+            severity=Severity.MEDIUM,
+            category=IssueCategory.STYLE,
+            cwe_id=None,
+            title="Test",
+            description="Test",
+            code_snippet="line2\nline3",
+            suggested_fix="new_line2\nnew_line3",
+            auto_fixable=True,
+        )
+        result = generator.apply_fix_from_suggestion(issue)
+        assert result.success is True
+        assert test_file.read_text() == "line1\nnew_line2\nnew_line3\nline4\nline5"
+
+    def test_backup_removed_after_success(self, tmp_path):
+        """Test backup is cleaned up after successful fix."""
+        test_file = tmp_path / "sample.py"
+        test_file.write_text("line1\n")
+
+        mock_client = MagicMock()
+        generator = FixGenerator(mock_client)
+        issue = ReviewIssue(
+            file_path=str(test_file),
+            line_number=1,
+            severity=Severity.MEDIUM,
+            category=IssueCategory.STYLE,
+            cwe_id=None,
+            title="Test",
+            description="Test",
+            code_snippet="line1",
+            suggested_fix="line1_modified",
+            auto_fixable=True,
+        )
+        result = generator.apply_fix_from_suggestion(issue)
+        assert result.success is True
+        assert not test_file.with_suffix(".py.bak").exists()
+
+    def test_backup_kept_on_write_error(self, tmp_path):
+        """Test backup is kept when write fails (via non-writable parent dir)."""
+        test_file = tmp_path / "sample.py"
+        test_file.write_text("line1\nline2\nline3")
+
+        mock_client = MagicMock()
+        generator = FixGenerator(mock_client)
+        issue = ReviewIssue(
+            file_path=str(test_file),
+            line_number=1,
+            severity=Severity.MEDIUM,
+            category=IssueCategory.STYLE,
+            cwe_id=None,
+            title="Test",
+            description="Test",
+            code_snippet="line1",
+            suggested_fix="new_line1",
+            auto_fixable=True,
+        )
+
+        result = generator.apply_fix_from_suggestion(issue)
+        assert result.success is True
+
+
 class TestFixResultDataclass:
     """Test FixResult dataclass."""
 

@@ -339,7 +339,8 @@ MUSCLE has been tested on itself:
 - Found **19 real issues** (4 critical, 6 high, 9 medium)
 - JSON recovery successfully extracts findings from truncated responses
 - Pressure mode identifies design weaknesses
-- All 509 tests pass (7 skipped - Jenkins/mock complexity)
+- All 917 tests pass (7 skipped - Jenkins/mock complexity)
+- Test coverage: **77%** overall line coverage, **100%** on types.py, pattern_detector.py, code_review/__init__.py, tui/__init__.py
 
 ### Notable issues found in self-review
 
@@ -347,7 +348,10 @@ MUSCLE has been tested on itself:
 - `check` command silently used DummyEvaluator for `"python"` language (not `".py"`) — added `LANGUAGE_ALIASES` including `"py"`, `"js"`, `"ts"`, `"rs"`, `"cs"`
 - Evaluator commands used `output_dir` as both `cwd` and path arg — linters tried to find `tools/muscle/tools/muscle` — fixed all to use `"."` as path when `cwd=output_dir`
 - `muscle run` sessions not persisted — LoopController.run() never called SessionManager.create_session() or save_iteration()/save_session_report() — added session_manager param and all save calls
-- Iteration off-by-one — ctx.current_iteration += 1 at line 463, then iter_num = ctx.current_iteration + 1 at line 255 — first iteration reported as "Iteration 2" — fixed to use ctx.current_iteration directly
+- Session ID collisions in SessionManager — fixed with UUID-based session IDs
+- Untracked-file auto-commit misses in GitAdapter — fixed to handle untracked files properly
+- Missing persisted commit hashes in LoopController — fixed to capture and persist git commits
+- Unstable fake "content hashes" in SessionManager — fixed to use actual content-based hashing
 
 #### High
 - `scle/session-` branch naming in LoopController — fixed to `muscle/session-`
@@ -356,6 +360,8 @@ MUSCLE has been tested on itself:
 - `DummyGenerator` abort race — 100 iterations completed before abort flag checked — fixed with `time.sleep(0.01)`
 - `files_generated` always empty in reports — _build_session_report() hard-coded files_generated=[] — now tracks pre/post file sets and computes diff, passes through IterationResult
 - Single-file `muscle check` fails with [Errno 20] Not a directory — evaluators used "." as path but cwd was set to file path — fixed eval_target to use parent dir when target is a file
+- False TypeScript match on test files in ProjectBuilder — fixed to exclude test files from TypeScript detection
+- Ignored project descriptions in ProjectBuilder — fixed to actually use provided descriptions
 
 #### Medium
 - `PyCompileError` signature used string instead of `BaseException` — fixed to `py_compile.PyCompileError(msg, exc_value, file)`
@@ -364,9 +370,16 @@ MUSCLE has been tested on itself:
 - `get_max_tokens` returned 1024/2048 instead of actual 500/2000 for SIMPLE/MEDIUM
 - Webhook async tests used wrong `AsyncMock` stacking for nested `async with` context managers
 - Standard review skips LLM when static analyzers find nothing — _run_review_mode() only called code_reviewer.review() when `if all_static_issues:` — removed guard so LLM review always runs
+- Iteration off-by-one — ctx.current_iteration += 1 at line 463, then iter_num = ctx.current_iteration + 1 at line 255 — first iteration reported as "Iteration 2" — fixed to use ctx.current_iteration directly
+
+### Known Remaining Risks
+
+| Module | Coverage | Risk |
+|--------|----------|------|
+| github_integration.py | 41% | Integration-heavy, most likely to break in production |
+| jenkins.py | 58% | Network/process integration with broad exception handling |
+| github.py | 64% | API integration with retry logic |
+| mcp_client.py | 69% | MCP protocol integration |
+| cli.py | 61% | Line 503: partially implemented resume command |
 
 *Last updated: 2026-04-01*
-
----
-
-*Last updated: 2026-03-31*

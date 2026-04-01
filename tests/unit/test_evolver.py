@@ -6,8 +6,55 @@ from unittest.mock import Mock
 
 import pytest
 
-from tools.muscle.evolver import Evolver
+from tools.muscle.evolver import Evolver, _build_evolver_prompt, _sanitize_for_prompt
 from tools.muscle.m27_client import TokenUsage
+
+
+class TestSanitizeForPrompt:
+    def test_none_input(self):
+        result = _sanitize_for_prompt(None)
+        assert result == ""
+
+    def test_non_string_input(self):
+        result = _sanitize_for_prompt(123)
+        assert result == "123"
+
+    def test_empty_string(self):
+        result = _sanitize_for_prompt("")
+        assert result == ""
+
+    def test_truncation_long_string(self):
+        long_text = "a" * 3000
+        result = _sanitize_for_prompt(long_text)
+        assert len(result) <= 2000 + len("... [truncated]")
+
+    def test_removes_null_bytes(self):
+        result = _sanitize_for_prompt("hello\x00world")
+        assert "\x00" not in result
+        assert "helloworld" in result
+
+    def test_removes_crlf(self):
+        result = _sanitize_for_prompt("line1\r\nline2")
+        assert "\r\n" not in result
+
+
+class TestBuildEvolverPrompt:
+    def test_empty_errors_returns_message(self):
+        result = _build_evolver_prompt("task", [], None, 1, None)
+        assert "Error:" in result
+
+    def test_escapes_error_content(self):
+        result = _build_evolver_prompt("task", ['Error "x" occurred'], None, 1, None)
+        assert "Error" in result
+
+    def test_with_previous_strategy(self):
+        result = _build_evolver_prompt("task", ["Error"], "previous strategy", 1, None)
+        assert "previous strategy" in result.lower() or "Previous" in result
+
+    def test_truncates_task(self):
+        long_task = "x" * 5000
+        result = _build_evolver_prompt(long_task, ["Error"], None, 1, None)
+        assert "Task:" in result
 
 
 class TestEvolver:

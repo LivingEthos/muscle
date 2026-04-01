@@ -20,12 +20,22 @@ class TestDummyEvaluator:
         assert result.success is True
         assert result.errors == []
 
+    def test_name_and_error_type(self):
+        evaluator = DummyEvaluator()
+        assert evaluator.name == "dummy_evaluator"
+        assert evaluator.error_type == "assertion"
+
 
 class TestBenchmarkEvaluator:
     def test_no_benchmark_command(self):
         evaluator = BenchmarkEvaluator()
         result = evaluator.evaluate("/fake/path")
         assert result.success is True
+
+    def test_name_and_error_type(self):
+        evaluator = BenchmarkEvaluator()
+        assert evaluator.name == "benchmark_evaluator"
+        assert evaluator.error_type == "assertion"
 
     def test_benchmark_pass(self, mock_subprocess):
         evaluator = BenchmarkEvaluator(benchmark_cmd="python benchmark.py", max_time_seconds=10.0)
@@ -50,6 +60,11 @@ class TestBenchmarkEvaluator:
 
 
 class TestOutputFormatEvaluator:
+    def test_name_and_error_type(self):
+        evaluator = OutputFormatEvaluator()
+        assert evaluator.name == "output_format_evaluator"
+        assert evaluator.error_type == "assertion"
+
     def test_required_files_missing(self):
         evaluator = OutputFormatEvaluator(required_files=["README.md", "setup.py"])
         with patch.object(Path, "exists", return_value=False):
@@ -75,6 +90,11 @@ class TestOutputFormatEvaluator:
 
 
 class TestSecurityEvaluator:
+    def test_name_and_error_type(self):
+        evaluator = SecurityEvaluator()
+        assert evaluator.name == "security_evaluator"
+        assert evaluator.error_type == "assertion"
+
     def test_no_password_in_code(self):
         evaluator = SecurityEvaluator(checks=["password"])
         with patch.object(Path, "rglob", return_value=[]):

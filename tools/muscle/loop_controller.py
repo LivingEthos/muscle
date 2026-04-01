@@ -10,6 +10,7 @@ Architecture Decision Record (ADR):
 - Emits events for monitoring without coupling to specific output formats
 """
 
+import hashlib
 import logging
 import os
 import signal
@@ -177,16 +178,9 @@ class LoopController:
             logger.warning(f"Could not create branch: {branch_name}")
             return
 
-        diff = git.get_diff()
-        if not diff:
-            logger.info("No changes to commit")
-            return
-
-        files = [f for f in diff.split("\n") if f.startswith("diff --git a/")]
-        files = [f.replace("diff --git a/", "").split(" ")[0] for f in files]
-
+        files = git.get_changed_files()
         if not files:
-            logger.info("No files to commit")
+            logger.info("No changes to commit")
             return
 
         if git.add_files(files):
@@ -202,6 +196,7 @@ class LoopController:
                 message = message[:MAX_COMMIT_MESSAGE_LENGTH]
             commit_hash = git.commit(message)
             if commit_hash:
+                self._git_commit = commit_hash
                 logger.info(f"Committed: {commit_hash}")
                 if self.git_auto_push:
                     if git.push():
@@ -619,12 +614,23 @@ class LoopController:
             )
             for fname in it_result.files_generated:
                 fpath = Path(ctx.config.output_dir) / fname
+                content_hash = ""
+                lines = 0
+                if fpath.exists() and fpath.is_file():
+                    try:
+                        file_bytes = fpath.read_bytes()
+                        content_hash = hashlib.sha256(file_bytes).hexdigest()
+                        lines = len(
+                            fpath.read_text(encoding="utf-8", errors="replace").splitlines()
+                        )
+                    except OSError as e:
+                        logger.warning(f"Could not read generated file metadata for {fpath}: {e}")
                 all_generated_files.append(
                     CodeArtifact(
                         file_path=str(fpath),
-                        content_hash=str(hash(fname)),
+                        content_hash=content_hash,
                         language=ctx.config.language or "unknown",
-                        lines=0,
+                        lines=lines,
                     )
                 )
 

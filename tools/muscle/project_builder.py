@@ -9,6 +9,7 @@ Architecture Decision Record (ADR):
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -247,51 +248,60 @@ cargo test
         return self.generated_files
 
     def _build_python(self, path: Path, desc: str) -> None:
-        self._write_template(path, "requirements.txt", self.TEMPLATES["python"]["requirements.txt"])
-        self._write_template(path, "setup.py", self.TEMPLATES["python"]["setup.py"])
-        self._write_template(path, "pytest.ini", self.TEMPLATES["python"]["pytest.ini"])
-        self._write_template(path, ".gitignore", self.TEMPLATES["python"][".gitignore"])
-        self._write_template(path, "README.md", self.TEMPLATES["python"]["README.md"])
+        self._write_template(
+            path,
+            "requirements.txt",
+            self.TEMPLATES["python"]["requirements.txt"],
+            desc,
+        )
+        self._write_template(path, "setup.py", self.TEMPLATES["python"]["setup.py"], desc)
+        self._write_template(path, "pytest.ini", self.TEMPLATES["python"]["pytest.ini"], desc)
+        self._write_template(path, ".gitignore", self.TEMPLATES["python"][".gitignore"], desc)
+        self._write_template(path, "README.md", self.TEMPLATES["python"]["README.md"], desc)
 
         src_dir = path / "src"
         src_dir.mkdir(exist_ok=True)
         (src_dir / "__init__.py").touch()
 
     def _build_javascript(self, path: Path, desc: str) -> None:
-        self._write_template(path, "package.json", self.TEMPLATES["javascript"]["package.json"])
-        self._write_template(path, ".gitignore", self.TEMPLATES["javascript"][".gitignore"])
-        self._write_template(path, "README.md", self.TEMPLATES["javascript"]["README.md"])
+        self._write_template(
+            path, "package.json", self.TEMPLATES["javascript"]["package.json"], desc
+        )
+        self._write_template(path, ".gitignore", self.TEMPLATES["javascript"][".gitignore"], desc)
+        self._write_template(path, "README.md", self.TEMPLATES["javascript"]["README.md"], desc)
 
         src_dir = path / "src"
         src_dir.mkdir(exist_ok=True)
 
     def _build_typescript(self, path: Path, desc: str) -> None:
-        self._write_template(path, "package.json", self.TEMPLATES["typescript"]["package.json"])
-        self._write_template(path, "tsconfig.json", self.TEMPLATES["typescript"]["tsconfig.json"])
-        self._write_template(path, ".gitignore", self.TEMPLATES["typescript"][".gitignore"])
-        self._write_template(path, "README.md", self.TEMPLATES["typescript"]["README.md"])
+        self._write_template(
+            path, "package.json", self.TEMPLATES["typescript"]["package.json"], desc
+        )
+        self._write_template(
+            path, "tsconfig.json", self.TEMPLATES["typescript"]["tsconfig.json"], desc
+        )
+        self._write_template(path, ".gitignore", self.TEMPLATES["typescript"][".gitignore"], desc)
+        self._write_template(path, "README.md", self.TEMPLATES["typescript"]["README.md"], desc)
 
         src_dir = path / "src"
         src_dir.mkdir(exist_ok=True)
 
     def _build_go(self, path: Path, desc: str) -> None:
-        self._write_template(path, "go.mod", self.TEMPLATES["go"]["go.mod"])
-        self._write_template(path, ".gitignore", self.TEMPLATES["go"][".gitignore"])
-        self._write_template(path, "README.md", self.TEMPLATES["go"]["README.md"])
+        self._write_template(path, "go.mod", self.TEMPLATES["go"]["go.mod"], desc)
+        self._write_template(path, ".gitignore", self.TEMPLATES["go"][".gitignore"], desc)
+        self._write_template(path, "README.md", self.TEMPLATES["go"]["README.md"], desc)
 
     def _build_rust(self, path: Path, desc: str) -> None:
-        self._write_template(path, "Cargo.toml", self.TEMPLATES["rust"]["Cargo.toml"])
-        self._write_template(path, ".gitignore", self.TEMPLATES["rust"][".gitignore"])
-        self._write_template(path, "README.md", self.TEMPLATES["rust"]["README.md"])
+        self._write_template(path, "Cargo.toml", self.TEMPLATES["rust"]["Cargo.toml"], desc)
+        self._write_template(path, ".gitignore", self.TEMPLATES["rust"][".gitignore"], desc)
+        self._write_template(path, "README.md", self.TEMPLATES["rust"]["README.md"], desc)
 
         src_dir = path / "src"
         src_dir.mkdir(exist_ok=True)
 
-    def _write_template(self, path: Path, filename: str, content: str) -> None:
+    def _write_template(self, path: Path, filename: str, content: str, description: str) -> None:
         file_path = path / filename
-        file_path.write_text(
-            content.format(name=self.project_name, description="MUSCLE Generated Project")
-        )
+        file_path.write_text(content.format(name=self.project_name, description=description))
         self.generated_files.append(str(file_path))
 
     @staticmethod
@@ -300,16 +310,29 @@ cargo test
         task_lower = task.lower()
 
         patterns = {
-            "python": ["python", "flask", "django", "fastapi", "pandas", "numpy"],
-            "javascript": ["javascript", "node", "nodejs", "express", "npm"],
-            "typescript": ["typescript", "ts", "tsx", "react", "vue"],
-            "go": ["golang", " go ", "go lang"],
-            "rust": ["rust", "cargo", "rustlang"],
-            "java": ["java", "spring", "maven", "gradle"],
+            "python": [
+                r"\bpython\b",
+                r"\bflask\b",
+                r"\bdjango\b",
+                r"\bfastapi\b",
+                r"\bpandas\b",
+                r"\bnumpy\b",
+            ],
+            "javascript": [r"\bjavascript\b", r"\bnode(?:\.js|js)?\b", r"\bexpress\b", r"\bnpm\b"],
+            "typescript": [r"\btypescript\b", r"\bts\b", r"\btsx\b", r"\breact\b", r"\bvue\b"],
+            "go": [
+                r"\bgolang\b",
+                r"\bgo\s+service\b",
+                r"\bgo\s+lang\b",
+                r"\bgoroutines?\b",
+                r"\bchannels?\b",
+            ],
+            "rust": [r"\brust\b", r"\bcargo\b", r"\brustlang\b"],
+            "java": [r"\bjava\b", r"\bspring\b", r"\bmaven\b", r"\bgradle\b"],
         }
 
         for lang, keywords in patterns.items():
-            if any(kw in task_lower for kw in keywords):
+            if any(re.search(pattern, task_lower) for pattern in keywords):
                 return lang
 
         return None

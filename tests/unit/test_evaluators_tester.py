@@ -94,6 +94,33 @@ class TestCargoTestRunner:
     def test_name(self):
         assert CargoTestRunner().name == "cargo_test_runner"
 
+    def test_tool_not_found(self, mock_shutil_which):
+        mock_shutil_which.return_value = None
+        result = CargoTestRunner().evaluate("/fake/path")
+        assert result.success is True
+
+    def test_all_pass(self, mock_subprocess, mock_shutil_which):
+        mock_shutil_which.return_value = "/usr/bin/cargo"
+        mock_subprocess.return_value = Mock(
+            returncode=0,
+            stdout="test result: ok. 5 passed in 1.23s",
+            stderr="",
+        )
+        result = CargoTestRunner().evaluate("/fake/path")
+        assert result.success is True
+        assert result.errors == []
+
+    def test_failures_collected(self, mock_subprocess, mock_shutil_which):
+        mock_shutil_which.return_value = "/usr/bin/cargo"
+        mock_subprocess.return_value = Mock(
+            returncode=1,
+            stdout="test result: FAILED. 2 passed in 0.5s",
+            stderr="",
+        )
+        result = CargoTestRunner().evaluate("/fake/path")
+        assert result.success is False
+        assert len(result.errors) > 0
+
 
 class TestGtestRunner:
     def test_name(self):
@@ -114,3 +141,26 @@ class TestGtestRunner:
 class TestJUnitRunner:
     def test_name(self):
         assert JUnitRunner().name == "junit_runner"
+
+    def test_tool_not_found(self, mock_shutil_which):
+        mock_shutil_which.return_value = None
+        result = JUnitRunner().evaluate("/fake/path")
+        assert result.success is True
+
+    def test_all_pass(self, mock_subprocess, mock_shutil_which):
+        mock_shutil_which.return_value = "/usr/bin/java"
+        mock_subprocess.return_value = Mock(returncode=0, stdout="JUnit running...", stderr="")
+        result = JUnitRunner().evaluate("/fake/path")
+        assert result.success is True
+        assert result.errors == []
+
+    def test_failures_collected(self, mock_subprocess, mock_shutil_which):
+        mock_shutil_which.return_value = "/usr/bin/java"
+        mock_subprocess.return_value = Mock(
+            returncode=1,
+            stdout="",
+            stderr="There were some test failures. Error: testFoo",
+        )
+        result = JUnitRunner().evaluate("/fake/path")
+        assert result.success is False
+        assert len(result.errors) > 0

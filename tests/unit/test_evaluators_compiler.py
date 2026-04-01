@@ -126,6 +126,25 @@ class TestRustCompiler:
         result = RustCompiler().evaluate("/fake/path")
         assert result.success is True
 
+    def test_compilation_success(self, mock_subprocess, mock_shutil_which, tmp_path):
+        mock_shutil_which.return_value = "/usr/bin/rustc"
+        mock_subprocess.return_value = Mock(returncode=0, stdout="", stderr="")
+        (tmp_path / "main.rs").write_text("fn main() {}")
+        with patch.object(Path, "rglob", return_value=[tmp_path / "main.rs"]):
+            result = RustCompiler().evaluate(str(tmp_path))
+        assert result.success is True
+
+    def test_compilation_errors_collected(self, mock_subprocess, mock_shutil_which, tmp_path):
+        mock_shutil_which.return_value = "/usr/bin/rustc"
+        mock_subprocess.return_value = Mock(
+            returncode=1, stdout="", stderr="error: expected semicolon"
+        )
+        (tmp_path / "bad.rs").write_text("fn main() {}")
+        with patch.object(Path, "rglob", return_value=[tmp_path / "bad.rs"]):
+            result = RustCompiler().evaluate(str(tmp_path))
+        assert result.success is False
+        assert len(result.errors) > 0
+
 
 class TestGppCompiler:
     def test_name(self):
@@ -136,6 +155,25 @@ class TestGppCompiler:
         result = GppCompiler().evaluate("/fake/path")
         assert result.success is True
 
+    def test_compilation_success(self, mock_subprocess, mock_shutil_which, tmp_path):
+        mock_shutil_which.return_value = "/usr/bin/g++"
+        mock_subprocess.return_value = Mock(returncode=0, stdout="", stderr="")
+        (tmp_path / "main.cpp").write_text("int main() {}")
+        with patch.object(Path, "rglob", return_value=[tmp_path / "main.cpp"]):
+            result = GppCompiler().evaluate(str(tmp_path))
+        assert result.success is True
+
+    def test_compilation_errors_collected(self, mock_subprocess, mock_shutil_which, tmp_path):
+        mock_shutil_which.return_value = "/usr/bin/g++"
+        mock_subprocess.return_value = Mock(
+            returncode=1, stdout="", stderr="error: expected semicolon"
+        )
+        (tmp_path / "bad.cpp").write_text("int main() {}")
+        with patch.object(Path, "rglob", return_value=[tmp_path / "bad.cpp"]):
+            result = GppCompiler().evaluate(str(tmp_path))
+        assert result.success is False
+        assert len(result.errors) > 0
+
 
 class TestJavacCompiler:
     def test_name(self):
@@ -145,3 +183,22 @@ class TestJavacCompiler:
         mock_shutil_which.return_value = None
         result = JavacCompiler().evaluate("/fake/path")
         assert result.success is True
+
+    def test_compilation_success(self, mock_subprocess, mock_shutil_which, tmp_path):
+        mock_shutil_which.return_value = "/usr/bin/javac"
+        mock_subprocess.return_value = Mock(returncode=0, stdout="", stderr="")
+        (tmp_path / "Main.java").write_text("public class Main {}")
+        with patch.object(Path, "rglob", return_value=[tmp_path / "Main.java"]):
+            result = JavacCompiler().evaluate(str(tmp_path))
+        assert result.success is True
+
+    def test_compilation_errors_collected(self, mock_subprocess, mock_shutil_which, tmp_path):
+        mock_shutil_which.return_value = "/usr/bin/javac"
+        mock_subprocess.return_value = Mock(
+            returncode=1, stdout="", stderr="error: cannot find symbol"
+        )
+        (tmp_path / "Bad.java").write_text("public class Bad {}")
+        with patch.object(Path, "rglob", return_value=[tmp_path / "Bad.java"]):
+            result = JavacCompiler().evaluate(str(tmp_path))
+        assert result.success is False
+        assert len(result.errors) > 0

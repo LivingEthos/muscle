@@ -77,6 +77,17 @@ class TestEslintLinter:
         result = EslintLinter().evaluate("/fake/path")
         assert result.success is True
 
+    def test_violations_collected(self, mock_subprocess, mock_shutil_which):
+        mock_shutil_which.return_value = "/usr/bin/eslint"
+        mock_subprocess.return_value = Mock(
+            returncode=1,
+            stdout="",
+            stderr="/path/file.js: line 1: error\n/path/file.js: line 2: warning",
+        )
+        result = EslintLinter().evaluate("/fake/path")
+        assert result.success is False
+        assert len(result.errors) > 0
+
 
 class TestGolangciLinter:
     def test_name(self):
@@ -87,10 +98,26 @@ class TestGolangciLinter:
         result = GolangciLinter().evaluate("/fake/path")
         assert result.success is True
 
+    def test_violations_collected(self, mock_subprocess, mock_shutil_which):
+        mock_shutil_which.return_value = "/usr/bin/golangci-lint"
+        mock_subprocess.return_value = Mock(
+            returncode=1,
+            stdout="",
+            stderr="file.go:10: error message\nfile.go:20: another error",
+        )
+        result = GolangciLinter().evaluate("/fake/path")
+        assert result.success is False
+        assert len(result.errors) > 0
+
 
 class TestClippyLinter:
     def test_name(self):
         assert ClippyLinter().name == "clippy_linter"
+
+    def test_tool_not_found(self, mock_shutil_which):
+        mock_shutil_which.return_value = None
+        result = ClippyLinter().evaluate("/fake/path")
+        assert result.success is True
 
 
 class TestCppcheckLinter:
@@ -102,12 +129,69 @@ class TestCppcheckLinter:
         result = CppcheckLinter().evaluate("/fake/path")
         assert result.success is True
 
+    def test_violations_collected(self, mock_subprocess, mock_shutil_which):
+        mock_shutil_which.return_value = "/usr/bin/cppcheck"
+        mock_subprocess.return_value = Mock(
+            returncode=1,
+            stdout="",
+            stderr="/path/file.cpp:10: error: something\n/path/file.cpp:20: style: another",
+        )
+        result = CppcheckLinter().evaluate("/fake/path")
+        assert result.success is False
+        assert len(result.errors) > 0
+
 
 class TestCheckstyleLinter:
     def test_name(self):
         assert CheckstyleLinter().name == "checkstyle_linter"
 
+    def test_tool_not_found(self, mock_shutil_which):
+        mock_shutil_which.return_value = None
+        result = CheckstyleLinter().evaluate("/fake/path")
+        assert result.success is True
+
+    def test_clean_run(self, mock_subprocess, mock_shutil_which):
+        mock_shutil_which.return_value = "/usr/bin/checkstyle"
+        mock_subprocess.return_value = Mock(returncode=0, stdout="", stderr="")
+        result = CheckstyleLinter().evaluate("/fake/path")
+        assert result.success is True
+        assert result.errors == []
+
+    def test_violations_collected(self, mock_subprocess, mock_shutil_which):
+        mock_shutil_which.return_value = "/usr/bin/checkstyle"
+        mock_subprocess.return_value = Mock(
+            returncode=1,
+            stdout="",
+            stderr="error: Some checkstyle error\nerror: Another checkstyle error",
+        )
+        result = CheckstyleLinter().evaluate("/fake/path")
+        assert result.success is False
+        assert len(result.errors) > 0
+
 
 class TestDotnetLinter:
     def test_name(self):
         assert DotnetLinter().name == "dotnet_linter"
+
+    def test_tool_not_found(self, mock_shutil_which):
+        mock_shutil_which.return_value = None
+        result = DotnetLinter().evaluate("/fake/path")
+        assert result.success is True
+
+    def test_clean_run(self, mock_subprocess, mock_shutil_which):
+        mock_shutil_which.return_value = "/usr/bin/dotnet"
+        mock_subprocess.return_value = Mock(returncode=0, stdout="", stderr="")
+        result = DotnetLinter().evaluate("/fake/path")
+        assert result.success is True
+        assert result.errors == []
+
+    def test_violations_collected(self, mock_subprocess, mock_shutil_which):
+        mock_shutil_which.return_value = "/usr/bin/dotnet"
+        mock_subprocess.return_value = Mock(
+            returncode=1,
+            stdout="",
+            stderr="dotnet format error: file.cs(10,1): error\nfile.cs(20,5): error",
+        )
+        result = DotnetLinter().evaluate("/fake/path")
+        assert result.success is False
+        assert len(result.errors) > 0

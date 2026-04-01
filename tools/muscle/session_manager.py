@@ -53,16 +53,20 @@ class SessionManager:
     def create_session(self, config: RunConfig) -> str:
         safe_task = config.task[:100] if config.task else "untitled"
         safe_task = "".join(c for c in safe_task if c.isprintable())
-        session_id = (
-            datetime.now().strftime("%Y%m%d_%H%M%S")[:14]
-            + "_"
-            + safe_task[:20].replace(" ", "_").replace("/", "_").replace("\\", "_")
+        task_slug = safe_task[:20].replace(" ", "_").replace("/", "_").replace("\\", "_")
+        base_session_id = self._sanitize_session_id(
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{task_slug}"
         )
-        session_id = self._sanitize_session_id(session_id)
+        session_id = base_session_id
 
         try:
             session_dir = self.base_dir / session_id
-            session_dir.mkdir(parents=True, exist_ok=True)
+            suffix = 2
+            while session_dir.exists():
+                session_id = self._sanitize_session_id(f"{base_session_id}_{suffix}")
+                session_dir = self.base_dir / session_id
+                suffix += 1
+            session_dir.mkdir(parents=True, exist_ok=False)
         except OSError as e:
             logger.error(f"Cannot create session directory: {e}")
             raise
