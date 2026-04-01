@@ -390,6 +390,10 @@ def run(
     git_enabled = git if git is not None else interactive
     git_repo_path = git_repo if git_enabled else None
 
+    from .session_manager import SessionManager
+
+    session_manager = SessionManager()
+
     webhook_notifier = WebhookNotifier(webhook_url or os.environ.get("MUSCLE_WEBHOOK_URL"))
 
     interactive_handler = InteractiveHandler(enabled=interactive)
@@ -405,6 +409,7 @@ def run(
         git_repo_path=git_repo_path,
         git_auto_push=git_push if git_enabled else False,
         interactive=interactive_handler,
+        session_manager=session_manager,
     )
 
     try:
@@ -588,8 +593,9 @@ def check(target: str, language: str | None, format: str) -> None:
         console.print(f"[red]Error: Target does not exist: {target}[/red]")
         sys.exit(1)
 
+    eval_target = str(target_path.parent) if target_path.is_file() else str(target_path)
     registry = EvaluatorRegistry()
-    result = registry.evaluate(str(target_path), language=language)
+    result = registry.evaluate(eval_target, language=language)
 
     if format == "json":
         output = {

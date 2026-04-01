@@ -336,7 +336,7 @@ Files managed:
 ## Self-Review Results
 
 MUSCLE has been tested on itself:
-- Found **14 real issues** (2 critical, 6 high, 6 medium)
+- Found **19 real issues** (4 critical, 6 high, 9 medium)
 - JSON recovery successfully extracts findings from truncated responses
 - Pressure mode identifies design weaknesses
 - All 509 tests pass (7 skipped - Jenkins/mock complexity)
@@ -346,12 +346,16 @@ MUSCLE has been tested on itself:
 #### Critical
 - `check` command silently used DummyEvaluator for `"python"` language (not `".py"`) — added `LANGUAGE_ALIASES` including `"py"`, `"js"`, `"ts"`, `"rs"`, `"cs"`
 - Evaluator commands used `output_dir` as both `cwd` and path arg — linters tried to find `tools/muscle/tools/muscle` — fixed all to use `"."` as path when `cwd=output_dir`
+- `muscle run` sessions not persisted — LoopController.run() never called SessionManager.create_session() or save_iteration()/save_session_report() — added session_manager param and all save calls
+- Iteration off-by-one — ctx.current_iteration += 1 at line 463, then iter_num = ctx.current_iteration + 1 at line 255 — first iteration reported as "Iteration 2" — fixed to use ctx.current_iteration directly
 
 #### High
 - `scle/session-` branch naming in LoopController — fixed to `muscle/session-`
 - `WorkerManager` singleton bug — class-level `_initialized` caused subsequent instances to skip `__init__` — fixed to `self.__dict__.get("_initialized")`
 - `LoopController._should_continue` returned FAILED status even when abort was requested — fixed with proper precedence
 - `DummyGenerator` abort race — 100 iterations completed before abort flag checked — fixed with `time.sleep(0.01)`
+- `files_generated` always empty in reports — _build_session_report() hard-coded files_generated=[] — now tracks pre/post file sets and computes diff, passes through IterationResult
+- Single-file `muscle check` fails with [Errno 20] Not a directory — evaluators used "." as path but cwd was set to file path — fixed eval_target to use parent dir when target is a file
 
 #### Medium
 - `PyCompileError` signature used string instead of `BaseException` — fixed to `py_compile.PyCompileError(msg, exc_value, file)`
@@ -359,6 +363,7 @@ MUSCLE has been tested on itself:
 - `_should_retry` used string equality instead of substring matching
 - `get_max_tokens` returned 1024/2048 instead of actual 500/2000 for SIMPLE/MEDIUM
 - Webhook async tests used wrong `AsyncMock` stacking for nested `async with` context managers
+- Standard review skips LLM when static analyzers find nothing — _run_review_mode() only called code_reviewer.review() when `if all_static_issues:` — removed guard so LLM review always runs
 
 *Last updated: 2026-04-01*
 

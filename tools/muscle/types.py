@@ -65,6 +65,7 @@ class IterationResult:
     duration_seconds: float = 0
     evolved_strategy: str | None = None
     artifacts_dir: str | None = None
+    files_generated: list[str] = field(default_factory=list)
 
 
 @dataclass

@@ -128,12 +128,11 @@ class ReviewController:
                     }
                 )
 
-        if all_static_issues:
-            semantic_issues, summary = self.code_reviewer.review(
-                self.config.target_path, all_static_issues
-            )
-            ctx.issues = self._filter_by_severity(semantic_issues)
-            ctx.stats.valid_issues = len(ctx.issues)
+        semantic_issues, summary = self.code_reviewer.review(
+            self.config.target_path, all_static_issues
+        )
+        ctx.issues = self._filter_by_severity(semantic_issues)
+        ctx.stats.valid_issues = len(ctx.issues)
 
         self._emit(ReviewEvent.SEMANTIC_REVIEW_COMPLETE, {"issues": len(ctx.issues)})
 

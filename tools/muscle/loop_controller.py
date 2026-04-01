@@ -19,6 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from .adapters.git_adapter import GitAdapter
 from .interactive import InteractiveChoice, InteractiveHandler
@@ -27,6 +28,7 @@ from .self_improver import SelfImprover
 from .types import (
     BudgetInfo,
     BudgetMode,
+    CodeArtifact,
     EvalMode,
     EvaluationResult,
     IterationReport,
@@ -97,6 +99,7 @@ class LoopController:
         git_repo_path: str | None = None,
         git_auto_push: bool = False,
         interactive: InteractiveHandler | None = None,
+        session_manager: Any = None,
     ):
         self.config = config
         self.code_generator = code_generator
@@ -108,6 +111,7 @@ class LoopController:
         self.git_repo_path = git_repo_path
         self.git_auto_push = git_auto_push
         self.interactive = interactive or InteractiveHandler(enabled=config.interactive)
+        self._session_manager = session_manager
         self._abort_requested = False
         self._session_report: SessionReport | None = None
         self._git_commit: str | None = None
@@ -252,7 +256,7 @@ class LoopController:
     def _run_iteration(
         self, ctx: LoopContext, streaming_callback: Callable[[str], None] | None = None
     ) -> IterationResult:
-        iter_num = ctx.current_iteration + 1
+        iter_num = ctx.current_iteration
         iter_start = time.time()
         effective_task = ctx.config.task
         user_hint: str | None = None
@@ -293,6 +297,11 @@ class LoopController:
 
         self._emit(LoopEvent.GENERATION_START, {"strategy": ctx.evolved_strategy})
 
+        output_path = Path(ctx.config.output_dir)
+        pre_existing = set()
+        if output_path.exists() and output_path.is_dir():
+            pre_existing = {p.name for p in output_path.iterdir()}
+
         if streaming_callback:
             gen_streaming = getattr(self.code_generator, "generate_streaming", None)
             if gen_streaming:
@@ -332,11 +341,17 @@ class LoopController:
         ctx.last_evaluation = evaluation
         duration = time.time() - iter_start
 
+        post_files: set[str] = set()
+        if output_path.exists() and output_path.is_dir():
+            post_files = {p.name for p in output_path.iterdir()}
+        new_files = sorted(post_files - pre_existing)
+
         result = IterationResult(
             iteration=iter_num,
             success=False,
             token_cost=gen_usage.total,
             duration_seconds=duration,
+            files_generated=new_files,
         )
 
         if evaluation.passed or (self.config.allow_warnings and evaluation.has_warnings_only):
@@ -413,11 +428,20 @@ class LoopController:
     def run(self, streaming_callback: Callable[[str], None] | None = None) -> LoopContext:
         self._validate_config(self.config)
 
-        ctx = LoopContext(
-            session_id=str(uuid.uuid4())[:8],
-            config=self.config,
-            stats=LoopStats(),
-        )
+        if self._session_manager:
+            session_id = self._session_manager.create_session(self.config)
+            ctx = LoopContext(
+                session_id=session_id,
+                config=self.config,
+                stats=LoopStats(),
+            )
+        else:
+            session_id = str(uuid.uuid4())[:8]
+            ctx = LoopContext(
+                session_id=session_id,
+                config=self.config,
+                stats=LoopStats(),
+            )
 
         logger.info(
             f"Starting MUSCLE session {ctx.session_id}: "
@@ -475,6 +499,9 @@ class LoopController:
                         iteration_result.token_cost,
                     )
 
+                if self._session_manager:
+                    self._session_manager.save_iteration(ctx.session_id, iteration_result)
+
                 if iteration_result.success:
                     ctx.stats.status = SessionStatus.SUCCESS
                     self._emit(LoopEvent.SESSION_COMPLETE, {"status": SessionStatus.SUCCESS.value})
@@ -523,6 +550,9 @@ class LoopController:
 
             self._build_session_report(ctx)
 
+            if self._session_manager and self._session_report:
+                self._session_manager.save_session_report(ctx.session_id, self._session_report)
+
             all_errors: list[str] = []
             for it_result in ctx.iterations:
                 all_errors.extend(it_result.errors)
@@ -553,6 +583,7 @@ class LoopController:
             )
 
         iteration_reports: list[IterationReport] = []
+        all_generated_files: list[CodeArtifact] = []
         for it_result in ctx.iterations:
             iteration_reports.append(
                 IterationReport(
@@ -562,10 +593,20 @@ class LoopController:
                     warnings=it_result.warnings,
                     token_cost=it_result.token_cost,
                     duration_seconds=it_result.duration_seconds,
-                    files_generated=[],
+                    files_generated=it_result.files_generated,
                     evolved_strategy=it_result.evolved_strategy,
                 )
             )
+            for fname in it_result.files_generated:
+                fpath = Path(ctx.config.output_dir) / fname
+                all_generated_files.append(
+                    CodeArtifact(
+                        file_path=str(fpath),
+                        content_hash=str(hash(fname)),
+                        language=ctx.config.language or "unknown",
+                        lines=0,
+                    )
+                )
 
         self._session_report = SessionReport(
             session_id=ctx.session_id,
@@ -576,7 +617,7 @@ class LoopController:
             total_duration_seconds=ctx.stats.total_duration_seconds,
             iterations=iteration_reports,
             final_strategy=ctx.evolved_strategy,
-            artifacts=[],
+            artifacts=all_generated_files,
             budget_info=budget_info,
             git_commit=self._git_commit,
         )
