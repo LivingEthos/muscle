@@ -63,7 +63,21 @@ curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/install.sh 
 
 The script is idempotent — re-running it updates an existing installation.
 
-### Option 2: Claude Code Plugin
+### Option 2: Update
+
+To update MUSCLE to the latest version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/scripts/update.sh | bash
+```
+
+Or check for updates without installing:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/scripts/update.sh | bash -s -- --check
+```
+
+### Option 3: Claude Code Plugin
 
 Install MUSCLE as a Claude Code plugin for slash command integration:
 
