@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 from pathlib import Path
 
 from ..m27_client import M27Client
@@ -23,6 +24,19 @@ from .types import IssueCategory, PressureFocus, ReviewIssue, Severity
 logger = logging.getLogger(__name__)
 
 MAX_PARALLEL_FILE_REVIEWS = 5
+FILE_CONTENT_CACHE_SIZE = 100
+
+
+@lru_cache(maxsize=FILE_CONTENT_CACHE_SIZE)
+def _read_file_cached(file_path: str) -> str | None:
+    try:
+        path = Path(file_path)
+        if path.exists() and path.is_file():
+            return path.read_text(encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"Could not read {file_path}: {e}")
+    return None
+
 
 SYSTEM_PROMPT = """You are an expert code reviewer analyzing code for bugs, security issues,
 performance problems, and code quality issues. You receive:
@@ -198,14 +212,12 @@ class CodeReviewer:
         ) -> tuple[list[ReviewIssue], dict]:
             file_issues = file_issues[: self.max_issues_per_batch]
             code_content = ""
-            try:
-                full_path = (
-                    base_dir / file_path if not Path(file_path).is_absolute() else Path(file_path)
-                )
-                if full_path.exists():
-                    code_content = full_path.read_text(encoding="utf-8")
-            except Exception as e:
-                logger.warning(f"Could not read {file_path}: {e}")
+            full_path = (
+                base_dir / file_path if not Path(file_path).is_absolute() else Path(file_path)
+            )
+            cached_content = _read_file_cached(str(full_path))
+            if cached_content is not None:
+                code_content = cached_content
 
             return self._review_file(file_path, code_content, file_issues, proactive)
 

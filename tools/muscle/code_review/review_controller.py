@@ -26,7 +26,7 @@ from pathlib import Path
 from threading import Lock
 
 from ..m27_client import M27Client
-from .code_reviewer import CodeReviewer
+from .code_reviewer import CodeReviewer, _read_file_cached
 from .fix_generator import FixGenerator
 from .handoff_generator import HandoffGenerator
 from .review_kb import GlobalReviewKB, ReviewKB
@@ -283,11 +283,11 @@ class ReviewController:
         def review_single_file(file_path: Path) -> list[ReviewIssue]:
             issues = []
             try:
-                if file_path.exists() and file_path.is_file():
-                    code_content = file_path.read_text(encoding="utf-8")
+                cached_content = _read_file_cached(str(file_path))
+                if cached_content is not None:
                     pressure_result = self.code_reviewer.pressure_review(
                         str(file_path),
-                        code_content,
+                        cached_content,
                         pressure_focus,
                     )
                     findings = pressure_result.get("pressure_findings", [])
