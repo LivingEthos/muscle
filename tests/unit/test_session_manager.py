@@ -9,7 +9,7 @@ import pytest
 
 from tools.muscle.loop_controller import LoopContext
 from tools.muscle.session_manager import SessionManager
-from tools.muscle.types import IterationResult, LoopStats, RunConfig, SessionStatus
+from tools.muscle.types import BudgetMode, IterationResult, LoopStats, RunConfig, SessionStatus
 
 
 class TestSessionManager:
@@ -22,6 +22,9 @@ class TestSessionManager:
         session_id = manager.create_session(config)
         assert isinstance(session_id, str)
         assert (tmp_path / "sessions" / session_id).exists()
+        meta = json.loads((tmp_path / "sessions" / session_id / "meta.json").read_text())
+        assert meta["working_dir"]
+        assert meta["budget_tokens"] == 0
 
     def test_create_session_avoids_collisions(self, manager, tmp_path):
         class FixedDateTime:
@@ -206,6 +209,89 @@ class TestSessionManager:
         context_file.write_text("not valid json{{{")
         result = manager.load_evolved_strategy(session_id)
         assert result is None
+
+    def test_load_iterations(self, manager, tmp_path):
+        config = RunConfig(task="Test")
+        session_id = manager.create_session(config)
+        manager.save_iteration(
+            session_id,
+            IterationResult(
+                iteration=1,
+                success=False,
+                errors=["SyntaxError"],
+                warnings=["warning"],
+                token_cost=100,
+                duration_seconds=1.5,
+                evolved_strategy="Retry with smaller scope",
+            ),
+        )
+
+        iterations = manager.load_iterations(session_id)
+
+        assert len(iterations) == 1
+        assert iterations[0].iteration == 1
+        assert iterations[0].token_cost == 100
+        assert iterations[0].evolved_strategy == "Retry with smaller scope"
+
+    def test_load_resume_context_extends_max_iterations_and_resolves_output_dir(
+        self, manager, tmp_path
+    ):
+        output_dir = tmp_path / "workspace" / "generated"
+        output_dir.mkdir(parents=True)
+        config = RunConfig(
+            task="Test resume",
+            output_dir="generated",
+            max_iterations=2,
+            timeout_seconds=90,
+            budget_tokens=500,
+            budget_mode=BudgetMode.FIXED,
+        )
+        session_id = manager.create_session(config)
+        meta_file = tmp_path / "sessions" / session_id / "meta.json"
+        meta = json.loads(meta_file.read_text())
+        meta["working_dir"] = str(tmp_path / "workspace")
+        meta["total_tokens"] = 150
+        meta_file.write_text(json.dumps(meta))
+        manager.save_iteration(
+            session_id,
+            IterationResult(
+                iteration=1,
+                success=False,
+                token_cost=100,
+                duration_seconds=1.0,
+                evolved_strategy="First strategy",
+            ),
+        )
+        manager.save_iteration(
+            session_id,
+            IterationResult(
+                iteration=2,
+                success=False,
+                token_cost=50,
+                duration_seconds=2.0,
+                evolved_strategy="Second strategy",
+            ),
+        )
+
+        resume_ctx = manager.load_resume_context(session_id)
+
+        assert resume_ctx is not None
+        assert resume_ctx.current_iteration == 2
+        assert resume_ctx.config.max_iterations == 4
+        assert resume_ctx.config.output_dir == str(output_dir.resolve())
+        assert resume_ctx.stats.total_tokens == 150
+        assert resume_ctx.evolved_strategy == "Second strategy"
+
+    def test_mark_resumed_updates_metadata(self, manager, tmp_path):
+        config = RunConfig(task="Test")
+        session_id = manager.create_session(config)
+
+        manager.mark_resumed(session_id)
+
+        meta = json.loads((tmp_path / "sessions" / session_id / "meta.json").read_text())
+        assert meta["status"] == SessionStatus.RUNNING.value
+        assert meta["resume_count"] == 1
+        assert "resumed_at" in meta
 
     def test_delete_session_invalid_id(self, manager):
         result = manager.delete_session("")

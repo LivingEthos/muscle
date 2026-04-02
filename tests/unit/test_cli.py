@@ -44,13 +44,16 @@ from tools.muscle.cli import (
     run,
     tui,
 )
-from tools.muscle.loop_controller import LoopEvent
+from tools.muscle.loop_controller import LoopContext, LoopEvent
 from tools.muscle.types import (
     BudgetInfo,
     BudgetMode,
     CodeArtifact,
     EvalMode,
+    IterationResult,
     IterationReport,
+    LoopStats,
+    RunConfig,
     SessionReport,
     SessionStatus,
 )
@@ -453,6 +456,113 @@ class TestAbortCommand:
     def test_abort_no_session_id(self, runner):
         result = runner.invoke(abort, [], catch_exceptions=True)
         assert result.exit_code != 0
+
+
+class TestResumeCommand:
+    """Integration tests for resume command."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_resume_rejects_successful_session(self, runner):
+        mock_manager = MagicMock()
+        mock_manager.load_session.return_value = {
+            "session_id": "done-123",
+            "task": "already finished",
+            "status": SessionStatus.SUCCESS.value,
+        }
+
+        with patch("tools.muscle.cli.SessionManager", return_value=mock_manager):
+            result = runner.invoke(resume, ["done-123"], catch_exceptions=False)
+
+        assert result.exit_code == 1
+        assert "already completed successfully" in result.output
+
+    def test_resume_rejects_active_running_session(self, runner):
+        mock_manager = MagicMock()
+        mock_manager.load_session.return_value = {
+            "session_id": "running-123",
+            "task": "still running",
+            "status": SessionStatus.RUNNING.value,
+        }
+
+        with patch("tools.muscle.cli.SessionManager", return_value=mock_manager):
+            with patch("tools.muscle.cli._read_session_pid", return_value=4242):
+                with patch("tools.muscle.cli._is_process_alive", return_value=True):
+                    result = runner.invoke(resume, ["running-123"], catch_exceptions=False)
+
+        assert result.exit_code == 1
+        assert "still running" in result.output
+
+    def test_resume_runs_with_loaded_checkpoint(self, runner, tmp_path):
+        resume_ctx = LoopContext(
+            session_id="resume-123",
+            config=RunConfig(
+                task="resume task",
+                language="python",
+                output_dir=str(tmp_path),
+                max_iterations=4,
+                budget_mode=BudgetMode.UNLIMITED,
+                eval_mode=EvalMode.ALL,
+            ),
+            stats=LoopStats(total_iterations=2, total_tokens=200),
+            evolved_strategy="Refine tests first",
+            iterations=[
+                IterationResult(iteration=1, success=False, token_cost=100),
+                IterationResult(iteration=2, success=False, token_cost=100),
+            ],
+            current_iteration=2,
+        )
+
+        mock_manager = MagicMock()
+        mock_manager.load_session.return_value = {
+            "session_id": "resume-123",
+            "task": "resume task",
+            "status": SessionStatus.FAILED.value,
+        }
+        mock_manager.load_resume_context.return_value = resume_ctx
+
+        mock_controller = MagicMock()
+        resumed_ctx = LoopContext(
+            session_id="resume-123",
+            config=resume_ctx.config,
+            stats=LoopStats(
+                total_iterations=3,
+                total_tokens=300,
+                status=SessionStatus.SUCCESS,
+            ),
+            current_iteration=3,
+        )
+        mock_controller.run.return_value = resumed_ctx
+
+        with patch("tools.muscle.cli.SessionManager", return_value=mock_manager):
+            with patch("tools.muscle.cli._create_m27_client") as mock_create_client:
+                mock_create_client.return_value.api_key = "test-key"
+                with patch("tools.muscle.cli.CodeGenerator"):
+                    with patch("tools.muscle.cli.Evolver"):
+                        with patch("tools.muscle.cli.BudgetManager"):
+                            with patch(
+                                "tools.muscle.cli.LoopController", return_value=mock_controller
+                            ):
+                                with patch("tools.muscle.cli.Progress") as mock_progress:
+                                    mock_progress.return_value.__enter__.return_value.add_task = (
+                                        MagicMock()
+                                    )
+                                    with patch("tools.muscle.cli.Live") as mock_live:
+                                        mock_live.return_value.start = MagicMock()
+                                        mock_live.return_value.stop = MagicMock()
+                                        result = runner.invoke(
+                                            resume,
+                                            ["resume-123"],
+                                            catch_exceptions=False,
+                                        )
+
+        assert result.exit_code == 0
+        assert "Resuming session resume-123" in result.output
+        assert "Status: success" in result.output
+        mock_controller.run.assert_called_once()
+        assert mock_controller.run.call_args.kwargs["resume_context"] is resume_ctx
 
 
 class TestCheckCommand:

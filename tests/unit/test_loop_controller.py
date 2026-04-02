@@ -6,11 +6,13 @@ import hashlib
 from unittest.mock import MagicMock, Mock, patch
 
 from tools.muscle.interactive import InteractiveChoice
-from tools.muscle.loop_controller import LoopController
+from tools.muscle.loop_controller import LoopContext, LoopController
 from tools.muscle.types import (
     BudgetMode,
     EvalMode,
     EvaluationResult,
+    IterationResult,
+    LoopStats,
     RunConfig,
     SessionStatus,
 )
@@ -85,11 +87,14 @@ class DummyInteractive:
 
 class DummySessionManager:
     def __init__(self):
+        self.create_calls = 0
         self.saved_iterations = []
         self.saved_reports = []
         self.saved_contexts = []
+        self.resumed_sessions = []
 
     def create_session(self, config: RunConfig) -> str:
+        self.create_calls += 1
         return "test-session-123"
 
     def save_iteration(self, session_id: str, iteration_result) -> None:
@@ -100,6 +105,9 @@ class DummySessionManager:
 
     def save_final_context(self, ctx) -> None:
         self.saved_contexts.append(ctx)
+
+    def mark_resumed(self, session_id: str) -> None:
+        self.resumed_sessions.append(session_id)
 
 
 def test_loop_controller_success_first_iteration():
@@ -530,7 +538,50 @@ def test_loop_controller_auto_commit_tracks_untracked_files_and_persists_commit(
     assert report.git_commit == "abc12345"
     assert len(report.artifacts) == 1
     assert report.artifacts[0].file_path == str(generated_file)
-    assert report.artifacts[0].content_hash == hashlib.sha256(
-        generated_file.read_bytes()
-    ).hexdigest()
+    assert (
+        report.artifacts[0].content_hash == hashlib.sha256(generated_file.read_bytes()).hexdigest()
+    )
     assert report.artifacts[0].lines == 1
+
+
+def test_loop_controller_resume_uses_existing_context_without_creating_new_session():
+    config = RunConfig(
+        task="Resume a failed session",
+        max_iterations=4,
+        budget_mode=BudgetMode.UNLIMITED,
+    )
+
+    session_manager = DummySessionManager()
+    resume_ctx = LoopContext(
+        session_id="existing-session-123",
+        config=config,
+        stats=LoopStats(
+            total_iterations=2,
+            total_tokens=200,
+            total_duration_seconds=3.0,
+            status=SessionStatus.FAILED,
+        ),
+        evolved_strategy="Previous strategy",
+        iterations=[
+            IterationResult(iteration=1, success=False, token_cost=100, duration_seconds=1.0),
+            IterationResult(iteration=2, success=False, token_cost=100, duration_seconds=2.0),
+        ],
+        current_iteration=2,
+    )
+
+    controller = LoopController(
+        config=config,
+        code_generator=DummyGenerator(),
+        evaluator=DummyEvaluator(should_pass=True),
+        evolver=DummyEvolver(),
+        budget_manager=DummyBudgetManager(),
+        session_manager=session_manager,
+    )
+
+    ctx = controller.run(resume_context=resume_ctx)
+
+    assert ctx.session_id == "existing-session-123"
+    assert ctx.stats.status == SessionStatus.SUCCESS
+    assert ctx.stats.total_iterations == 3
+    assert session_manager.create_calls == 0
+    assert session_manager.resumed_sessions == ["existing-session-123"]

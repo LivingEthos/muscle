@@ -19,9 +19,12 @@ from typing import TYPE_CHECKING
 
 from .types import (
     BudgetInfo,
+    BudgetMode,
     CodeArtifact,
+    EvalMode,
     IterationReport,
     IterationResult,
+    LoopStats,
     RunConfig,
     SessionReport,
     SessionStatus,
@@ -76,10 +79,17 @@ class SessionManager:
             "task": config.task[:500] if config.task else "untitled",
             "language": config.language,
             "output_dir": config.output_dir,
+            "working_dir": str(Path.cwd()),
             "max_iterations": config.max_iterations,
             "timeout_seconds": config.timeout_seconds,
+            "budget_tokens": config.budget_tokens,
             "budget_mode": config.budget_mode.value,
             "eval_mode": config.eval_mode.value,
+            "allow_warnings": config.allow_warnings,
+            "interactive": config.interactive,
+            "kb_path": config.kb_path,
+            "max_cost_per_iteration": config.max_cost_per_iteration,
+            "early_exit_on": config.early_exit_on,
             "created_at": datetime.now().isoformat(),
             "status": SessionStatus.RUNNING.value,
         }
@@ -309,6 +319,171 @@ class SessionManager:
             logger.warning(f"Cannot load session {session_id}: {e}")
             return None
 
+    def _load_dict_file(self, path: Path) -> dict | None:
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Cannot load JSON from {path}: {e}")
+            return None
+        if isinstance(data, dict):
+            return data
+        return None
+
+    def _parse_budget_mode(self, value: str | None) -> BudgetMode:
+        for mode in BudgetMode:
+            if mode.value == value:
+                return mode
+        return BudgetMode.UNLIMITED
+
+    def _parse_eval_mode(self, value: str | None) -> EvalMode:
+        for mode in EvalMode:
+            if mode.value == value:
+                return mode
+        return EvalMode.ALL
+
+    def _resolve_output_dir(self, meta: dict) -> str:
+        output_dir = str(meta.get("output_dir") or ".")
+        working_dir = Path(str(meta.get("working_dir") or Path.cwd()))
+        output_path = Path(output_dir)
+        if not output_path.is_absolute():
+            output_path = working_dir / output_path
+        return str(output_path.resolve())
+
+    def load_iterations(self, session_id: str) -> list[IterationResult]:
+        try:
+            session_id = self._sanitize_session_id(session_id)
+        except ValueError:
+            return []
+
+        iterations_file = self.base_dir / session_id / "iterations.jsonl"
+        if not iterations_file.exists():
+            return []
+
+        iterations: list[IterationResult] = []
+        try:
+            for line in iterations_file.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Skipping invalid iteration entry for {session_id}: {e}")
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                iterations.append(
+                    IterationResult(
+                        iteration=int(entry.get("iteration", len(iterations) + 1)),
+                        success=bool(entry.get("success", False)),
+                        errors=[str(err) for err in entry.get("errors", [])],
+                        warnings=[str(warn) for warn in entry.get("warnings", [])],
+                        token_cost=int(entry.get("token_cost", 0)),
+                        duration_seconds=float(entry.get("duration_seconds", 0.0)),
+                        evolved_strategy=entry.get("evolved_strategy") or None,
+                    )
+                )
+        except OSError as e:
+            logger.warning(f"Cannot read iterations for {session_id}: {e}")
+            return []
+
+        return iterations
+
+    def load_resume_context(self, session_id: str) -> LoopContext | None:
+        from .loop_controller import LoopContext
+
+        meta = self.load_session(session_id)
+        if not meta:
+            return None
+
+        iterations = self.load_iterations(session_id)
+        report_data = self._load_dict_file(self.base_dir / session_id / "report.json") or {}
+        context_data = self._load_dict_file(self.base_dir / session_id / "context.json") or {}
+
+        current_iteration = max(
+            int(meta.get("last_iteration", 0)),
+            max((iteration.iteration for iteration in iterations), default=0),
+            int(meta.get("total_iterations", 0)),
+        )
+        total_tokens = int(
+            meta.get("total_tokens")
+            or report_data.get("total_tokens")
+            or sum(iteration.token_cost for iteration in iterations)
+        )
+        total_duration_seconds = float(
+            meta.get("total_duration_seconds")
+            or report_data.get("total_duration_seconds")
+            or sum(iteration.duration_seconds for iteration in iterations)
+        )
+
+        budget_tokens = meta.get("budget_tokens")
+        if budget_tokens is None:
+            budget_info = report_data.get("budget_info")
+            if isinstance(budget_info, dict):
+                budget_tokens = budget_info.get("limit", 0)
+
+        stored_max_iterations = int(meta.get("max_iterations", 20))
+        effective_max_iterations = stored_max_iterations
+        if current_iteration >= stored_max_iterations:
+            effective_max_iterations = current_iteration + max(1, stored_max_iterations)
+
+        evolved_strategy = context_data.get("evolved_strategy")
+        if not evolved_strategy:
+            evolved_strategy = next(
+                (
+                    iteration.evolved_strategy
+                    for iteration in reversed(iterations)
+                    if iteration.evolved_strategy
+                ),
+                None,
+            )
+
+        config = RunConfig(
+            task=str(meta.get("task") or "untitled"),
+            language=meta.get("language"),
+            output_dir=self._resolve_output_dir(meta),
+            max_iterations=effective_max_iterations,
+            timeout_seconds=int(meta.get("timeout_seconds", 3600)),
+            budget_tokens=int(budget_tokens or 0),
+            budget_mode=self._parse_budget_mode(meta.get("budget_mode")),
+            eval_mode=self._parse_eval_mode(meta.get("eval_mode")),
+            allow_warnings=bool(meta.get("allow_warnings", False)),
+            interactive=bool(meta.get("interactive", False)),
+            kb_path=meta.get("kb_path"),
+            max_cost_per_iteration=meta.get("max_cost_per_iteration"),
+            early_exit_on=meta.get("early_exit_on"),
+        )
+
+        return LoopContext(
+            session_id=session_id,
+            config=config,
+            stats=LoopStats(
+                total_iterations=current_iteration,
+                total_tokens=total_tokens,
+                total_duration_seconds=total_duration_seconds,
+                status=SessionStatus.RUNNING,
+            ),
+            evolved_strategy=evolved_strategy,
+            iterations=iterations,
+            current_iteration=current_iteration,
+        )
+
+    def mark_resumed(self, session_id: str) -> None:
+        meta = self.load_session(session_id)
+        if not meta:
+            return
+
+        resume_count = int(meta.get("resume_count", 0)) + 1
+        self._update_meta(
+            session_id,
+            {
+                "status": SessionStatus.RUNNING.value,
+                "resume_count": resume_count,
+                "resumed_at": datetime.now().isoformat(),
+            },
+        )
+
     def load_evolved_strategy(self, session_id: str) -> str | None:
         try:
             session_id = self._sanitize_session_id(session_id)
@@ -316,16 +491,10 @@ class SessionManager:
             return None
 
         context_file = self.base_dir / session_id / "context.json"
-        if not context_file.exists():
-            return None
-        try:
-            ctx = json.loads(context_file.read_text(encoding="utf-8"))
-            if isinstance(ctx, dict) and "evolved_strategy" in ctx:
-                return ctx.get("evolved_strategy")
-            return None
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning(f"Cannot load evolved strategy for {session_id}: {e}")
-            return None
+        ctx = self._load_dict_file(context_file)
+        if isinstance(ctx, dict) and "evolved_strategy" in ctx:
+            return ctx.get("evolved_strategy")
+        return None
 
     def delete_session(self, session_id: str) -> bool:
         try:

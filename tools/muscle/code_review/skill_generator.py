@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -142,6 +143,28 @@ Keep it concise and actionable. This skill should help a coding agent avoid the 
         if not self.skills_dir.exists():
             return []
         return list(self.skills_dir.glob("*.md"))
+
+    def update_skill(self, skill_path: Path, new_context: str) -> bool:
+        """Append new context to an existing skill file."""
+        if not skill_path.exists():
+            return False
+
+        content = skill_path.read_text()
+        timestamp = datetime.now().strftime("%Y-%m-%d")
+        update_section = f"\n\n## Update ({timestamp})\n\n{new_context}\n"
+        content += update_section
+        skill_path.write_text(content)
+        logger.info(f"Updated skill: {skill_path}")
+        return True
+
+    def archive_skill(self, skill_path: Path) -> Path:
+        """Move a skill to the archived subdirectory."""
+        archive_dir = self.skills_dir / "archived"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archived_path = archive_dir / skill_path.name
+        skill_path.rename(archived_path)
+        logger.info(f"Archived skill: {skill_path} -> {archived_path}")
+        return archived_path
 
     def validate_skill(self, skill_path: Path) -> bool:
         """Validate skill has required frontmatter fields."""

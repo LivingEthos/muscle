@@ -439,10 +439,22 @@ class LoopController:
         except OSError:
             pass
 
-    def run(self, streaming_callback: Callable[[str], None] | None = None) -> LoopContext:
-        self._validate_config(self.config)
+    def run(
+        self,
+        streaming_callback: Callable[[str], None] | None = None,
+        resume_context: LoopContext | None = None,
+    ) -> LoopContext:
+        config = resume_context.config if resume_context else self.config
+        self._validate_config(config)
+        self.config = config
 
-        if self._session_manager:
+        if resume_context is not None:
+            ctx = resume_context
+            ctx.stats.status = SessionStatus.RUNNING
+            ctx.start_time = time.time()
+            if self._session_manager and hasattr(self._session_manager, "mark_resumed"):
+                self._session_manager.mark_resumed(ctx.session_id)
+        elif self._session_manager:
             session_id = self._session_manager.create_session(self.config)
             ctx = LoopContext(
                 session_id=session_id,

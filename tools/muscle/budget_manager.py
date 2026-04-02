@@ -43,18 +43,28 @@ class BudgetManager:
         self,
         mode: BudgetMode = BudgetMode.UNLIMITED,
         fixed_limit: int = 0,
+        consumed_tokens: int = 0,
         auto_budget_path: str | None = None,
         warning_thresholds: tuple[float, float] = (80.0, 95.0),
     ):
         self.mode = mode
         self._original_limit = fixed_limit
         self.fixed_limit = fixed_limit
+        self.consumed_tokens = max(0, consumed_tokens)
         self.auto_budget_path = auto_budget_path
         self.warning_thresholds = warning_thresholds
         self._warnings_issued: set[float] = set()
 
         if mode == BudgetMode.AUTO:
             self._load_auto_budget()
+        elif mode == BudgetMode.FIXED and self.consumed_tokens > 0 and self.fixed_limit > 0:
+            self.fixed_limit = max(0, self.fixed_limit - self.consumed_tokens)
+
+        if self.mode == BudgetMode.FIXED and self._original_limit > 0:
+            used_percent = ((self._original_limit - self.fixed_limit) / self._original_limit) * 100
+            self._warnings_issued = {
+                threshold for threshold in self.warning_thresholds if used_percent >= threshold
+            }
 
     def _load_auto_budget(self) -> None:
         if self.auto_budget_path:

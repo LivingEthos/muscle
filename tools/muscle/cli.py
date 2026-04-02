@@ -600,6 +600,25 @@ def history() -> None:
     console.print(table)
 
 
+def _read_session_pid(pid_file: Path) -> int | None:
+    if not pid_file.exists():
+        return None
+    try:
+        return int(pid_file.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _is_process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 @cli.command()
 @click.argument("session_id")
 def resume(session_id: str) -> None:
@@ -611,16 +630,125 @@ def resume(session_id: str) -> None:
         console.print(f"[red]Session {session_id} not found[/red]")
         sys.exit(1)
 
-    evolved_strategy = session_manager.load_evolved_strategy(session_id)
+    status = session.get("status", SessionStatus.RUNNING.value)
+    if status == SessionStatus.SUCCESS.value:
+        console.print(f"[yellow]Session {session_id} already completed successfully[/yellow]")
+        sys.exit(1)
+
+    pid_file = Path.home() / ".muscle" / f"{session_id}.pid"
+    pid = _read_session_pid(pid_file)
+    if status == SessionStatus.RUNNING.value and pid is not None and _is_process_alive(pid):
+        console.print(f"[yellow]Session {session_id} is still running in process {pid}[/yellow]")
+        console.print("Use 'muscle abort <session-id>' first, or wait for it to finish.")
+        sys.exit(1)
+    if pid is not None and not _is_process_alive(pid):
+        pid_file.unlink(missing_ok=True)
+
+    resume_ctx = session_manager.load_resume_context(session_id)
+    if resume_ctx is None:
+        console.print(f"[red]Session {session_id} cannot be resumed[/red]")
+        sys.exit(1)
+
+    if (
+        resume_ctx.config.budget_mode == BudgetMode.FIXED
+        and resume_ctx.config.budget_tokens > 0
+        and resume_ctx.stats.total_tokens >= resume_ctx.config.budget_tokens
+    ):
+        console.print(f"[red]Session {session_id} exhausted its fixed token budget[/red]")
+        sys.exit(1)
 
     console.print(f"[bold]Resuming session {session_id}[/bold]")
     console.print(f"Task: {session.get('task', 'Unknown')}")
     console.print(
-        f"Previous evolved strategy: {_truncate(evolved_strategy, 100) if evolved_strategy else 'None'}..."
+        "Previous evolved strategy: "
+        f"{_truncate(resume_ctx.evolved_strategy, 100) if resume_ctx.evolved_strategy else 'None'}..."
+    )
+    console.print(f"Completed iterations: {resume_ctx.current_iteration}")
+    console.print(f"Continuing up to iteration {resume_ctx.config.max_iterations}")
+
+    m27_client = _create_m27_client()
+    if not m27_client.api_key:
+        console.print("[red]Error: MINIMAX_API_KEY not set[/red]")
+        console.print("Set it with: export MINIMAX_API_KEY='your-key'")
+        sys.exit(1)
+
+    code_gen = CodeGenerator(m27_client)
+    evolver = Evolver(m27_client, use_kb=True, kb_path=resume_ctx.config.kb_path)
+    budget_manager = BudgetManager(
+        mode=resume_ctx.config.budget_mode,
+        fixed_limit=resume_ctx.config.budget_tokens,
+        consumed_tokens=resume_ctx.stats.total_tokens
+        if resume_ctx.config.budget_mode == BudgetMode.FIXED
+        else 0,
     )
 
-    # TODO: Implement full resume logic
-    console.print("[yellow]Resume not yet fully implemented[/yellow]")
+    def evaluator(output_dir: str) -> Any:
+        from .evaluator_registry import EvaluatorRegistry
+
+        registry = EvaluatorRegistry()
+        return registry.evaluate(
+            output_dir, resume_ctx.config.language, resume_ctx.config.eval_mode
+        )
+
+    def code_gen_wrapper(
+        task: str, strategy: str | None, output_dir: str | None
+    ) -> tuple[str, Any]:
+        return code_gen.generate(task, strategy or "", output_dir or ".")
+
+    controller = LoopController(
+        config=resume_ctx.config,
+        code_generator=code_gen_wrapper,
+        evaluator=evaluator,
+        evolver=evolver.evolve,
+        budget_manager=budget_manager.check_budget,
+        event_callback=_event_handler,
+        interactive=InteractiveHandler(enabled=resume_ctx.config.interactive),
+        session_manager=session_manager,
+    )
+
+    try:
+        streaming_display = Text("")
+        live = None
+
+        def streaming_callback(chunk: str) -> None:
+            nonlocal streaming_display, live
+            full_text = "".join(_streaming_text) + chunk
+            if len(full_text) > 2000:
+                full_text = "..." + full_text[-1997:]
+            streaming_display = Text(full_text, style="cyan")
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            progress.add_task("Resuming MUSCLE...", total=None)
+
+            live = Live(
+                streaming_display,
+                console=console,
+                refresh_per_second=10,
+                vertical_overflow="ellipsis",
+            )
+
+            try:
+                live.start()
+                ctx = controller.run(
+                    streaming_callback=streaming_callback,
+                    resume_context=resume_ctx,
+                )
+            finally:
+                if live:
+                    live.stop()
+
+        console.print(f"\n[bold]Session {ctx.session_id}[/bold]")
+        console.print(f"Status: {ctx.stats.status.value}")
+        console.print(f"Iterations: {ctx.stats.total_iterations}")
+        console.print(f"Tokens used: {ctx.stats.total_tokens}")
+    except KeyboardInterrupt:
+        controller.request_abort()
+        console.print("\n[yellow]Aborted by user[/yellow]")
+        sys.exit(130)
 
 
 @cli.command()

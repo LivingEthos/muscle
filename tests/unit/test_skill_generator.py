@@ -2,7 +2,7 @@
 Unit tests for code_review/skill_generator.py
 """
 
-from unittest.mock import Mock
+from unittest.mock import Mock, MagicMock
 
 import pytest
 
@@ -97,3 +97,35 @@ class TestSkillGenerator:
         content = "# My Skill\nSome content"
         result = generator._parse_skill_content(content)
         assert result == content.strip()
+
+
+class TestSkillLifecycle:
+    def test_update_skill_appends_context(self, tmp_path):
+        gen = SkillGenerator(str(tmp_path), m27_client=MagicMock())
+        skill_path = tmp_path / ".muscle" / "skills" / "test_skill.md"
+        skill_path.parent.mkdir(parents=True, exist_ok=True)
+        skill_path.write_text("---\nname: test\n---\n\n# Test\n\nOriginal content")
+
+        gen.update_skill(skill_path, "New context discovered")
+
+        content = skill_path.read_text()
+        assert "New context discovered" in content
+        assert "Original content" in content
+        assert "## Update (" in content
+
+    def test_update_nonexistent_skill_returns_false(self, tmp_path):
+        gen = SkillGenerator(str(tmp_path), m27_client=MagicMock())
+        result = gen.update_skill(tmp_path / "nonexistent.md", "context")
+        assert result is False
+
+    def test_archive_skill(self, tmp_path):
+        gen = SkillGenerator(str(tmp_path), m27_client=MagicMock())
+        skill_path = tmp_path / ".muscle" / "skills" / "stale_skill.md"
+        skill_path.parent.mkdir(parents=True, exist_ok=True)
+        skill_path.write_text("---\nname: stale\n---\n\n# Stale skill")
+
+        archived = gen.archive_skill(skill_path)
+        assert not skill_path.exists()
+        assert archived.exists()
+        assert "archived" in str(archived)
+        assert archived.read_text() == "---\nname: stale\n---\n\n# Stale skill"
