@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "anthropic/claude-sonnet-4-5",
+  "agent": {
+    "muscle-reviewer": {
+      "description": "MUSCLE code review agent with self-learning",
+      "mode": "subagent",
+      "prompt": "You are a code reviewer powered by MUSCLE. Use muscle tools for code review."
+    }
+  },
+  "permission": {
+    "bash": {
+      "muscle *": "allow",
+      "git *": "allow"
+    }
+  }
+}

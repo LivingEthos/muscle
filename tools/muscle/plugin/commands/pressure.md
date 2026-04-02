@@ -5,7 +5,7 @@ Run an adversarial review that challenges design decisions, assumptions, and fai
 ## Usage
 
 ```
-/muscle:pressure [--target <path>] [--focus <areas>] [--intensity <level>]
+/muscle:pressure [--target <path>] [--focus <areas>] [--intensity <level>] [--options...]
 ```
 
 ## Options
@@ -13,6 +13,10 @@ Run an adversarial review that challenges design decisions, assumptions, and fai
 - `--target` - Path to review (default: current directory)
 - `--focus` - Focus areas: `design`, `failure`, `race`, `auth`, `data`, `rollback`, `reliability` (comma-separated)
 - `--intensity` - Review intensity: `minimal`, `moderate`, `intensive`, `exhaustive` (default: `moderate`)
+- `--severity` - Minimum severity: `critical`, `high`, `medium`, `low` (default: `low`)
+- `--language` - Programming language (auto-detected if not specified)
+- `--format` - Output format: `text`, `json` (default: `text`)
+- `--shadow` - Run in shadow (background) mode
 
 ## Examples
 
@@ -20,6 +24,8 @@ Run an adversarial review that challenges design decisions, assumptions, and fai
 /muscle:pressure
 /muscle:pressure --focus design,failure,race
 /muscle:pressure --intensity exhaustive
+/muscle:pressure --target ./src --focus auth,data --severity high
+/muscle:pressure --shadow --intensity intensive
 ```
 
 ## Focus Areas
@@ -31,6 +37,13 @@ Run an adversarial review that challenges design decisions, assumptions, and fai
 - **data** - Detect data loss and corruption risks
 - **rollback** - Question rollback and recovery concerns
 - **reliability** - Assess reliability and error resilience
+
+## Intensity Levels
+
+- **minimal** - Quick adversarial scan
+- **moderate** - Standard adversarial review
+- **intensive** - Deep adversarial analysis
+- **exhaustive** - Comprehensive attack simulation
 
 ## What Makes Pressure Different
 

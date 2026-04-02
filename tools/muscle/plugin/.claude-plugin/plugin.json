@@ -1,6 +1,6 @@
 {
   "name": "muscle",
-  "description": "MUSCLE - Self-learning code review that gets smarter with every task. Slash commands: /muscle:review, /muscle:pressure, /muscle:rescue, /muscle:status, /muscle:result, /muscle:cancel, /muscle:setup",
+  "description": "MUSCLE - Self-learning code review that gets smarter with every task. Commands: /muscle:review, /muscle:pressure, /muscle:rescue, /muscle:status, /muscle:result, /muscle:cancel, /muscle:setup, /muscle:check, /muscle:history, /muscle:probe, /muscle:diagnosis, /muscle:lifeline, /muscle:kb-stats, /muscle:settings-show, /muscle:settings-api-key",
   "version": "0.1.0",
   "author": {
     "name": "MUSCLE Team",

@@ -11,6 +11,7 @@ Handles:
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -40,6 +41,10 @@ class ProjectConfig:
     github_enabled: bool = False
     memory_location: str = DEFAULT_MUSCLE_DIR
     initialized: bool = False
+    platform: str = "auto"
+    api_key_source: str = "env"
+    hooks_enabled: bool = True
+    cli_path: str | None = None
 
 
 class ProjectManager:
@@ -130,6 +135,10 @@ class ProjectManager:
                 "triggers": config.triggers,
                 "github_enabled": config.github_enabled,
                 "memory_location": config.memory_location,
+                "platform": config.platform,
+                "api_key_source": config.api_key_source,
+                "hooks_enabled": config.hooks_enabled,
+                "cli_path": config.cli_path,
             }
         }
         with open(config_path, "w") as f:
@@ -200,6 +209,10 @@ class ProjectManager:
             github_enabled=data.get("github_enabled", False),
             memory_location=data.get("memory_location", DEFAULT_MUSCLE_DIR),
             initialized=True,
+            platform=data.get("platform", "auto"),
+            api_key_source=data.get("api_key_source", "env"),
+            hooks_enabled=data.get("hooks_enabled", True),
+            cli_path=data.get("cli_path"),
         )
 
     def find_all_projects(self) -> list[ProjectConfig]:
@@ -212,3 +225,116 @@ class ProjectManager:
                 if project:
                     projects.append(project)
         return projects
+
+    @staticmethod
+    def detect_cli_location() -> str | None:
+        import os
+        import shutil
+
+        possible_paths = []
+
+        if os.environ.get("MINIMAX_MUSCLE_PATH"):
+            possible_paths.append(os.environ["MINIMAX_MUSCLE_PATH"])
+
+        for name in ["muscle", "muscle.exe"]:
+            path = shutil.which(name)
+            if path:
+                return path
+
+            local_path = Path.cwd() / "tools" / "muscle" / "venv" / "bin" / name
+            if local_path.exists():
+                possible_paths.append(str(local_path))
+
+            local_path_py = Path.cwd() / "tools" / "muscle" / name
+            if local_path_py.exists():
+                possible_paths.append("python -m muscle")
+
+        return None
+
+    @staticmethod
+    def detect_platform() -> str:
+        import os
+
+        if os.environ.get("OPENCODE_SESSION"):
+            return "opencode"
+        if os.environ.get("CLAUDE_CODE"):
+            return "claude-code"
+        if os.environ.get("MUSCLE_FORCE_PLATFORM"):
+            return os.environ["MUSCLE_FORCE_PLATFORM"]
+        return "auto"
+
+    def init_opencode_config(self, config: ProjectConfig, muscle_dir: Path) -> bool:
+        opencode_dir = config.path / ".opencode"
+        try:
+            opencode_dir.mkdir(exist_ok=True)
+
+            opencode_json = {
+                "$schema": "https://opencode.ai/config.json",
+                "model": os.environ.get("OPENCODE_MODEL", "anthropic/claude-sonnet-4-5"),
+                "agent": {
+                    "muscle-reviewer": {
+                        "description": "MUSCLE code review agent with self-learning",
+                        "mode": "subagent",
+                        "prompt": "You are a code reviewer powered by MUSCLE. Use muscle tools for code review.",
+                    }
+                },
+                "permission": {
+                    "bash": {
+                        "muscle *": "allow",
+                        "git *": "allow",
+                    }
+                },
+            }
+
+            opencode_json_path = opencode_dir / "opencode.json"
+            with open(opencode_json_path, "w") as f:
+                json.dump(opencode_json, f, indent=2)
+
+            commands_source = Path(__file__).parent.parent / ".opencode" / "commands"
+            commands_target = opencode_dir / "commands"
+            if commands_source.exists() and not commands_target.exists():
+                commands_target.symlink_to(commands_source.resolve())
+
+            agents_source = Path(__file__).parent.parent / ".opencode" / "agents"
+            agents_target = opencode_dir / "agents"
+            if agents_source.exists() and not agents_target.exists():
+                agents_target.symlink_to(agents_source.resolve())
+
+            return True
+        except Exception as e:
+            print(f"Failed to initialize OpenCode config: {e}")
+            return False
+
+    def update_muscle_config(
+        self,
+        project_path: Path,
+        api_key: str | None = None,
+        hooks_enabled: bool | None = None,
+        platform: str | None = None,
+        cli_path: str | None = None,
+        api_key_source: str | None = None,
+    ) -> bool:
+        muscle_dir = project_path / DEFAULT_MUSCLE_DIR
+        config_path = muscle_dir / CONFIG_FILE
+        if not config_path.exists():
+            return False
+
+        with open(config_path) as f:
+            data = json.load(f)
+
+        if api_key is not None:
+            os.environ["MINIMAX_API_KEY"] = api_key
+            data["project"]["api_key_source"] = "manual"
+        if hooks_enabled is not None:
+            data["project"]["hooks_enabled"] = hooks_enabled
+        if platform is not None:
+            data["project"]["platform"] = platform
+        if cli_path is not None:
+            data["project"]["cli_path"] = cli_path
+        if api_key_source is not None:
+            data["project"]["api_key_source"] = api_key_source
+
+        with open(config_path, "w") as f:
+            json.dump(data, f, indent=2)
+
+        return True

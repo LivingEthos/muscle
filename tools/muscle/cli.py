@@ -110,11 +110,29 @@ def cli() -> None:
 
 @cli.command()
 @click.option("--non-interactive", is_flag=True, help="Skip interactive prompts")
-def init(non_interactive: bool) -> None:
+@click.option(
+    "--platform",
+    type=click.Choice(["auto", "opencode", "claude-code"]),
+    default="auto",
+    help="Target platform",
+)
+@click.option("--api-key", help="MINIMAX/M2.7 API key (or set MINIMAX_API_KEY env var)")
+@click.option("--hooks/--no-hooks", default=True, help="Enable/disable post-task review hooks")
+@click.option("--cli-path", help="Path to muscle CLI (auto-detected if not specified)")
+def init(
+    non_interactive: bool,
+    platform: str,
+    api_key: str | None,
+    hooks: bool,
+    cli_path: str | None,
+) -> None:
     """Initialize MUSCLE for the current project.
 
     Creates .muscle/ directory with configuration, knowledge base,
     and memory files. Run this once per project.
+
+    For OpenCode integration, run with --platform opencode.
+    For Claude Code integration, run with --platform claude-code.
     """
     from .tui.project_manager import ProjectConfig, ProjectManager
 
@@ -123,6 +141,12 @@ def init(non_interactive: bool) -> None:
 
     manager = ProjectManager()
     detected = manager.detect_project()
+    current_platform = manager.detect_platform()
+
+    effective_platform = platform
+    if platform == "auto":
+        effective_platform = current_platform
+        console.print(f"[dim]Detected platform: {current_platform}[/dim]")
 
     if not detected:
         console.print("[yellow]No project detected. Creating default project...[/yellow]")
@@ -134,10 +158,15 @@ def init(non_interactive: bool) -> None:
     else:
         project = detected
 
+    project.platform = effective_platform
+    project.hooks_enabled = hooks
+    project.cli_path = cli_path or manager.detect_cli_location()
+
     console.print(f"Project: [cyan]{project.name}[/cyan]")
     console.print(f"Path: [cyan]{project.path}[/cyan]")
     if project.languages:
         console.print(f"Languages: [cyan]{', '.join(project.languages)}[/cyan]")
+    console.print(f"Platform: [cyan]{effective_platform}[/cyan]")
     console.print()
 
     if non_interactive:
@@ -177,6 +206,52 @@ def init(non_interactive: bool) -> None:
         console.print("  [ ] Enable (not implemented yet)")
         project.github_enabled = False
 
+        console.print("\n[bold]API Key:[/bold]")
+        if os.environ.get("MINIMAX_API_KEY"):
+            console.print("  [green]✓[/green] MINIMAX_API_KEY is set in environment")
+            console.print("  [1] Use existing key")
+            console.print("  [2] Enter new key")
+            choice = console.input("Select [1-2] (default: 1): ").strip() or "1"
+            if choice == "2":
+                new_key = console.input("Enter API key: ").strip()
+                if new_key:
+                    os.environ["MINIMAX_API_KEY"] = new_key
+                    project.api_key_source = "manual"
+        else:
+            console.print("  [yellow]No API key detected[/yellow]")
+            console.print("  [1] Enter key now")
+            console.print("  [2] Enter key later")
+            console.print("  [3] Use OpenCode provider auth")
+            choice = console.input("Select [1-3] (default: 2): ").strip() or "2"
+            if choice == "1":
+                new_key = console.input("Enter API key: ").strip()
+                if new_key:
+                    os.environ["MINIMAX_API_KEY"] = new_key
+                    project.api_key_source = "manual"
+            elif choice == "3":
+                project.api_key_source = "opencode"
+
+        console.print("\n[bold]Post-Task Review Hooks:[/bold]")
+        console.print(f"  {'[x]' if hooks else '[ ]'} Enable automatic review after tasks")
+        if not non_interactive:
+            hook_choice = console.input("Enable hooks? [Y/n]: ").strip().lower()
+            if hook_choice == "n":
+                project.hooks_enabled = False
+            elif hook_choice == "y" or not hook_choice:
+                project.hooks_enabled = True
+
+        if effective_platform in ("opencode", "auto"):
+            console.print("\n[bold]CLI Path:[/bold]")
+            if project.cli_path:
+                console.print(f"  Detected: [cyan]{project.cli_path}[/cyan]")
+            else:
+                console.print("  [yellow]No muscle CLI detected[/yellow]")
+            custom_path = console.input(
+                "Enter path to muscle CLI (or press Enter to use detected): "
+            ).strip()
+            if custom_path:
+                project.cli_path = custom_path
+
     console.print()
     console.print("[bold]Initializing...[/bold]")
 
@@ -185,11 +260,37 @@ def init(non_interactive: bool) -> None:
         console.print("[green]✓[/green] Created config.yaml")
         console.print("[green]✓[/green] Created CLAUDE.md, AGENT.md, MEMORY.md")
         console.print("[green]✓[/green] Initialized knowledge base")
+
+        if api_key:
+            manager.update_muscle_config(project.path, api_key=api_key)
+            console.print("[green]✓[/green] API key configured")
+
+        if effective_platform in ("opencode", "auto"):
+            console.print()
+            console.print("[bold cyan]Setting up OpenCode integration...[/bold cyan]")
+            if manager.init_opencode_config(project, project.path / ".muscle"):
+                console.print("[green]✓[/green] Created .opencode/ directory")
+                console.print("[green]✓[/green] Created opencode.json")
+                console.print("[green]✓[/green] Linked commands and agents")
+                console.print()
+                console.print("[bold]OpenCode Commands:[/bold]")
+                console.print("  /muscle-review - Run code review")
+                console.print("  /muscle-pressure - Adversarial review")
+                console.print("  /muscle-rescue - Deep investigation")
+                console.print("  /muscle-status - Check shadow jobs")
+                console.print("  /muscle-result - Get results")
+                console.print("  /muscle-setup - Configure settings")
+            else:
+                console.print("[yellow]⚠[/yellow] OpenCode setup skipped (may already exist)")
+
         console.print()
         console.print("[bold green]MUSCLE initialized successfully![/bold green]")
         console.print()
         console.print("Run 'muscle tui' to start the TUI")
         console.print("Run 'muscle review --target ./src' to run a review")
+        if effective_platform in ("opencode", "auto"):
+            console.print()
+            console.print("[dim]For OpenCode, commands are available as /muscle-*[/dim]")
     else:
         console.print("[red]Failed to initialize project[/red]")
 
@@ -1559,6 +1660,180 @@ def _get_status_color(status: str) -> str:
         "cancelled": "dim",
     }
     return color_map.get(status, "white")
+
+
+@cli.group(name="settings")
+def settings_group() -> None:
+    """MUSCLE settings and configuration management."""
+    pass
+
+
+@settings_group.command(name="show")
+def settings_show() -> None:
+    """Show current MUSCLE settings."""
+    from .tui.project_manager import ProjectManager
+
+    manager = ProjectManager()
+    project = manager.detect_project()
+
+    table = Table(title="MUSCLE Settings")
+    table.add_column("Setting", style="cyan")
+    table.add_column("Value", style="green")
+
+    if project:
+        table.add_row("Project", project.name)
+        table.add_row("Platform", project.platform)
+        table.add_row("API Key Source", project.api_key_source)
+        table.add_row("Hooks Enabled", str(project.hooks_enabled))
+        table.add_row("CLI Path", project.cli_path or "Not set")
+        table.add_row("Review Gate", project.review_gate)
+        table.add_row("Automation Level", project.automation_level)
+    else:
+        table.add_row("Project", "Not initialized")
+        table.add_row("Run 'muscle init'", "to initialize")
+
+    api_key_status = "Set" if os.environ.get("MINIMAX_API_KEY") else "Not set"
+    table.add_row("MINIMAX_API_KEY", api_key_status)
+
+    console.print(table)
+
+
+@settings_group.command(name="api-key")
+@click.option("--key", "-k", help="API key to set")
+@click.option("--source", type=click.Choice(["env", "opencode", "ask"]), help="API key source")
+def settings_api_key(key: str | None, source: str | None) -> None:
+    """Set or configure API key for MUSCLE.
+
+    Examples:
+
+        muscle settings api-key --key sk-xxxxx
+
+        muscle settings api-key --source opencode
+    """
+    from .tui.project_manager import ProjectManager
+
+    manager = ProjectManager()
+    project_path = Path.cwd()
+
+    if key:
+        os.environ["MINIMAX_API_KEY"] = key
+        console.print("[green]API key set (stored in environment)[/green]")
+
+    if source:
+        manager.update_muscle_config(project_path, api_key_source=source)
+        console.print(f"[green]API key source set to: {source}[/green]")
+
+    if not key and not source:
+        current_key = os.environ.get("MINIMAX_API_KEY", "")
+        console.print(
+            f"Current API key: {current_key[:10]}..." if current_key else "No API key set"
+        )
+        new_key = console.input("Enter new API key (or press Enter to keep current): ").strip()
+        if new_key:
+            os.environ["MINIMAX_API_KEY"] = new_key
+            console.print("[green]API key updated[/green]")
+
+
+@settings_group.command(name="hooks")
+@click.option("--enable/--disable", default=None, help="Enable or disable hooks")
+@click.option(
+    "--gate",
+    type=click.Choice(["block+fix", "block-all", "warn", "disabled"]),
+    help="Review gate mode",
+)
+def settings_hooks(enable: bool | None, gate: str | None) -> None:
+    """Configure post-task review hooks.
+
+    Examples:
+
+        muscle settings hooks --enable
+
+        muscle settings hooks --gate warn
+    """
+    from .tui.project_manager import ProjectManager
+
+    manager = ProjectManager()
+    project_path = Path.cwd()
+
+    updated = False
+    if enable is not None:
+        manager.update_muscle_config(project_path, hooks_enabled=enable)
+        console.print(f"[green]Hooks {'enabled' if enable else 'disabled'}[/green]")
+        updated = True
+
+    if gate:
+        manager.update_muscle_config(project_path, platform=gate)
+        console.print(f"[green]Review gate set to: {gate}[/green]")
+        updated = True
+
+    if not updated:
+        console.print("No changes made. Use --enable/--disable or --gate to make changes.")
+
+
+@settings_group.command(name="platform")
+@click.option(
+    "--platform", type=click.Choice(["opencode", "claude-code", "auto"]), help="Target platform"
+)
+@click.option("--cli-path", help="Path to muscle CLI")
+def settings_platform(platform: str | None, cli_path: str | None) -> None:
+    """Configure platform and CLI settings.
+
+    Examples:
+
+        muscle settings platform --platform opencode
+
+        muscle settings platform --cli-path /usr/local/bin/muscle
+    """
+    from .tui.project_manager import ProjectManager
+
+    manager = ProjectManager()
+    project_path = Path.cwd()
+
+    updated = False
+    if platform:
+        manager.update_muscle_config(project_path, platform=platform)
+        console.print(f"[green]Platform set to: {platform}[/green]")
+        updated = True
+
+    if cli_path:
+        manager.update_muscle_config(project_path, cli_path=cli_path)
+        console.print(f"[green]CLI path set to: {cli_path}[/green]")
+        updated = True
+
+    if not updated:
+        current_platform = manager.detect_platform()
+        detected_cli = manager.detect_cli_location()
+        console.print(f"Current platform: {current_platform}")
+        console.print(f"Detected CLI: {detected_cli or 'Not found'}")
+        console.print()
+        console.print("Use --platform or --cli-path to configure.")
+
+
+@settings_group.command(name="reset")
+@click.option("--force", is_flag=True, help="Skip confirmation")
+def settings_reset(force: bool) -> None:
+    """Reset MUSCLE settings to defaults.
+
+    This will reset platform, hooks, and automation settings but
+    will NOT remove the knowledge base or memory files.
+    """
+    from .tui.project_manager import ProjectManager
+
+    if not force:
+        if not click.confirm("Reset all MUSCLE settings to defaults?"):
+            console.print("[yellow]Aborted.[/yellow]")
+            return
+
+    manager = ProjectManager()
+    project_path = Path.cwd()
+
+    manager.update_muscle_config(
+        project_path,
+        hooks_enabled=True,
+        platform="auto",
+        api_key_source="env",
+    )
+    console.print("[green]Settings reset to defaults.[/green]")
 
 
 def main() -> None:
