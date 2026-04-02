@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from ..m27_client import M27Client
 from .types import IssueCategory, PressureFocus, ReviewIssue, Severity
 
 logger = logging.getLogger(__name__)
+
+MAX_PARALLEL_FILE_REVIEWS = 5
 
 SYSTEM_PROMPT = """You are an expert code reviewer analyzing code for bugs, security issues,
 performance problems, and code quality issues. You receive:
@@ -188,7 +191,11 @@ class CodeReviewer:
                         rel = str(f.relative_to(base_dir)) if f.parent != base_dir else f.name
                         files_to_review[rel] = []
 
-        for file_path, file_issues in files_to_review.items():
+        proactive = not issues_by_file
+
+        def review_single_file(
+            file_path: str, file_issues: list[dict]
+        ) -> tuple[list[ReviewIssue], dict]:
             file_issues = file_issues[: self.max_issues_per_batch]
             code_content = ""
             try:
@@ -200,21 +207,31 @@ class CodeReviewer:
             except Exception as e:
                 logger.warning(f"Could not read {file_path}: {e}")
 
-            proactive = not issues_by_file
-            reviews, file_summary = self._review_file(
-                file_path, code_content, file_issues, proactive
-            )
-            all_reviews.extend(reviews)
+            return self._review_file(file_path, code_content, file_issues, proactive)
 
-            summary["total_reviewed"] += file_summary["total_reviewed"]
-            summary["valid_issues"] += file_summary["valid_issues"]
-            summary["false_positives"] += file_summary["false_positives"]
-            summary["intentional"] += file_summary["intentional"]
-            summary["critical"] += file_summary["critical"]
-            summary["high"] += file_summary["high"]
-            summary["medium"] += file_summary["medium"]
-            summary["low"] += file_summary["low"]
-            summary["info"] += file_summary["info"]
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FILE_REVIEWS) as executor:
+            future_to_file = {
+                executor.submit(review_single_file, fp, fi): fp
+                for fp, fi in files_to_review.items()
+            }
+
+            for future in as_completed(future_to_file):
+                file_path = future_to_file[future]
+                try:
+                    reviews, file_summary = future.result()
+                    all_reviews.extend(reviews)
+
+                    summary["total_reviewed"] += file_summary["total_reviewed"]
+                    summary["valid_issues"] += file_summary["valid_issues"]
+                    summary["false_positives"] += file_summary["false_positives"]
+                    summary["intentional"] += file_summary["intentional"]
+                    summary["critical"] += file_summary["critical"]
+                    summary["high"] += file_summary["high"]
+                    summary["medium"] += file_summary["medium"]
+                    summary["low"] += file_summary["low"]
+                    summary["info"] += file_summary["info"]
+                except Exception as e:
+                    logger.warning(f"File review failed for {file_path}: {e}")
 
         return all_reviews, summary
 

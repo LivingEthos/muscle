@@ -20,8 +20,10 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 
 from ..m27_client import M27Client
 from .code_reviewer import CodeReviewer
@@ -43,6 +45,9 @@ from .types import (
 )
 
 logger = logging.getLogger(__name__)
+
+MAX_PARALLEL_FILE_REVIEWS = 5
+MAX_PARALLEL_FIXES = 3
 
 
 @dataclass
@@ -159,17 +164,34 @@ class ReviewController:
 
         fixable_issues = [i for i in ctx.issues if i.auto_fixable and i.suggested_fix]
         ctx.stats.total_issues = len(fixable_issues)
+        issues_to_fix = fixable_issues[: self.config.max_fixes_per_round]
 
-        for issue in fixable_issues[: self.config.max_fixes_per_round]:
+        fix_lock = Lock()
+        fixed_count = 0
+
+        def apply_single_fix(issue: ReviewIssue) -> tuple[bool, ReviewIssue]:
             result = self.fix_generator.apply_fix_from_suggestion(issue)
-            if result.success:
-                ctx.stats.fixed_issues += 1
-                self._emit(
-                    ReviewEvent.FIX_APPLIED, {"file": issue.file_path, "line": issue.line_number}
-                )
+            return result.success, issue
 
-                if self.review_kb:
-                    self.review_kb.record_fix_attempt(issue.title, True, 0)
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FIXES) as executor:
+            futures = {executor.submit(apply_single_fix, issue): issue for issue in issues_to_fix}
+
+            for future in as_completed(futures):
+                try:
+                    success, issue = future.result()
+                    if success:
+                        with fix_lock:
+                            fixed_count += 1
+                        self._emit(
+                            ReviewEvent.FIX_APPLIED,
+                            {"file": issue.file_path, "line": issue.line_number},
+                        )
+                        if self.review_kb:
+                            self.review_kb.record_fix_attempt(issue.title, True, 0)
+                except Exception as e:
+                    logger.warning(f"Fix application failed: {e}")
+
+        ctx.stats.fixed_issues = fixed_count
 
         if ctx.stats.fixed_issues > 0:
             re_review = self.static_analyzer.analyze()
@@ -203,10 +225,28 @@ class ReviewController:
         fixable = [
             i for i in ctx.issues if i.auto_fixable and i.severity.value <= Severity.MEDIUM.value
         ]
-        for issue in fixable[: self.config.max_fixes_per_round]:
+        issues_to_fix = fixable[: self.config.max_fixes_per_round]
+
+        fix_lock = Lock()
+        fixed_count = 0
+
+        def apply_single_fix(issue: ReviewIssue) -> tuple[bool, ReviewIssue]:
             result = self.fix_generator.apply_fix_from_suggestion(issue)
-            if result.success:
-                ctx.stats.fixed_issues += 1
+            return result.success, issue
+
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FIXES) as executor:
+            futures = {executor.submit(apply_single_fix, issue): issue for issue in issues_to_fix}
+
+            for future in as_completed(futures):
+                try:
+                    success, issue = future.result()
+                    if success:
+                        with fix_lock:
+                            fixed_count += 1
+                except Exception as e:
+                    logger.warning(f"Fix application failed: {e}")
+
+        ctx.stats.fixed_issues = fixed_count
 
         return ctx
 
@@ -237,7 +277,11 @@ class ReviewController:
             ext = ext_map.get(lang, ".py")
             files_to_review = list(target.rglob(f"*{ext}"))
 
-        for file_path in files_to_review:
+        issues_lock = Lock()
+        found_issues: list[ReviewIssue] = []
+
+        def review_single_file(file_path: Path) -> list[ReviewIssue]:
+            issues = []
             try:
                 if file_path.exists() and file_path.is_file():
                     code_content = file_path.read_text(encoding="utf-8")
@@ -251,7 +295,7 @@ class ReviewController:
                         severity_str = finding.get("severity", "MEDIUM")
                         severity = self._parse_pressure_severity(severity_str)
                         if severity.value >= self.config.severity_threshold.value:
-                            ctx.issues.append(
+                            issues.append(
                                 ReviewIssue(
                                     file_path=finding.get("file_path", str(file_path)),
                                     line_number=finding.get("line_number", 0),
@@ -267,7 +311,20 @@ class ReviewController:
                             )
             except Exception as e:
                 logger.warning(f"Pressure review failed for {file_path}: {e}")
+            return issues
 
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FILE_REVIEWS) as executor:
+            futures = {executor.submit(review_single_file, fp): fp for fp in files_to_review}
+
+            for future in as_completed(futures):
+                try:
+                    issues = future.result()
+                    with issues_lock:
+                        found_issues.extend(issues)
+                except Exception as e:
+                    logger.warning(f"Pressure review failed: {e}")
+
+        ctx.issues = found_issues
         ctx.stats.valid_issues = len(ctx.issues)
         self._emit(ReviewEvent.SEMANTIC_REVIEW_COMPLETE, {"issues": len(ctx.issues)})
 
