@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 MARKER_START = "<!-- MUSCLE_LEARNED_START -->"
 MARKER_END = "<!-- MUSCLE_LEARNED_END -->"
+RULES_START = "<!-- MUSCLE_RULES_START -->"
+RULES_END = "<!-- MUSCLE_RULES_END -->"
+MEMORY_SECTION_START = "<!-- MUSCLE_MEMORY_START -->"
+MEMORY_SECTION_END = "<!-- MUSCLE_MEMORY_END -->"
 
 
 class MemoryManager:
@@ -416,3 +420,272 @@ Return a JSON array of the consolidated entries:
                 logger.warning(f"Memory consolidation failed for {filename}: {e}")
 
         return 0
+
+    # ---- Structured CLAUDE.md / MEMORY.md methods ----
+
+    def _ensure_claude_md_structure(self) -> Path:
+        """Create/ensure CLAUDE.md has structured rules section with Do/Don't/Project Skills."""
+        filepath = self.muscle_dir / "CLAUDE.md"
+
+        if filepath.exists():
+            content = filepath.read_text()
+            if RULES_START in content:
+                return filepath
+            # File exists but lacks rules markers -- append the section
+            content = content.rstrip("\n") + "\n\n" + self._rules_section_template() + "\n"
+            filepath.write_text(content)
+        else:
+            filepath.write_text(
+                f"# CLAUDE\n\n{self._rules_section_template()}\n"
+            )
+
+        return filepath
+
+    @staticmethod
+    def _rules_section_template() -> str:
+        return (
+            f"{RULES_START}\n"
+            "## MUSCLE Learned Rules\n\n"
+            "### Do\n\n"
+            "### Don't\n\n"
+            "### Project Skills\n\n"
+            f"{RULES_END}"
+        )
+
+    def _ensure_memory_md_structure(self) -> Path:
+        """Create/ensure MEMORY.md has structured sections between MEMORY_SECTION markers."""
+        filepath = self.muscle_dir / "MEMORY.md"
+
+        if filepath.exists():
+            content = filepath.read_text()
+            if MEMORY_SECTION_START in content:
+                return filepath
+            content = content.rstrip("\n") + "\n\n" + self._memory_section_template() + "\n"
+            filepath.write_text(content)
+        else:
+            filepath.write_text(
+                f"# MEMORY\n\n{self._memory_section_template()}\n"
+            )
+
+        return filepath
+
+    @staticmethod
+    def _memory_section_template() -> str:
+        return (
+            f"{MEMORY_SECTION_START}\n"
+            "## Pattern History\n\n"
+            "## Archived Rules\n\n"
+            "## Fix History\n\n"
+            "## Review Sessions\n\n"
+            f"{MEMORY_SECTION_END}"
+        )
+
+    def _extract_rules_section(self, content: str) -> str:
+        """Extract content between RULES_START and RULES_END."""
+        match = re.search(
+            rf"{re.escape(RULES_START)}(.*?){re.escape(RULES_END)}",
+            content,
+            re.DOTALL,
+        )
+        return match.group(1) if match else ""
+
+    def write_rule(
+        self,
+        rule_text: str,
+        rule_type: str,
+        severity: str,
+        confidence: str,
+        validated_count: int,
+    ) -> bool:
+        """Write a rule to CLAUDE.md under ### Do or ### Don't. Deduplicates."""
+        filepath = self._ensure_claude_md_structure()
+        content = filepath.read_text()
+        rules_section = self._extract_rules_section(content)
+
+        # Dedup check (case-insensitive)
+        if rule_text.lower() in rules_section.lower():
+            return False
+
+        entry = f"- {rule_text} (confidence: {confidence}, validated: {validated_count}x)"
+
+        if rule_type == "do":
+            header = "### Do"
+        else:
+            header = "### Don't"
+
+        # Insert entry after the target header, before the next ### header
+        new_content = self._insert_under_header(content, header, entry)
+        filepath.write_text(new_content)
+        return True
+
+    def _insert_under_header(self, content: str, header: str, entry: str) -> str:
+        """Insert an entry line under a specific ### header, before the next ### or end marker."""
+        lines = content.split("\n")
+        result: list[str] = []
+        inserted = False
+
+        i = 0
+        while i < len(lines):
+            result.append(lines[i])
+            if not inserted and lines[i].strip() == header:
+                # Find the insertion point: after any existing entries, before next ### or RULES_END
+                i += 1
+                # Skip blank lines and existing entries under this header
+                while i < len(lines):
+                    line = lines[i]
+                    if line.startswith("### ") or line.strip() == RULES_END:
+                        break
+                    result.append(line)
+                    i += 1
+                # Insert the new entry (with blank line before next section)
+                result.append(entry)
+                inserted = True
+                continue  # Don't increment i again, we already advanced
+            i += 1
+
+        return "\n".join(result)
+
+    def write_skill_ref(self, skill_name: str, skill_path: str) -> bool:
+        """Add a skill reference under ### Project Skills. Deduplicates."""
+        filepath = self._ensure_claude_md_structure()
+        content = filepath.read_text()
+        rules_section = self._extract_rules_section(content)
+
+        if skill_path.lower() in rules_section.lower():
+            return False
+
+        entry = f"- `{skill_path}` \u2014 {skill_name}"
+        new_content = self._insert_under_header(content, "### Project Skills", entry)
+        filepath.write_text(new_content)
+        return True
+
+    def read_rules(self) -> list[dict]:
+        """Parse rules from CLAUDE.md into list of dicts."""
+        filepath = self.muscle_dir / "CLAUDE.md"
+        if not filepath.exists():
+            return []
+
+        content = filepath.read_text()
+        rules_section = self._extract_rules_section(content)
+        if not rules_section:
+            return []
+
+        rules: list[dict] = []
+        current_type: str | None = None
+
+        for line in rules_section.split("\n"):
+            stripped = line.strip()
+            if stripped == "### Do":
+                current_type = "do"
+            elif stripped == "### Don't":
+                current_type = "dont"
+            elif stripped == "### Project Skills":
+                current_type = None  # skills are not rules
+            elif stripped.startswith("- ") and current_type is not None:
+                text, confidence, validated_count = self._parse_rule_line(stripped)
+                if text:
+                    rules.append(
+                        {
+                            "text": text,
+                            "type": current_type,
+                            "confidence": confidence,
+                            "validated_count": validated_count,
+                        }
+                    )
+
+        return rules
+
+    @staticmethod
+    def _parse_rule_line(line: str) -> tuple[str, str, int]:
+        """Parse '- Rule text (confidence: X, validated: Nx)' into (text, confidence, validated_count)."""
+        match = re.match(
+            r"^- (.+?) \(confidence: ([^,]+), validated: (\d+)x\)$",
+            line,
+        )
+        if match:
+            return match.group(1), match.group(2), int(match.group(3))
+        return "", "", 0
+
+    def update_rule_validation(
+        self, rule_text: str, validated_count: int, confidence: str
+    ) -> bool:
+        """Update an existing rule's validation count and confidence in-place."""
+        filepath = self.muscle_dir / "CLAUDE.md"
+        if not filepath.exists():
+            return False
+
+        content = filepath.read_text()
+        lines = content.split("\n")
+        updated = False
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("- ") and rule_text.lower() in stripped.lower():
+                parsed_text, _, _ = self._parse_rule_line(stripped)
+                if parsed_text.lower() == rule_text.lower():
+                    lines[i] = f"- {parsed_text} (confidence: {confidence}, validated: {validated_count}x)"
+                    updated = True
+                    break
+
+        if updated:
+            filepath.write_text("\n".join(lines))
+
+        return updated
+
+    def archive_rule(self, rule_text: str, reason: str) -> bool:
+        """Remove rule from CLAUDE.md, add it to MEMORY.md under ## Archived Rules."""
+        filepath = self.muscle_dir / "CLAUDE.md"
+        if not filepath.exists():
+            return False
+
+        content = filepath.read_text()
+        lines = content.split("\n")
+        removed_line: str | None = None
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("- ") and rule_text.lower() in stripped.lower():
+                parsed_text, _, _ = self._parse_rule_line(stripped)
+                if parsed_text.lower() == rule_text.lower():
+                    removed_line = stripped
+                    lines.pop(i)
+                    break
+
+        if not removed_line:
+            return False
+
+        filepath.write_text("\n".join(lines))
+
+        # Add to MEMORY.md under ## Archived Rules
+        memory_path = self._ensure_memory_md_structure()
+        memory_content = memory_path.read_text()
+        timestamp = datetime.now().strftime("%Y-%m-%d")
+        archive_entry = f"- [{timestamp}] {removed_line} — Reason: {reason}"
+        memory_content = self._insert_under_header(
+            memory_content, "## Archived Rules", archive_entry
+        )
+        memory_path.write_text(memory_content)
+        return True
+
+    def log_review_session(
+        self,
+        critical: int,
+        high: int,
+        medium: int,
+        low: int,
+        actions: list[str],
+    ) -> bool:
+        """Add a session summary under ## Review Sessions in MEMORY.md."""
+        memory_path = self._ensure_memory_md_structure()
+        memory_content = memory_path.read_text()
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        actions_str = "; ".join(actions) if actions else "none"
+        entry = (
+            f"- [{timestamp}] critical={critical} high={high} medium={medium} low={low} "
+            f"| actions: {actions_str}"
+        )
+        memory_content = self._insert_under_header(
+            memory_content, "## Review Sessions", entry
+        )
+        memory_path.write_text(memory_content)
+        return True

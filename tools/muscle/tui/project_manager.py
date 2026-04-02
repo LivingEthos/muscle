@@ -153,8 +153,8 @@ class ProjectManager:
 
         agent_md = muscle_dir / AGENT_MEMORY
         if not agent_md.exists():
-            agent_md.write_text("""<!-- MUSCLE_AGENTS_START -->
-<!-- MUSCLE_AGENTS_END -->
+            agent_md.write_text("""<!-- MUSCLE_LEARNED_START -->
+<!-- MUSCLE_LEARNED_END -->
 """)
 
         memory_md = muscle_dir / MEMORY_MEMORY
