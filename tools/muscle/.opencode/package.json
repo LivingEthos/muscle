@@ -1,11 +1,11 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "name": "muscle",
-  "description": "MUSCLE - Self-learning code review for OpenCode. Commands: /muscle-review, /muscle-pressure, /muscle-rescue, /muscle-status, /muscle-result, /muscle-cancel, /muscle-setup, /muscle-check, /muscle-history, /muscle-probe, /muscle-diagnosis, /muscle-lifeline, /muscle-kb-stats, /muscle-settings-show, /muscle-settings-api-key",
+  "description": "MUSCLE - Self-learning code review that gets smarter with every task. 26 tools available including review, pressure, rescue, lifeline, check, probe, diagnosis, history, kb, settings, nightly, improve, cost, init, run, tui, and more.",
   "version": "0.1.0",
   "keywords": ["code-review", "self-improving", "ai", "minimax", "quality", "auto-fix"],
   "dependencies": {
-    "@opencode-ai/sdk": "^1.0.0",
+    "@opencode-ai/plugin": "^1.0.0",
     "zod": "^3.22.0"
   }
 }

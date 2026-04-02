@@ -13,5 +13,8 @@
       "muscle *": "allow",
       "git *": "allow"
     }
-  }
+  },
+  "plugins": [
+    "./plugins/muscle.ts"
+  ]
 }

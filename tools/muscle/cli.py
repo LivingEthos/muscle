@@ -271,15 +271,16 @@ def init(
             if manager.init_opencode_config(project, project.path / ".muscle"):
                 console.print("[green]✓[/green] Created .opencode/ directory")
                 console.print("[green]✓[/green] Created opencode.json")
-                console.print("[green]✓[/green] Linked commands and agents")
+                console.print("[green]✓[/green] Linked agents and skills")
                 console.print()
-                console.print("[bold]OpenCode Commands:[/bold]")
-                console.print("  /muscle-review - Run code review")
-                console.print("  /muscle-pressure - Adversarial review")
-                console.print("  /muscle-rescue - Deep investigation")
-                console.print("  /muscle-status - Check shadow jobs")
-                console.print("  /muscle-result - Get results")
-                console.print("  /muscle-setup - Configure settings")
+                console.print("[bold]MUSCLE Tools Available in OpenCode:[/bold]")
+                console.print("  muscle_review, muscle_pressure, muscle_rescue, muscle_lifeline")
+                console.print("  muscle_check, muscle_probe, muscle_diagnosis, muscle_result")
+                console.print("  muscle_history, muscle_kb_stats, muscle_settings_*")
+                console.print("  muscle_init, muscle_nightly, muscle_improve, muscle_cost_*")
+                console.print("  muscle_tui, muscle_run, muscle_abort")
+                console.print()
+                console.print("[dim]MUSCLE automatically calls muscle_review on session idle[/dim]")
             else:
                 console.print("[yellow]⚠[/yellow] OpenCode setup skipped (may already exist)")
 
@@ -290,7 +291,7 @@ def init(
         console.print("Run 'muscle review --target ./src' to run a review")
         if effective_platform in ("opencode", "auto"):
             console.print()
-            console.print("[dim]For OpenCode, commands are available as /muscle-*[/dim]")
+            console.print("[dim]For OpenCode, use the muscle_* tools directly[/dim]")
     else:
         console.print("[red]Failed to initialize project[/red]")
 

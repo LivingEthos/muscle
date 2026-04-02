@@ -265,6 +265,7 @@ class ProjectManager:
 
     def init_opencode_config(self, config: ProjectConfig, muscle_dir: Path) -> bool:
         opencode_dir = config.path / ".opencode"
+        source_dir = Path(__file__).parent.parent / ".opencode"
         try:
             opencode_dir.mkdir(exist_ok=True)
 
@@ -284,21 +285,21 @@ class ProjectManager:
                         "git *": "allow",
                     }
                 },
+                "plugins": [
+                    "./plugins/muscle-integration.ts",
+                ],
             }
 
             opencode_json_path = opencode_dir / "opencode.json"
             with open(opencode_json_path, "w") as f:
                 json.dump(opencode_json, f, indent=2)
 
-            commands_source = Path(__file__).parent.parent / ".opencode" / "commands"
-            commands_target = opencode_dir / "commands"
-            if commands_source.exists() and not commands_target.exists():
-                commands_target.symlink_to(commands_source.resolve())
-
-            agents_source = Path(__file__).parent.parent / ".opencode" / "agents"
-            agents_target = opencode_dir / "agents"
-            if agents_source.exists() and not agents_target.exists():
-                agents_target.symlink_to(agents_source.resolve())
+            symlink_dirs = ["agents", "plugins", "skills"]
+            for dir_name in symlink_dirs:
+                source = source_dir / dir_name
+                target = opencode_dir / dir_name
+                if source.exists() and not target.exists():
+                    target.symlink_to(source.resolve())
 
             return True
         except Exception as e:
