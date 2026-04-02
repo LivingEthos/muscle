@@ -12,6 +12,7 @@ Architecture Decision Record (ADR):
 from __future__ import annotations
 
 import logging
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -244,7 +245,8 @@ class EvaluatorRegistry:
         self, output_dir: str, evaluators: list[BaseEvaluator]
     ) -> EvaluationResult:
         start_time = time.time()
-        max_workers = min(4, len(evaluators))
+        cpu_count = os.cpu_count() or 4
+        max_workers = min(cpu_count, len(evaluators))
         timeout_seconds = 30
 
         evaluator_names = [e.name for e in evaluators]
