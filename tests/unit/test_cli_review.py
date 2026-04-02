@@ -191,3 +191,102 @@ class TestReviewCommand:
         )
 
         assert result.exit_code == 0
+
+
+class TestReviewLearningIntegration:
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_review_calls_learning_pipeline(self, runner, tmp_path):
+        """Verify that LearningPipeline.learn_from_review is called after review."""
+        mock_result = MagicMock()
+        mock_result.session_id = "abc123"
+        mock_result.target_path = str(tmp_path)
+        mock_result.issues = []
+        mock_result.critical_count = 0
+        mock_result.high_count = 0
+        mock_result.medium_count = 0
+        mock_result.low_count = 0
+        mock_result.info_count = 0
+
+        mock_run_result = MagicMock()
+        mock_run_result.handoff_plan = None
+
+        mock_controller = MagicMock()
+        mock_controller.run.return_value = mock_run_result
+        mock_controller.get_review_result.return_value = mock_result
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.learn_from_review.return_value = {
+            "rules_added": 2,
+            "skills_generated": 1,
+        }
+
+        env = os.environ.copy()
+        env["MINIMAX_API_KEY"] = "test-key"
+
+        with (
+            patch(
+                "tools.muscle.code_review.review_controller.ReviewController",
+                return_value=mock_controller,
+            ),
+            patch(
+                "tools.muscle.cli.LearningPipeline",
+                return_value=mock_pipeline,
+            ) as mock_pipeline_class,
+        ):
+            result = runner.invoke(
+                cli,
+                ["review", "--target", str(tmp_path)],
+                env=env,
+            )
+
+        assert result.exit_code == 0
+        mock_pipeline_class.assert_called_once()
+        mock_pipeline.learn_from_review.assert_called_once()
+        assert "Learned 2 new rules" in result.output
+        assert "Generated 1 new skills" in result.output
+
+    def test_review_learning_pipeline_failure_does_not_crash(self, runner, tmp_path):
+        """Verify that a failing LearningPipeline does not crash the review."""
+        mock_result = MagicMock()
+        mock_result.session_id = "abc123"
+        mock_result.target_path = str(tmp_path)
+        mock_result.issues = []
+        mock_result.critical_count = 0
+        mock_result.high_count = 0
+        mock_result.medium_count = 0
+        mock_result.low_count = 0
+        mock_result.info_count = 0
+
+        mock_run_result = MagicMock()
+        mock_run_result.handoff_plan = None
+
+        mock_controller = MagicMock()
+        mock_controller.run.return_value = mock_run_result
+        mock_controller.get_review_result.return_value = mock_result
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.learn_from_review.side_effect = RuntimeError("pipeline broke")
+
+        env = os.environ.copy()
+        env["MINIMAX_API_KEY"] = "test-key"
+
+        with (
+            patch(
+                "tools.muscle.code_review.review_controller.ReviewController",
+                return_value=mock_controller,
+            ),
+            patch(
+                "tools.muscle.cli.LearningPipeline",
+                return_value=mock_pipeline,
+            ),
+        ):
+            result = runner.invoke(
+                cli,
+                ["review", "--target", str(tmp_path)],
+                env=env,
+            )
+
+        assert result.exit_code == 0

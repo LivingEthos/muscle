@@ -40,6 +40,7 @@ from .self_improver import SelfImprover
 from .session_manager import SessionManager
 from .strategy_kb import GlobalKnowledgeBase
 from .types import BudgetMode, EvalMode, RunConfig, SessionReport, SessionStatus
+from .code_review.learning_pipeline import LearningPipeline
 from .webhook_notifier import WebhookNotifier
 
 console = Console()
@@ -446,11 +447,6 @@ def run(
         allow_warnings=allow_warnings,
         interactive=interactive,
     )
-
-    console.print(
-        f"[bold]MUSCLE Session[/bold] - Task: {_truncate(task, MAX_TASK_PREVIEW_LENGTH)}..."
-    )
-    console.print(f"Config: iterations={max_iterations}, timeout={timeout}, budget={budget}")
 
     if template is None:
         template = language is not None
@@ -1137,12 +1133,16 @@ def _parse_timeout(timeout_str: str) -> int:
     if unit in multipliers:
         try:
             value = int(timeout_str[:-1])
+            if value < 0:
+                return 3600
             seconds = value * multipliers[unit]
             return min(seconds, MAX_TIMEOUT_SECONDS)
         except ValueError:
             return 3600
     try:
         seconds = int(timeout_str)
+        if seconds < 0:
+            return 3600
         return min(seconds, MAX_TIMEOUT_SECONDS)
     except ValueError:
         return 3600
@@ -1368,6 +1368,26 @@ def review(
     try:
         result = controller.run()
         review_result = controller.get_review_result()
+
+        # Self-learning: update CLAUDE.md, MEMORY.md, and skills
+        if review_result:
+            try:
+                project_path = str(Path(target).resolve().parent) if Path(target).is_file() else target
+                pipeline = LearningPipeline(
+                    project_path=project_path,
+                    m27_client=m27_client,
+                )
+                learn_result = pipeline.learn_from_review(review_result)
+                if learn_result.get("rules_added"):
+                    console.print(
+                        f"[cyan]Learned {learn_result['rules_added']} new rules[/cyan]"
+                    )
+                if learn_result.get("skills_generated"):
+                    console.print(
+                        f"[cyan]Generated {learn_result['skills_generated']} new skills[/cyan]"
+                    )
+            except Exception as e:
+                logger.warning(f"Learning pipeline failed: {e}")
 
         if format == "json" and review_result:
             output_data = {
