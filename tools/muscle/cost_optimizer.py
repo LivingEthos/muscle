@@ -5,15 +5,20 @@ Architecture Decision Record (ADR):
 - Tiered approach based on task complexity
 - Estimate cost before running
 - Suggest optimizations
-- Cache common patterns to avoid regeneration
+- SQLite cache for fast lookups and LRU eviction
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
+import logging
+import sqlite3
+import threading
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class CostTier(Enum):
@@ -25,6 +30,7 @@ class CostTier(Enum):
 
 class CostOptimizer:
     CACHE_DIR = Path.home() / ".muscle" / "cache"
+    MAX_CACHE_SIZE = 1000
 
     SIMPLE_KEYWORDS = [
         "regex",
@@ -75,7 +81,44 @@ class CostOptimizer:
     def __init__(self, cache_dir: str | None = None):
         self.cache_dir = Path(cache_dir) if cache_dir else self.CACHE_DIR
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self._load_cache()
+        self._conn: sqlite3.Connection | None = None
+        self._conn_lock = threading.Lock()
+        self._init_db()
+
+    def _init_db(self) -> None:
+        self.cache_dir / "cache.db"
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS cost_cache (
+                    task_hash TEXT PRIMARY KEY,
+                    task TEXT NOT NULL,
+                    result TEXT NOT NULL,
+                    files TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    access_count INTEGER DEFAULT 1,
+                    last_accessed TEXT NOT NULL
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_accessed_at ON cost_cache(last_accessed)
+            """)
+            conn.commit()
+
+    def _get_connection(self) -> sqlite3.Connection:
+        with self._conn_lock:
+            if self._conn is not None:
+                try:
+                    self._conn.execute("SELECT 1")
+                    return self._conn
+                except (sqlite3.Error, sqlite3.ProgrammingError):
+                    self._conn = None
+
+            db_path = self.cache_dir / "cache.db"
+            conn = sqlite3.connect(str(db_path), timeout=30.0)
+            conn.row_factory = sqlite3.Row
+            self._conn = conn
+            return conn
 
     def estimate_tier(self, task: str) -> CostTier:
         task_lower = task.lower()
@@ -138,56 +181,104 @@ class CostOptimizer:
 
     def get_from_cache(self, task: str) -> dict | None:
         task_hash = self._hash_task(task)
-        cache_file = self.cache_dir / f"{task_hash}.json"
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            now = datetime.now().isoformat()
 
-        if cache_file.exists():
-            try:
-                data = json.loads(cache_file.read_text())
-                return dict(data) if isinstance(data, dict) else None
-            except Exception:
+            cursor.execute(
+                """
+                UPDATE cost_cache
+                SET access_count = access_count + 1, last_accessed = ?
+                WHERE task_hash = ?
+                """,
+                (now, task_hash),
+            )
+            conn.commit()
+
+            if cursor.rowcount == 0:
                 return None
+
+            cursor.execute(
+                "SELECT task, result, files FROM cost_cache WHERE task_hash = ?",
+                (task_hash,),
+            )
+            row = cursor.fetchone()
+            if row:
+                return {
+                    "task": row["task"],
+                    "result": row["result"],
+                    "files": row["files"].split(",") if row["files"] else [],
+                }
+        except sqlite3.Error as e:
+            logger.warning(f"Cache lookup failed: {e}")
         return None
 
     def save_to_cache(self, task: str, result: str, files: list[str]) -> None:
         task_hash = self._hash_task(task)
-        cache_file = self.cache_dir / f"{task_hash}.json"
+        now = datetime.now().isoformat()
+        files_str = ",".join(files) if files else ""
 
-        cache_data = {
-            "task": task,
-            "result": result,
-            "files": files,
-            "cached_at": str(cache_file.stat().st_mtime) if cache_file.exists() else None,
-        }
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
 
-        cache_file.write_text(json.dumps(cache_data, indent=2))
+            cursor.execute("SELECT COUNT(*) FROM cost_cache")
+            count = cursor.fetchone()[0]
+
+            if count >= self.MAX_CACHE_SIZE:
+                cursor.execute(
+                    """
+                    DELETE FROM cost_cache
+                    WHERE task_hash IN (
+                        SELECT task_hash FROM cost_cache
+                        ORDER BY last_accessed ASC
+                        LIMIT ?
+                    )
+                    """,
+                    (count - self.MAX_CACHE_SIZE + 100,),
+                )
+
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO cost_cache
+                (task_hash, task, result, files, created_at, access_count, last_accessed)
+                VALUES (?, ?, ?, ?, ?, 1, ?)
+                """,
+                (task_hash, task, result, files_str, now, now),
+            )
+            conn.commit()
+        except sqlite3.Error as e:
+            logger.warning(f"Cache save failed: {e}")
 
     def _hash_task(self, task: str) -> str:
         return hashlib.md5(task.lower().encode()).hexdigest()[:16]
 
-    def _load_cache(self) -> None:
-        index_file = self.cache_dir / "index.json"
-        if index_file.exists():
-            try:
-                self.cache_index = json.loads(index_file.read_text())
-            except Exception:
-                self.cache_index = {}
-        else:
-            self.cache_index = {}
-
     def clear_cache(self) -> int:
-        count = 0
-        for cache_file in self.cache_dir.glob("*.json"):
-            if cache_file.name != "index.json":
-                cache_file.unlink()
-                count += 1
-        return count
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM cost_cache")
+            row = cursor.fetchone()
+            count = int(row[0]) if row else 0
+            cursor.execute("DELETE FROM cost_cache")
+            conn.commit()
+            return count
+        except sqlite3.Error as e:
+            logger.warning(f"Cache clear failed: {e}")
+            return 0
 
     def get_cache_stats(self) -> dict:
-        cache_files = [f for f in self.cache_dir.glob("*.json") if f.name != "index.json"]
-        total_size = sum(f.stat().st_size for f in cache_files)
-
-        return {
-            "cached_items": len(cache_files),
-            "total_size_bytes": total_size,
-            "total_size_mb": round(total_size / 1024 / 1024, 2),
-        }
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM cost_cache")
+            count = cursor.fetchone()[0]
+            return {
+                "cached_items": count,
+                "total_size_bytes": 0,
+                "total_size_mb": 0.0,
+            }
+        except sqlite3.Error as e:
+            logger.warning(f"Cache stats failed: {e}")
+            return {"cached_items": 0, "total_size_bytes": 0, "total_size_mb": 0.0}
