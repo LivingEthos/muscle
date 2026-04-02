@@ -41,6 +41,18 @@ def test_budget_manager_fixed_exceeded():
     assert "Budget exceeded" in reason
 
 
+def test_budget_exceeded_does_not_modify_state():
+    """Regression: check_budget must NOT deduct tokens when budget is exceeded."""
+    manager = BudgetManager(mode=BudgetMode.FIXED, fixed_limit=5000)
+
+    ok, reason = manager.check_budget(10000)
+    assert ok is False
+    assert manager.fixed_limit == 5000, "fixed_limit should not change on rejection"
+
+    info = manager.get_budget_info()
+    assert info.remaining_tokens == 5000
+
+
 def test_budget_manager_auto_loads_from_file():
     with tempfile.TemporaryDirectory() as tmpdir:
         budget_file = Path(tmpdir) / "budget.json"

@@ -54,7 +54,7 @@ EOF
 # Get current version
 get_current_version() {
     if command -v muscle &>/dev/null; then
-        muscle --version 2>&1 | grep -oP 'version \K[0-9.]+' || echo "unknown"
+        muscle --version 2>&1 | sed -n 's/.*version[[:space:]]*\([0-9][0-9.]*\).*/\1/p' || echo "unknown"
     else
         echo "not installed"
     fi

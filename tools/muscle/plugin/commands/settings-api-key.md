@@ -1,29 +1,18 @@
-# MUSCLE Settings API Key
+---
+description: Set or configure the MINIMAX/M2.7 API key for MUSCLE
+args:
+  - name: key
+    description: API key to set
+    required: false
+  - name: source
+    description: "API key source: env, opencode, ask"
+    required: false
+---
 
-Set or configure the MINIMAX/M2.7 API key for MUSCLE.
+Configure the MUSCLE API key. Execute:
 
-## Usage
-
-```
-/muscle:settings-api-key [--key <key>] [--source <source>]
-```
-
-## Options
-
-- `--key` - API key to set (optional, prompts if not provided)
-- `--source` - API key source: `env`, `opencode`, `ask` (optional)
-
-## Examples
-
-```
-/muscle:settings-api-key --key sk-xxxxx
-/muscle:settings-api-key --source opencode
-/muscle:settings-api-key
+```bash
+muscle settings api-key ${source:+--source "$source"} ${key:+--key "$key"}
 ```
 
-## API Key Sources
-
-- `env` - Use MINIMAX_API_KEY environment variable (default)
-- `opencode` - Use OpenCode provider authentication
-- `ask` - Prompt for API key when needed
-- `manual` - Key set directly via --key flag
+If no key or source is provided, show current API key status.

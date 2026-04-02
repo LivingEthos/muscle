@@ -1,30 +1,15 @@
-# MUSCLE Cancel
+---
+description: Cancel a running or pending MUSCLE shadow (background) job
+args:
+  - name: job-id
+    description: Job ID to cancel
+    required: true
+---
 
-Cancel a running or pending MUSCLE job.
+Cancel a running MUSCLE shadow job. Execute:
 
-## Usage
-
-```
-/muscle:cancel [job-id]
-```
-
-## Examples
-
-```
-/muscle:cancel
-/muscle:cancel abc123
+```bash
+muscle shadow cancel --job-id "${job_id}"
 ```
 
-## Output
-
-Confirms cancellation of:
-- Running jobs (SIGTERM to worker)
-- Pending jobs (removed from queue)
-
-Without job-id, shows interactive list of cancelable jobs.
-
-## Notes
-
-- Running jobs are gracefully stopped (worker finishes current operation)
-- Canceled jobs are marked as `canceled` in history
-- Results from canceled jobs are not available
+Confirm the cancellation and report final status.

@@ -1,15 +1,10 @@
 {
-  "description": "MUSCLE post-task review hooks",
   "hooks": {
     "Stop": [
       {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "muscle review --target \"$CLAUDE_PROJECT_DIR\" --mode review --severity low 2>&1 || true",
-            "timeout": 120
-          }
-        ]
+        "type": "command",
+        "command": "muscle review --target . --mode review --severity low 2>&1 || true",
+        "timeout": 120
       }
     ]
   }

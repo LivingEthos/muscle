@@ -108,7 +108,10 @@ clone_repo() {
         info "Updating existing MUSCLE installation at $INSTALL_DIR"
         git -C "$INSTALL_DIR" fetch --quiet origin
         git -C "$INSTALL_DIR" checkout --quiet "$BRANCH"
-        git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH" --quiet 2>/dev/null || true
+        git -C "$INSTALL_DIR" pull --quiet origin "$BRANCH" 2>/dev/null || {
+            warn "Pull failed, resetting to origin/$BRANCH"
+            git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH" --quiet 2>/dev/null || true
+        }
     else
         info "Cloning MUSCLE into $INSTALL_DIR..."
         mkdir -p "$(dirname "$INSTALL_DIR")"

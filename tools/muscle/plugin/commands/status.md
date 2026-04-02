@@ -1,27 +1,15 @@
-# MUSCLE Status
+---
+description: Check status of running or completed MUSCLE shadow (background) jobs
+args:
+  - name: job-id
+    description: Specific job ID to check (shows all if not specified)
+    required: false
+---
 
-Check the status of running and recent MUSCLE jobs.
+Check the status of MUSCLE shadow jobs. Execute:
 
-## Usage
-
-```
-/muscle:status [job-id]
-```
-
-## Examples
-
-```
-/muscle:status
-/muscle:status abc123
+```bash
+muscle shadow status ${job_id:+--job-id "$job_id"}
 ```
 
-## Output
-
-Shows:
-- Current/recent jobs
-- Job status (pending, running, completed, failed)
-- Target path
-- Mode
-- Created/started times
-
-Use `/muscle:result` to get results from completed jobs.
+Show job status (pending, running, completed, failed) with timestamps.

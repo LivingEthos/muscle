@@ -1,52 +1,21 @@
-# MUSCLE Pressure Review
+---
+description: Run adversarial pressure review that challenges design decisions and exposes failure modes
+args:
+  - name: target
+    description: Path to review (defaults to current directory)
+    required: false
+  - name: focus
+    description: "Comma-separated focus areas: design, failure, race, auth, data, rollback, reliability"
+    required: false
+  - name: intensity
+    description: "Review intensity: minimal, moderate, intensive, exhaustive"
+    required: false
+---
 
-Run an adversarial review that challenges design decisions, assumptions, and failure modes.
+Run an adversarial MUSCLE pressure review. Execute:
 
-## Usage
-
-```
-/muscle:pressure [--target <path>] [--focus <areas>] [--intensity <level>] [--options...]
-```
-
-## Options
-
-- `--target` - Path to review (default: current directory)
-- `--focus` - Focus areas: `design`, `failure`, `race`, `auth`, `data`, `rollback`, `reliability` (comma-separated)
-- `--intensity` - Review intensity: `minimal`, `moderate`, `intensive`, `exhaustive` (default: `moderate`)
-- `--severity` - Minimum severity: `critical`, `high`, `medium`, `low` (default: `low`)
-- `--language` - Programming language (auto-detected if not specified)
-- `--format` - Output format: `text`, `json` (default: `text`)
-- `--shadow` - Run in shadow (background) mode
-
-## Examples
-
-```
-/muscle:pressure
-/muscle:pressure --focus design,failure,race
-/muscle:pressure --intensity exhaustive
-/muscle:pressure --target ./src --focus auth,data --severity high
-/muscle:pressure --shadow --intensity intensive
+```bash
+muscle review --target "${target:-.}" --mode pressure --intensity "${intensity:-intensive}" ${focus:+--focus "$focus"}
 ```
 
-## Focus Areas
-
-- **design** - Challenge design trade-offs and alternative approaches
-- **failure** - Identify failure modes and error handling gaps
-- **race** - Find race conditions and concurrency issues
-- **auth** - Expose authentication and authorization flaws
-- **data** - Detect data loss and corruption risks
-- **rollback** - Question rollback and recovery concerns
-- **reliability** - Assess reliability and error resilience
-
-## Intensity Levels
-
-- **minimal** - Quick adversarial scan
-- **moderate** - Standard adversarial review
-- **intensive** - Deep adversarial analysis
-- **exhaustive** - Comprehensive attack simulation
-
-## What Makes Pressure Different
-
-Pressure mode doesn't just find bugs - it questions the entire approach. It thinks like an attacker or someone who wants to break the code. Useful before shipping critical changes.
-
-See also: `/muscle:review` for standard review.
+Present pressure findings as challenges to the code's design. For each finding show the exploit scenario and suggested safer approach.

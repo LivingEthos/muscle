@@ -1,31 +1,18 @@
-# MUSCLE Check
+---
+description: Quick validation check - runs compiler, linter, and tests without full review
+args:
+  - name: target
+    description: Path to check (defaults to current directory)
+    required: false
+  - name: language
+    description: Programming language (auto-detected if not specified)
+    required: false
+---
 
-Run a single-shot validation against a file or directory. Runs compiler, linter, and test checks once without any iteration loop.
+Run a quick MUSCLE validation check (compiler + linter + tests). Execute:
 
-## Usage
-
-```
-/muscle:check [--target <path>] [--language <lang>] [--format <format>]
-```
-
-## Options
-
-- `--target` - Path to validate (file or directory, required)
-- `--language` - Programming language (auto-detected if not specified)
-- `--format` - Output format: `text`, `json` (default: `text`)
-
-## Examples
-
-```
-/muscle:check --target ./src
-/muscle:check --target ./src --language python --format json
-/muscle:check --target ./tests
+```bash
+muscle check --target "${target:-.}" ${language:+--language "$language"}
 ```
 
-## Output
-
-Returns exit code 0 if all checks pass, non-zero otherwise. Shows:
-- Compiler errors
-- Test failures
-- Linter warnings
-- Assertion failures
+Report pass/fail status for each check type. If issues are found, offer to run a full `/muscle:review` for detailed analysis.

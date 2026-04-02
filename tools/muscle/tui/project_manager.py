@@ -196,8 +196,11 @@ class ProjectManager:
         if not config_path.exists():
             return None
 
-        with open(config_path) as f:
-            data = json.load(f)["project"]
+        try:
+            with open(config_path) as f:
+                data = json.load(f)["project"]
+        except (json.JSONDecodeError, KeyError):
+            return None
 
         return ProjectConfig(
             name=data["name"],
@@ -231,23 +234,27 @@ class ProjectManager:
         import os
         import shutil
 
-        possible_paths = []
+        # Check explicit env var first
+        env_path = os.environ.get("MINIMAX_MUSCLE_PATH")
+        if env_path and Path(env_path).exists():
+            return env_path
 
-        if os.environ.get("MINIMAX_MUSCLE_PATH"):
-            possible_paths.append(os.environ["MINIMAX_MUSCLE_PATH"])
-
+        # Check PATH
         for name in ["muscle", "muscle.exe"]:
             path = shutil.which(name)
             if path:
                 return path
 
+        # Check common local locations
+        for name in ["muscle", "muscle.exe"]:
             local_path = Path.cwd() / "tools" / "muscle" / "venv" / "bin" / name
             if local_path.exists():
-                possible_paths.append(str(local_path))
+                return str(local_path)
 
-            local_path_py = Path.cwd() / "tools" / "muscle" / name
-            if local_path_py.exists():
-                possible_paths.append("python -m muscle")
+        # Check if runnable as module
+        local_cli = Path.cwd() / "tools" / "muscle" / "cli.py"
+        if local_cli.exists():
+            return "python -m tools.muscle.cli"
 
         return None
 
@@ -299,7 +306,13 @@ class ProjectManager:
                 source = source_dir / dir_name
                 target = opencode_dir / dir_name
                 if source.exists() and not target.exists():
-                    target.symlink_to(source.resolve())
+                    try:
+                        target.symlink_to(source.resolve())
+                    except OSError:
+                        # Symlink failed (e.g., Windows or permissions) — copy instead
+                        import shutil
+
+                        shutil.copytree(str(source), str(target))
 
             return True
         except Exception as e:
@@ -320,8 +333,11 @@ class ProjectManager:
         if not config_path.exists():
             return False
 
-        with open(config_path) as f:
-            data = json.load(f)
+        try:
+            with open(config_path) as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return False
 
         if api_key is not None:
             os.environ["MINIMAX_API_KEY"] = api_key

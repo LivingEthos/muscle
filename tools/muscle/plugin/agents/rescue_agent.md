@@ -1,3 +1,7 @@
+---
+description: Deep-dive investigation of complex issues including root cause analysis, race conditions, and memory leaks
+---
+
 # MUSCLE Rescue Agent
 
 Specialized sub-agent for deep-dive investigation of complex issues.

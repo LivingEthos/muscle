@@ -109,7 +109,6 @@ class BudgetManager:
             return True, ""
 
         if self.fixed_limit < iteration_cost:
-            self.fixed_limit -= iteration_cost
             return False, "Budget exceeded"
 
         self.fixed_limit -= iteration_cost

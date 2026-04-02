@@ -1,23 +1,11 @@
-# MUSCLE KB Stats
+---
+description: Show knowledge base statistics - patterns learned, usage counts, and success rates
+---
 
-Show knowledge base statistics - patterns learned, usage counts, and success rates.
+Show MUSCLE knowledge base statistics. Execute:
 
-## Usage
-
-```
-/muscle:kb-stats
-```
-
-## Examples
-
-```
-/muscle:kb-stats
+```bash
+muscle kb stats
 ```
 
-## Output
-
-Shows:
-- Total strategies in knowledge base
-- Total usage count (how many times strategies were applied)
-- Average success rate
-- Language-specific patterns (if applicable)
+Report the number of strategies, usage count, and average success rate.

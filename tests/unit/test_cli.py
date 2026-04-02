@@ -82,7 +82,7 @@ class TestHelperFunctions:
             assert _parse_timeout("") == 3600
 
         def test_negativeNumber(self):
-            assert _parse_timeout("-10") == -10
+            assert _parse_timeout("-10") == 3600
 
         def test_exceedsMax(self):
             from tools.muscle.cli import MAX_TIMEOUT_SECONDS
@@ -100,6 +100,9 @@ class TestHelperFunctions:
 
         def test_floatValue(self):
             assert _parse_timeout("1.5m") == 3600
+
+        def test_negativeWithUnit(self):
+            assert _parse_timeout("-5m") == 3600
 
     class TestParseBudget:
         def test_unlimited(self):

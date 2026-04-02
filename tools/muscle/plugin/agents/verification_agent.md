@@ -1,3 +1,7 @@
+---
+description: Validates fixes by running tests, linters, and type checks to ensure changes don't break functionality
+---
+
 # MUSCLE Verification Agent
 
 Specialized sub-agent for validating fixes and running targeted tests.

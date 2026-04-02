@@ -1,33 +1,29 @@
-# MUSCLE Setup
+---
+description: Initialize or configure MUSCLE for the current project
+args:
+  - name: action
+    description: "Action: init, enable-auto-review, disable-auto-review, list"
+    required: false
+---
 
-Configure MUSCLE settings including automatic post-task review.
+Configure MUSCLE for the current project.
 
-## Usage
-
-```
-/muscle:setup [--enable-auto-review] [--disable-auto-review] [--list]
-```
-
-## Options
-
-- `--enable-auto-review` - Enable automatic review after tasks
-- `--disable-auto-review` - Disable automatic review
-- `--list` - List current configuration
-
-## Examples
-
-```
-/muscle:setup --list
-/muscle:setup --enable-auto-review
-/muscle:setup --disable-auto-review
+If action is "init" or no MUSCLE installation exists (no `.muscle/` directory), run:
+```bash
+muscle init --non-interactive
 ```
 
-## Automatic Review
+If action is "enable-auto-review":
+```bash
+muscle settings platform --hooks
+```
 
-When enabled, MUSCLE runs a review after every task. Issues found are:
-- **Critical/High**: Blocked until fixed or bypassed
-- **Medium/Low**: Warned but can be skipped
+If action is "disable-auto-review":
+```bash
+muscle settings platform --no-hooks
+```
 
-The automatic review catches mistakes before they accumulate. Use `/muscle:setup --disable-auto-review` if it becomes too intrusive.
-
-See also: `/muscle:review`, `/muscle:pressure`
+If action is "list" or no action specified:
+```bash
+muscle settings show
+```

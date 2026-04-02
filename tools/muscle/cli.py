@@ -30,6 +30,7 @@ from rich.text import Text
 
 from .budget_manager import BudgetManager
 from .code_generator import CodeGenerator
+from .code_review.learning_pipeline import LearningPipeline
 from .cost_optimizer import CostOptimizer
 from .evolver import Evolver
 from .interactive import InteractiveHandler
@@ -40,7 +41,6 @@ from .self_improver import SelfImprover
 from .session_manager import SessionManager
 from .strategy_kb import GlobalKnowledgeBase
 from .types import BudgetMode, EvalMode, RunConfig, SessionReport, SessionStatus
-from .code_review.learning_pipeline import LearningPipeline
 from .webhook_notifier import WebhookNotifier
 
 console = Console()
@@ -1983,6 +1983,92 @@ def settings_reset(force: bool) -> None:
         api_key_source="env",
     )
     console.print("[green]Settings reset to defaults.[/green]")
+
+
+@cli.command()
+@click.option("--force", is_flag=True, help="Skip confirmation prompts")
+@click.option("--keep-data", is_flag=True, help="Keep .muscle/ project data")
+@click.option("--keep-config", is_flag=True, help="Keep ~/.muscle/ global config")
+def uninstall(force: bool, keep_data: bool, keep_config: bool) -> None:
+    """Uninstall MUSCLE from the current project.
+
+    Removes .muscle/ directory, OpenCode integration files, and optionally
+    the global config. Does NOT uninstall the CLI binary itself (use pip/uv for that).
+
+    Examples:
+
+        muscle uninstall
+        muscle uninstall --force --keep-data
+    """
+    import shutil
+
+    project_path = Path.cwd()
+    muscle_dir = project_path / ".muscle"
+    opencode_dir = project_path / ".opencode"
+
+    if not muscle_dir.exists() and not opencode_dir.exists():
+        console.print("[yellow]No MUSCLE installation found in current directory.[/yellow]")
+        return
+
+    if not force:
+        console.print("[bold red]This will remove MUSCLE from this project.[/bold red]")
+        console.print()
+        if muscle_dir.exists():
+            console.print(f"  [red]Delete[/red] {muscle_dir}/")
+        if opencode_dir.exists():
+            console.print(f"  [red]Delete[/red] {opencode_dir}/")
+        console.print()
+        if not click.confirm("Proceed with uninstall?"):
+            console.print("[yellow]Aborted.[/yellow]")
+            return
+
+    # Remove project .muscle/ directory
+    if not keep_data and muscle_dir.exists():
+        try:
+            shutil.rmtree(muscle_dir)
+            console.print(f"[green]Removed[/green] {muscle_dir}/")
+        except OSError as e:
+            console.print(f"[red]Failed to remove {muscle_dir}: {e}[/red]")
+    elif keep_data and muscle_dir.exists():
+        console.print(f"[dim]Kept {muscle_dir}/ (--keep-data)[/dim]")
+
+    # Remove .opencode/ directory
+    if opencode_dir.exists():
+        try:
+            shutil.rmtree(opencode_dir)
+            console.print(f"[green]Removed[/green] {opencode_dir}/")
+        except OSError as e:
+            console.print(f"[red]Failed to remove {opencode_dir}: {e}[/red]")
+
+    # Remove OpenCode skill
+    skill_dir = Path.home() / ".claude" / "skills" / "muscle-review"
+    if skill_dir.exists():
+        try:
+            shutil.rmtree(skill_dir)
+            console.print("[green]Removed[/green] OpenCode skill (~/.claude/skills/muscle-review/)")
+        except OSError as e:
+            console.print(f"[red]Failed to remove skill: {e}[/red]")
+
+    # Remove global config
+    if not keep_config:
+        global_dir = Path.home() / ".muscle"
+        if global_dir.exists():
+            if not force:
+                if not click.confirm("Also remove global config (~/.muscle/)?"):
+                    console.print("[dim]Kept ~/.muscle/[/dim]")
+                    global_dir = None  # type: ignore[assignment]
+
+            if global_dir and global_dir.exists():
+                try:
+                    shutil.rmtree(global_dir)
+                    console.print("[green]Removed[/green] ~/.muscle/")
+                except OSError as e:
+                    console.print(f"[red]Failed to remove ~/.muscle/: {e}[/red]")
+
+    console.print()
+    console.print("[bold green]MUSCLE uninstalled from this project.[/bold green]")
+    console.print()
+    console.print("[dim]To fully remove the CLI: pip uninstall muscle  (or: uv pip uninstall muscle)[/dim]")
 
 
 def main() -> None:

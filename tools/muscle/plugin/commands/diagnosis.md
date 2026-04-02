@@ -1,28 +1,15 @@
-# MUSCLE Diagnosis
+---
+description: Get the final diagnosis and detailed results from a completed MUSCLE shadow job
+args:
+  - name: job-id
+    description: Specific job ID to get diagnosis for (shows most recent if not specified)
+    required: false
+---
 
-Get the final diagnosis/results from a completed MUSCLE shadow job.
+Get detailed diagnosis from a completed MUSCLE shadow job. Execute:
 
-## Usage
-
-```
-/muscle:diagnosis [--job-id <id>]
-```
-
-## Options
-
-- `--job-id` - Specific job ID to get diagnosis (optional, shows most recent if not specified)
-
-## Examples
-
-```
-/muscle:diagnosis
-/muscle:diagnosis --job-id abc12345
+```bash
+muscle shadow diagnosis ${job_id:+--job-id "$job_id"}
 ```
 
-## Output
-
-Shows the completed job's:
-- Issues found (critical, high, medium counts)
-- Top issues with severity and title
-- Pressure findings (if run in pressure mode)
-- Root cause analysis (if available)
+Present the diagnosis including root cause analysis, issue counts by severity, and pressure findings if available.

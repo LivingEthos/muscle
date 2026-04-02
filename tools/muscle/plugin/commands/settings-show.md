@@ -1,29 +1,11 @@
-# MUSCLE Settings Show
+---
+description: Show current MUSCLE settings and configuration
+---
 
-Show current MUSCLE settings and configuration.
+Show current MUSCLE settings. Execute:
 
-## Usage
-
-```
-/muscle:settings-show
-```
-
-## Examples
-
-```
-/muscle:settings-show
+```bash
+muscle settings show
 ```
 
-## Output
-
-Shows current configuration:
-- Project name and path
-- Platform (opencode, claude-code, auto)
-- API key source (env, opencode, ask, manual)
-- Hooks enabled/disabled
-- CLI path
-- Review gate mode (block+fix, block-all, warn, disabled)
-- Automation level (auto-fix, propose, hybrid, ask)
-
-Also shows environment status:
-- MINIMAX_API_KEY set/unset
+Report the project name, platform, API key status, hooks, review gate mode, and automation level.

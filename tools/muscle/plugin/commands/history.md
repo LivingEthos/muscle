@@ -1,24 +1,11 @@
-# MUSCLE History
+---
+description: List all MUSCLE sessions (past code generation and review runs)
+---
 
-List all MUSCLE sessions (past code generation and review runs).
+List all MUSCLE sessions. Execute:
 
-## Usage
-
-```
-/muscle:history
-```
-
-Shows a table of all sessions with:
-- Session ID
-- Task description
-- Status (success, failed, aborted)
-- Number of iterations
-- Creation timestamp
-
-## Examples
-
-```
-/muscle:history
+```bash
+muscle history
 ```
 
-Use `/muscle:resume <session-id>` to continue a failed session.
+Show the session table with ID, task, status, iterations, and timestamp.
