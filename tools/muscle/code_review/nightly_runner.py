@@ -22,6 +22,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .learning_pipeline import LearningPipeline
+from .types import ReviewResult
+
 logger = logging.getLogger(__name__)
 
 REPORTS_DIR = Path(".muscle/reports")
@@ -82,6 +85,22 @@ class NightlyRunner:
         results["duration_seconds"] = (datetime.now() - start_time).total_seconds()
 
         self._save_report(results)
+
+        # Self-learning from nightly review
+        try:
+            pipeline = LearningPipeline(str(self.project_path))
+            review_result = ReviewResult(
+                session_id=f"nightly-{start_time.strftime('%Y%m%d')}",
+                target_path=str(self.project_path),
+                critical_count=len(results.get("critical_issues", [])),
+                high_count=len(results.get("high_issues", [])),
+                medium_count=results.get("total_issues", 0) - len(results.get("critical_issues", [])) - len(results.get("high_issues", [])),
+                low_count=0,
+            )
+            pipeline.learn_from_review(review_result)
+        except Exception as e:
+            logger.warning(f"Nightly learning pipeline failed: {e}")
+
         self._last_run = start_time
 
         logger.info(f"Nightly run complete: {results['total_issues']} issues found")

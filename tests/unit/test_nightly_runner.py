@@ -6,7 +6,7 @@ import json
 import os
 import subprocess
 from datetime import datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -159,3 +159,43 @@ class TestScheduleManager:
         manager.enable_nightly()
         schedule = manager.get_schedule()
         assert "nightly" in schedule
+
+
+class TestNightlyLearningIntegration:
+    def test_nightly_run_calls_learning_pipeline(self, tmp_path):
+        config = NightlyConfig(enabled=True, target_paths=[str(tmp_path)])
+        runner = NightlyRunner(str(tmp_path), config)
+
+        with patch.object(runner, "_run_review_on_path") as mock_review:
+            mock_review.return_value = {
+                "path": str(tmp_path),
+                "issues": [],
+                "critical_issues": [],
+                "high_issues": [],
+                "total_issues": 0,
+            }
+            with patch("tools.muscle.code_review.nightly_runner.LearningPipeline") as mock_pl:
+                mock_pipeline = MagicMock()
+                mock_pipeline.learn_from_review.return_value = {}
+                mock_pl.return_value = mock_pipeline
+                runner.run_nightly()
+                mock_pl.assert_called_once()
+
+    def test_nightly_learning_failure_does_not_break_run(self, tmp_path):
+        config = NightlyConfig(enabled=True, target_paths=[str(tmp_path)])
+        runner = NightlyRunner(str(tmp_path), config)
+
+        with patch.object(runner, "_run_review_on_path") as mock_review:
+            mock_review.return_value = {
+                "path": str(tmp_path),
+                "issues": [],
+                "critical_issues": [],
+                "high_issues": [],
+                "total_issues": 0,
+            }
+            with patch("tools.muscle.code_review.nightly_runner.LearningPipeline") as mock_pl:
+                mock_pl.side_effect = Exception("Pipeline init failed")
+                result = runner.run_nightly()
+                # Should still return results despite learning failure
+                assert result is not None
+                assert result["success"] is True
