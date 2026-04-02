@@ -182,8 +182,8 @@ def mock_client():
             return_value="https://api.minimax.io/anthropic",
         ):
             with patch.object(M27Client, "_session", mock_session):
-                with patch.object(M27Client, "_global_rate_limiter"):
-                    with patch.object(M27Client, "_global_concurrency_limiter"):
+                with patch.object(M27Client, "_rate_limiter"):
+                    with patch.object(M27Client, "_concurrency_limiter"):
                         client = M27Client(api_key="test-key")
                         yield client, mock_session
 

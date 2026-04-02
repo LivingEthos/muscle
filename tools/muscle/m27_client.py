@@ -121,10 +121,13 @@ def _create_session() -> requests.Session:
 
 
 class M27Client:
-    _global_rate_limiter = RateLimiter(calls_per_second=10.0)
-    _global_concurrency_limiter = ConcurrencyLimiter(max_concurrent=5)
+    _rate_limit: float | None = None
+    _max_concurrent: int | None = None
+    _rate_limiter: RateLimiter | None = None
+    _concurrency_limiter: ConcurrencyLimiter | None = None
     _session: requests.Session | None = None
     _session_lock = threading.Lock()
+    _config_lock = threading.Lock()
 
     def __init__(
         self,
@@ -133,6 +136,8 @@ class M27Client:
         model: str = DEFAULT_MODEL,
         timeout: int = DEFAULT_TIMEOUT,
         max_retries: int = MAX_RETRIES,
+        rate_limit: float | None = None,
+        max_concurrent: int | None = None,
     ):
         self.api_key = (
             api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("MINIMAX_API_KEY")
@@ -151,8 +156,26 @@ class M27Client:
             if M27Client._session is None:
                 M27Client._session = _create_session()
 
+        self._configure_limiters(rate_limit, max_concurrent)
+
         self._rate_limit_errors = 0
         self._last_request_time: float | None = None
+
+    def _configure_limiters(self, rate_limit: float | None, max_concurrent: int | None) -> None:
+        with M27Client._config_lock:
+            if M27Client._rate_limiter is None:
+                env_rate = float(os.environ.get("MUSCLE_RATE_LIMIT", "10.0"))
+                env_concurrent = int(os.environ.get("MUSCLE_MAX_CONCURRENT", "5"))
+
+                M27Client._rate_limit = rate_limit if rate_limit is not None else env_rate
+                M27Client._max_concurrent = (
+                    max_concurrent if max_concurrent is not None else env_concurrent
+                )
+
+                M27Client._rate_limiter = RateLimiter(calls_per_second=M27Client._rate_limit)
+                M27Client._concurrency_limiter = ConcurrencyLimiter(
+                    max_concurrent=M27Client._max_concurrent
+                )
 
     def _get_headers(self) -> dict:
         return {
@@ -230,16 +253,18 @@ class M27Client:
 
         for attempt in range(self.max_retries):
             try:
-                M27Client._global_rate_limiter.wait()
+                if M27Client._rate_limiter:
+                    M27Client._rate_limiter.wait()
 
-                with M27Client._global_concurrency_limiter:
-                    session: Any = M27Client._session
-                    response = session.post(
-                        f"{self.base_url}/v1/messages",
-                        headers=self._get_headers(),
-                        json=payload,
-                        timeout=self.timeout,
-                    )
+                if M27Client._concurrency_limiter:
+                    with M27Client._concurrency_limiter:
+                        session: Any = M27Client._session
+                        response = session.post(
+                            f"{self.base_url}/v1/messages",
+                            headers=self._get_headers(),
+                            json=payload,
+                            timeout=self.timeout,
+                        )
 
                 if response.status_code == 200:
                     self._rate_limit_errors = 0
@@ -398,17 +423,19 @@ class M27Client:
 
         for attempt in range(self.max_retries):
             try:
-                M27Client._global_rate_limiter.wait()
+                if M27Client._rate_limiter:
+                    M27Client._rate_limiter.wait()
 
-                with M27Client._global_concurrency_limiter:
-                    session: Any = M27Client._session
-                    response = session.post(
-                        f"{self.base_url}/v1/messages",
-                        headers=self._get_headers(),
-                        json=payload,
-                        timeout=request_timeout,
-                        stream=True,
-                    )
+                if M27Client._concurrency_limiter:
+                    with M27Client._concurrency_limiter:
+                        session: Any = M27Client._session
+                        response = session.post(
+                            f"{self.base_url}/v1/messages",
+                            headers=self._get_headers(),
+                            json=payload,
+                            timeout=request_timeout,
+                            stream=True,
+                        )
 
                 if response.status_code == 200:
                     self._rate_limit_errors = 0
