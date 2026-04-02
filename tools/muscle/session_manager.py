@@ -87,7 +87,7 @@ class SessionManager:
         try:
             meta_file = session_dir / "meta.json"
             meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
-            (session_dir / "iterations.json").write_text("[]", encoding="utf-8")
+            (session_dir / "iterations.jsonl").touch()
             (session_dir / "artifacts").mkdir(exist_ok=True)
         except OSError as e:
             logger.error(f"Cannot write session files: {e}")
@@ -108,17 +108,11 @@ class SessionManager:
             logger.warning(f"Session {session_id} not found")
             return
 
-        iterations_file = session_dir / "iterations.json"
-        try:
-            iterations = json.loads(iterations_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning(f"Cannot read iterations file: {e}, starting fresh")
-            iterations = []
-
+        iterations_file = session_dir / "iterations.jsonl"
         safe_errors = [str(e)[:500] for e in (iteration.errors or [])]
         safe_warnings = [str(w)[:500] for w in (iteration.warnings or [])]
 
-        iterations.append(
+        iteration_entry = json.dumps(
             {
                 "iteration": iteration.iteration,
                 "success": iteration.success,
@@ -127,13 +121,13 @@ class SessionManager:
                 "token_cost": iteration.token_cost,
                 "duration_seconds": iteration.duration_seconds,
                 "evolved_strategy": (iteration.evolved_strategy or "")[:1000],
-            }
+            },
+            ensure_ascii=False,
         )
 
         try:
-            iterations_file.write_text(
-                json.dumps(iterations, indent=2, ensure_ascii=False), encoding="utf-8"
-            )
+            with open(iterations_file, "a", encoding="utf-8") as f:
+                f.write(iteration_entry + "\n")
         except OSError as e:
             logger.error(f"Cannot write iterations file: {e}")
 

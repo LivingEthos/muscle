@@ -61,7 +61,7 @@ class TestSessionManager:
             duration_seconds=1.5,
         )
         manager.save_iteration(session_id, iteration)
-        assert (tmp_path / "sessions" / session_id / "iterations.json").exists()
+        assert (tmp_path / "sessions" / session_id / "iterations.jsonl").exists()
 
     def test_list_sessions(self, manager, tmp_path):
         config = RunConfig(task="Test")
