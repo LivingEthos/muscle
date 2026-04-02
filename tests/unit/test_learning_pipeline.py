@@ -514,3 +514,97 @@ class TestLearningPipelineInit:
             pipeline = LearningPipeline(tmpdir, m27_client=mock_m27)
 
             assert pipeline.m27 is mock_m27
+
+
+class TestLearningPipelineEndToEnd:
+    def test_full_cycle_learn_validate_archive(self, tmp_path):
+        """Simulate: review with issues -> rules added -> clean review -> rules validated -> many clean reviews -> rule archived."""
+        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+
+        pipeline = LearningPipeline(str(tmp_path))
+
+        # Review 1: issues found -> rules added
+        issues = [
+            _make_issue(title="Use print instead of logger", severity=Severity.HIGH),
+            _make_issue(title="Missing null check", severity=Severity.CRITICAL),
+        ]
+        result1 = _make_review_result(issues)
+        actions1 = pipeline.learn_from_review(result1)
+        assert actions1["rules_added"] == 2
+
+        rules = pipeline.memory_manager.read_rules()
+        assert len(rules) == 2
+        assert all(r["confidence"] == "low" for r in rules)
+
+        # Review 2: clean -> rules validated, confidence upgrades
+        result2 = _make_review_result([])
+        actions2 = pipeline.learn_from_review(result2)
+        assert actions2["rules_validated"] == 2
+
+        rules = pipeline.memory_manager.read_rules()
+        assert all(r["validated_count"] >= 1 for r in rules)
+
+        # Review 3: clean again -> further validation
+        result3 = _make_review_result([])
+        pipeline.learn_from_review(result3)
+
+        rules = pipeline.memory_manager.read_rules()
+        assert any(r["confidence"] == "medium" for r in rules)
+
+    def test_memory_md_tracks_sessions(self, tmp_path):
+        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+
+        pipeline = LearningPipeline(str(tmp_path))
+        issues = [_make_issue(severity=Severity.HIGH)]
+        result = _make_review_result(issues)
+        pipeline.learn_from_review(result)
+
+        memory_md = tmp_path / ".muscle" / "MEMORY.md"
+        assert memory_md.exists()
+        content = memory_md.read_text()
+        assert "Review Sessions" in content
+
+    def test_outside_markers_untouched(self, tmp_path):
+        """Verify that content outside MUSCLE markers is never modified."""
+        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from tools.muscle.code_review.memory_manager import RULES_START, RULES_END
+
+        muscle_dir = tmp_path / ".muscle"
+        muscle_dir.mkdir(parents=True, exist_ok=True)
+        claude_md = muscle_dir / "CLAUDE.md"
+        claude_md.write_text(
+            "# My Project Rules\n\nDo not touch this.\n\n"
+            f"## MUSCLE Learned Rules\n"
+            f"{RULES_START}\n\n"
+            f"### Do\n\n### Don't\n\n### Project Skills\n\n"
+            f"{RULES_END}\n"
+        )
+
+        pipeline = LearningPipeline(str(tmp_path))
+        issues = [_make_issue(title="New issue", severity=Severity.HIGH)]
+        result = _make_review_result(issues)
+        pipeline.learn_from_review(result)
+
+        content = claude_md.read_text()
+        assert "# My Project Rules" in content
+        assert "Do not touch this." in content
+        assert "New issue" in content
+
+    def test_multiple_reviews_compound_learning(self, tmp_path):
+        """Multiple reviews with different issues should accumulate rules."""
+        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+
+        pipeline = LearningPipeline(str(tmp_path))
+
+        # Review 1
+        result1 = _make_review_result([_make_issue(title="SQL injection risk", severity=Severity.CRITICAL)])
+        pipeline.learn_from_review(result1)
+
+        # Review 2 (different issue)
+        result2 = _make_review_result([_make_issue(title="Hardcoded secrets", severity=Severity.HIGH)])
+        pipeline.learn_from_review(result2)
+
+        rules = pipeline.memory_manager.read_rules()
+        rule_texts = [r["text"] for r in rules]
+        assert any("SQL injection" in t for t in rule_texts)
+        assert any("Hardcoded secrets" in t for t in rule_texts)
