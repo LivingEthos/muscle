@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -56,6 +57,9 @@ class StrategyKB:
         self.db_path = self.kb_path / "strategies.db"
         self.enable_vector_search = enable_vector_search and self._check_vss()
 
+        self._conn: sqlite3.Connection | None = None
+        self._conn_lock = threading.Lock()
+
         self._init_db()
 
     def _check_vss(self) -> bool:
@@ -67,19 +71,28 @@ class StrategyKB:
         return True
 
     def _get_connection(self) -> sqlite3.Connection:
-        try:
-            conn = sqlite3.connect(str(self.db_path), timeout=30.0)
-            conn.row_factory = sqlite3.Row
-        except sqlite3.Error as e:
-            logger.error(f"Failed to connect to database: {e}")
-            raise
-        if self.enable_vector_search:
+        with self._conn_lock:
+            if self._conn is not None:
+                try:
+                    self._conn.execute("SELECT 1")
+                    return self._conn
+                except (sqlite3.Error, sqlite3.ProgrammingError):
+                    self._conn = None
+
             try:
-                conn.enable_load_extension(True)
-                conn.load_extension("sqlite_vss")
-            except Exception as e:
-                logger.warning(f"Failed to load sqlite-vss: {e}")
-        return conn
+                conn = sqlite3.connect(str(self.db_path), timeout=30.0)
+                conn.row_factory = sqlite3.Row
+            except sqlite3.Error as e:
+                logger.error(f"Failed to connect to database: {e}")
+                raise
+            if self.enable_vector_search:
+                try:
+                    conn.enable_load_extension(True)
+                    conn.load_extension("sqlite_vss")
+                except Exception as e:
+                    logger.warning(f"Failed to load sqlite-vss: {e}")
+            self._conn = conn
+            return conn
 
     def _init_db(self) -> None:
         conn = None
@@ -123,9 +136,6 @@ class StrategyKB:
             if conn:
                 conn.rollback()
             raise
-        finally:
-            if conn:
-                conn.close()
 
     def add_strategy(
         self,
@@ -173,9 +183,6 @@ class StrategyKB:
             if conn:
                 conn.rollback()
             return 0
-        finally:
-            if conn:
-                conn.close()
 
     def find_similar_strategies(
         self,
@@ -221,9 +228,6 @@ class StrategyKB:
         except sqlite3.Error as e:
             logger.error(f"Failed to find similar strategies: {e}")
             return []
-        finally:
-            if conn:
-                conn.close()
 
     def find_by_pattern(self, pattern: str, language: str | None = None) -> list[Strategy]:
         conn = None
@@ -260,9 +264,6 @@ class StrategyKB:
         except sqlite3.Error as e:
             logger.error(f"Failed to find by pattern: {e}")
             return []
-        finally:
-            if conn:
-                conn.close()
 
     def increment_usage(self, strategy_id: int, success: bool) -> None:
         conn = None
@@ -294,9 +295,6 @@ class StrategyKB:
             logger.error(f"Failed to increment usage: {e}")
             if conn:
                 conn.rollback()
-        finally:
-            if conn:
-                conn.close()
 
     def get_statistics(self) -> dict:
         conn = None
@@ -320,9 +318,6 @@ class StrategyKB:
         except sqlite3.Error as e:
             logger.error(f"Failed to get statistics: {e}")
             return {"total_strategies": 0, "total_usage": 0, "average_success_rate": 0.0}
-        finally:
-            if conn:
-                conn.close()
 
     def export_to_json(self, path: str) -> None:
         conn = None
@@ -355,9 +350,6 @@ class StrategyKB:
         except sqlite3.Error as e:
             logger.error(f"Failed to export strategies: {e}")
             raise
-        finally:
-            if conn:
-                conn.close()
 
     def import_from_json(self, path: str) -> int:
         try:
@@ -404,9 +396,6 @@ class StrategyKB:
             if conn:
                 conn.rollback()
             raise
-        finally:
-            if conn:
-                conn.close()
 
 
 class GlobalKnowledgeBase:
