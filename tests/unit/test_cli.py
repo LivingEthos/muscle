@@ -29,19 +29,30 @@ from tools.muscle.cli import (
     _truncate,
     _event_handler,
     abort,
+    agents_group,
+    agents_list,
+    backups_group,
     check,
     cli,
     cost_group,
     diagnosis,
+    disable,
+    enable,
     history,
     improve_group,
     init,
     kb_group,
     lifeline,
+    memory_group,
+    memory_history,
+    memory_status,
     nightly_group,
     probe,
     resume,
     run,
+    skills_group,
+    skills_list,
+    status,
     tui,
 )
 from tools.muscle.loop_controller import LoopContext, LoopEvent
@@ -410,6 +421,59 @@ class TestInitCommand:
             with patch("builtins.input", return_value=""):
                 result = runner.invoke(init, [], input="\n")
                 # May succeed or gracefully exit depending on project detection
+
+
+class TestEnableCommand:
+    """Integration tests for enable command."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_enable_without_project(self, runner):
+        """enable without a project should handle gracefully."""
+        result = runner.invoke(enable, [], catch_exceptions=False)
+        assert result is not None
+
+    def test_enable_command_exists(self, runner):
+        """enable command should be registered and callable."""
+        result = runner.invoke(enable, [], catch_exceptions=True)
+        # Should not crash - may exit non-zero if no project
+        assert result is not None
+
+
+class TestDisableCommand:
+    """Integration tests for disable command."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_disable_without_project(self, runner):
+        """disable without a project should handle gracefully."""
+        result = runner.invoke(disable, [], catch_exceptions=False)
+        assert result is not None
+
+    def test_disable_command_exists(self, runner):
+        """disable command should be registered and callable."""
+        result = runner.invoke(disable, [], catch_exceptions=True)
+        # Should not crash - may exit non-zero if no project
+        assert result is not None
+
+
+class TestStatusCommand:
+    """Integration tests for status command."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_status_command_exists(self, runner):
+        """status command should be registered and callable."""
+        result = runner.invoke(status, [], catch_exceptions=False)
+        assert result is not None
+        # Status should always return 0 and show something
+        assert result.exit_code == 0
 
 
 class TestTuiCommand:
@@ -795,6 +859,61 @@ class TestNightlyGroup:
         assert result is not None
 
 
+class TestBackupsGroup:
+    """Integration tests for backups subcommands."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_backups_list_empty(self, runner):
+        """List command should succeed even with no backups."""
+        result = runner.invoke(backups_group, ["list"], catch_exceptions=False)
+        assert result.exit_code == 0
+
+    def test_backups_list_with_limit(self, runner):
+        """List command accepts --limit flag."""
+        result = runner.invoke(backups_group, ["list", "--limit", "5"], catch_exceptions=False)
+        assert result.exit_code == 0
+
+    def test_backups_list_invalid_type(self, runner):
+        """List command handles invalid backup type (with or without DB)."""
+        result = runner.invoke(
+            backups_group, ["list", "--type", "invalid"], catch_exceptions=True
+        )
+        # Either gracefully handles it (exit 0 with error message) or fails on DB env
+        assert result.exit_code == 0 or "Invalid backup type" in result.output
+
+    def test_backups_list_valid_types(self, runner):
+        """List command accepts each valid backup type."""
+        for btype in ("full", "claude_md", "config", "memory"):
+            result = runner.invoke(
+                backups_group, ["list", "--type", btype], catch_exceptions=False
+            )
+            assert result.exit_code == 0
+
+    def test_backups_show_nonexistent(self, runner):
+        """Show command handles nonexistent backup ID."""
+        result = runner.invoke(
+            backups_group, ["show", "99999"], catch_exceptions=False
+        )
+        assert result.exit_code == 0  # gracefully handles not found
+
+    def test_backups_restore_nonexistent(self, runner):
+        """Restore command handles nonexistent backup ID."""
+        result = runner.invoke(
+            backups_group, ["restore", "99999"], catch_exceptions=False
+        )
+        assert result.exit_code == 0  # gracefully handles not found
+
+    def test_backups_restore_dry_run(self, runner):
+        """Restore with --dry-run does not error for nonexistent backup."""
+        result = runner.invoke(
+            backups_group, ["restore", "99999", "--dry-run"], catch_exceptions=False
+        )
+        assert result.exit_code == 0
+
+
 class TestProbeCommand:
     """Integration tests for probe command."""
 
@@ -1010,3 +1129,115 @@ class TestRunCommand:
                                     "session_id" in result.output.lower()
                                     or "test-session" in result.output.lower()
                                 )
+
+
+class TestMemoryGroup:
+    """Integration tests for memory subcommands."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_memory_status_empty(self, runner):
+        """memory status should succeed even with empty DB."""
+        result = runner.invoke(memory_status, [], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "Memory Status" in result.output
+
+    def test_memory_status_shows_db_path(self, runner):
+        """memory status shows database path."""
+        result = runner.invoke(memory_status, [], catch_exceptions=False)
+        assert result.exit_code == 0
+        # Verify the table header and at least the "Database" row label appears
+        assert "Memory Status" in result.output
+        assert "Database" in result.output
+
+    def test_memory_history_empty(self, runner):
+        """memory history should succeed even with no data."""
+        result = runner.invoke(memory_history, [], catch_exceptions=False)
+        assert result.exit_code == 0
+
+    def test_memory_history_with_limit(self, runner):
+        """memory history accepts --limit flag."""
+        result = runner.invoke(memory_history, ["--limit", "5"], catch_exceptions=False)
+        assert result.exit_code == 0
+
+
+class TestSkillsGroup:
+    """Integration tests for skills subcommands."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_skills_list_no_dir(self, runner):
+        """skills list handles missing skills directory gracefully."""
+        result = runner.invoke(skills_list, [], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "not found" in result.output.lower() or "no skills" in result.output.lower()
+
+    def test_skills_list_empty_dir(self, runner):
+        """skills list handles empty skills directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skills_dir = Path(tmpdir) / ".muscle" / "skills"
+            skills_dir.mkdir(parents=True)
+            result = runner.invoke(
+                skills_list, ["--path", str(skills_dir)], catch_exceptions=False
+            )
+            assert result.exit_code == 0
+            assert "no skills" in result.output.lower()
+
+    def test_skills_list_with_files(self, runner):
+        """skills list shows skill files."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skills_dir = Path(tmpdir) / ".muscle" / "skills"
+            skills_dir.mkdir(parents=True)
+            (skills_dir / "test_skill.md").write_text("# Test Skill")
+            (skills_dir / "another.md").write_text("# Another")
+
+            result = runner.invoke(
+                skills_list, ["--path", str(skills_dir)], catch_exceptions=False
+            )
+            assert result.exit_code == 0
+            assert "test_skill" in result.output
+            assert "another" in result.output
+
+
+class TestAgentsGroup:
+    """Integration tests for agents subcommands."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_agents_list_no_dir(self, runner):
+        """agents list handles missing agents directory gracefully."""
+        result = runner.invoke(agents_list, [], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "not found" in result.output.lower() or "no agents" in result.output.lower()
+
+    def test_agents_list_empty_dir(self, runner):
+        """agents list handles empty agents directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agents_dir = Path(tmpdir) / ".muscle" / "agents"
+            agents_dir.mkdir(parents=True)
+            result = runner.invoke(
+                agents_list, ["--path", str(agents_dir)], catch_exceptions=False
+            )
+            assert result.exit_code == 0
+            assert "no agents" in result.output.lower()
+
+    def test_agents_list_with_files(self, runner):
+        """agents list shows agent files."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agents_dir = Path(tmpdir) / ".muscle" / "agents"
+            agents_dir.mkdir(parents=True)
+            (agents_dir / "coder.md").write_text("# Coder Agent")
+            (agents_dir / "reviewer.md").write_text("# Reviewer Agent")
+
+            result = runner.invoke(
+                agents_list, ["--path", str(agents_dir)], catch_exceptions=False
+            )
+            assert result.exit_code == 0
+            assert "coder" in result.output
+            assert "reviewer" in result.output

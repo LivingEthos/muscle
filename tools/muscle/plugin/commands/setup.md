@@ -1,8 +1,8 @@
 ---
-description: Initialize or configure MUSCLE for the current project
+description: Initialize or enable MUSCLE for the current project
 args:
   - name: action
-    description: "Action: init, enable-auto-review, disable-auto-review, list"
+    description: "Action: init, enable, disable, status"
     required: false
 ---
 
@@ -13,17 +13,23 @@ If action is "init" or no MUSCLE installation exists (no `.muscle/` directory), 
 muscle init --non-interactive
 ```
 
-If action is "enable-auto-review":
+To enable MUSCLE after initialization:
 ```bash
-muscle settings platform --hooks
+muscle enable
 ```
 
-If action is "disable-auto-review":
+To disable MUSCLE for this project:
 ```bash
-muscle settings platform --no-hooks
+muscle disable
 ```
 
-If action is "list" or no action specified:
+To check current status:
 ```bash
-muscle settings show
+muscle status
+```
+
+For hook configuration:
+```bash
+muscle settings hooks --enable
+muscle settings hooks --disable
 ```

@@ -389,6 +389,7 @@ class TestCLISettingsReset:
             path=tmp_path,
             platform="opencode",
             hooks_enabled=False,
+            review_gate="warn",
         )
         manager.init_project(config)
 
@@ -401,6 +402,128 @@ class TestCLISettingsReset:
         assert loaded is not None
         assert loaded.platform == "auto"
         assert loaded.hooks_enabled is True
+        assert loaded.review_gate == "block+fix"
+
+
+class TestCLISettingsShow:
+    """Tests the settings show command."""
+
+    def test_settings_show_after_init(self, tmp_path: Path):
+        """settings show should display persisted config, not auto-detected defaults."""
+        runner = CliRunner()
+
+        # Initialize with specific non-default values
+        manager = ProjectManager(tmp_path)
+        config = ProjectConfig(
+            name="show-test-project",
+            path=tmp_path,
+            languages=["Python"],
+            platform="opencode",
+            review_gate="warn",
+            hooks_enabled=False,
+        )
+        manager.init_project(config)
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(cli, ["settings", "show"])
+
+        assert result.exit_code == 0
+        assert "show-test-project" in result.output
+        assert "opencode" in result.output
+        assert "warn" in result.output  # review_gate should show persisted value
+        assert "False" in result.output  # hooks_enabled should show persisted value
+
+    def test_settings_show_not_initialized(self, tmp_path: Path):
+        """settings show should indicate not initialized when no config exists."""
+        runner = CliRunner()
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(cli, ["settings", "show"])
+
+        assert result.exit_code == 0
+        assert "Not initialized" in result.output
+
+
+class TestCLISettingsHooks:
+    """Tests the settings hooks command."""
+
+    def test_settings_hooks_gate_warn(self, tmp_path: Path):
+        """settings hooks --gate warn should update review_gate, not platform."""
+        runner = CliRunner()
+
+        manager = ProjectManager(tmp_path)
+        config = ProjectConfig(
+            name="hooks-test",
+            path=tmp_path,
+            review_gate="block+fix",
+            platform="auto",
+        )
+        manager.init_project(config)
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(cli, ["settings", "hooks", "--gate", "warn"])
+
+        assert result.exit_code == 0
+        assert "Review gate set to: warn" in result.output
+
+        # Verify review_gate was updated, NOT platform
+        loaded = manager.load_config(tmp_path)
+        assert loaded is not None
+        assert loaded.review_gate == "warn"
+        assert loaded.platform == "auto"  # platform should be unchanged
+
+    def test_settings_hooks_enable_disable(self, tmp_path: Path):
+        """settings hooks --enable/--disable should update hooks_enabled."""
+        runner = CliRunner()
+
+        manager = ProjectManager(tmp_path)
+        config = ProjectConfig(name="hooks-test", path=tmp_path, hooks_enabled=True)
+        manager.init_project(config)
+
+        # Disable hooks
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(cli, ["settings", "hooks", "--disable"])
+
+        assert result.exit_code == 0
+        loaded = manager.load_config(tmp_path)
+        assert loaded is not None
+        assert loaded.hooks_enabled is False
+
+
+class TestProjectManagerUpdateReviewGate:
+    """Tests update_muscle_config with review_gate parameter."""
+
+    def test_update_review_gate(self, tmp_path: Path):
+        """update_muscle_config should persist review_gate change."""
+        manager = ProjectManager(tmp_path)
+        config = ProjectConfig(name="test", path=tmp_path, review_gate="block+fix")
+        manager.init_project(config)
+
+        manager.update_muscle_config(tmp_path, review_gate="warn")
+
+        loaded = manager.load_config(tmp_path)
+        assert loaded is not None
+        assert loaded.review_gate == "warn"
+
+    def test_update_review_gate_via_project_manager(self, tmp_path: Path):
+        """update_muscle_config with only review_gate should not affect other fields."""
+        manager = ProjectManager(tmp_path)
+        config = ProjectConfig(
+            name="test",
+            path=tmp_path,
+            review_gate="block+fix",
+            hooks_enabled=True,
+            platform="auto",
+        )
+        manager.init_project(config)
+
+        manager.update_muscle_config(tmp_path, review_gate="disabled")
+
+        loaded = manager.load_config(tmp_path)
+        assert loaded is not None
+        assert loaded.review_gate == "disabled"
+        assert loaded.hooks_enabled is True
+        assert loaded.platform == "auto"
 
 
 class TestInitUninstallRoundtrip:
@@ -440,3 +563,215 @@ class TestInitUninstallRoundtrip:
 
         # Step 5: Verify cleaned up
         assert not (tmp_path / ".muscle").exists()
+
+
+class TestBackupsCommands:
+    """Integration tests for backups CLI commands with real project setup."""
+
+    def test_backups_list_after_init(self, tmp_path: Path):
+        """List command works after project init."""
+        runner = CliRunner()
+        manager = ProjectManager(tmp_path)
+        config = ProjectConfig(name="backup-test", path=tmp_path, languages=["Python"])
+        manager.init_project(config)
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(cli, ["backups", "list"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+
+    def test_backups_list_with_type_filter(self, tmp_path: Path):
+        """List command accepts --type filter after init."""
+        runner = CliRunner()
+        manager = ProjectManager(tmp_path)
+        config = ProjectConfig(name="backup-test", path=tmp_path, languages=["Python"])
+        manager.init_project(config)
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(
+                cli, ["backups", "list", "--type", "full"], catch_exceptions=False
+            )
+        assert result.exit_code == 0
+
+    def test_backups_show_nonexistent_after_init(self, tmp_path: Path):
+        """Show command handles nonexistent ID gracefully after init."""
+        runner = CliRunner()
+        manager = ProjectManager(tmp_path)
+        config = ProjectConfig(name="backup-test", path=tmp_path, languages=["Python"])
+        manager.init_project(config)
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(
+                cli, ["backups", "show", "9999"], catch_exceptions=False
+            )
+        # Should not crash - exits with 0 even for not-found since it's a user-facing message
+        assert result.exit_code == 0
+
+    def test_backups_restore_nonexistent_after_init(self, tmp_path: Path):
+        """Restore command handles nonexistent ID gracefully after init."""
+        runner = CliRunner()
+        manager = ProjectManager(tmp_path)
+        config = ProjectConfig(name="backup-test", path=tmp_path, languages=["Python"])
+        manager.init_project(config)
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(
+                cli, ["backups", "restore", "9999"], catch_exceptions=False
+            )
+        assert result.exit_code == 0
+
+    def test_backups_restore_dry_run_nonexistent(self, tmp_path: Path):
+        """Restore --dry-run does not crash on nonexistent backup."""
+        runner = CliRunner()
+        manager = ProjectManager(tmp_path)
+        config = ProjectConfig(name="backup-test", path=tmp_path, languages=["Python"])
+        manager.init_project(config)
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(
+                cli, ["backups", "restore", "9999", "--dry-run"], catch_exceptions=False
+            )
+        assert result.exit_code == 0
+
+
+class TestCLIEnableCommand:
+    """Tests the `muscle enable` CLI command."""
+
+    def test_enable_after_init(self, tmp_path: Path):
+        """muscle enable should succeed after init."""
+        runner = CliRunner()
+        manager = ProjectManager(tmp_path)
+        config = ProjectConfig(name="enable-test", path=tmp_path, languages=["Python"])
+        manager.init_project(config)
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(cli, ["enable"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        assert "enabled" in result.output.lower()
+        assert manager.is_project_enabled(tmp_path) is True
+
+    def test_enable_without_init(self, tmp_path: Path):
+        """muscle enable should warn if not initialized."""
+        runner = CliRunner()
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(cli, ["enable"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        assert "not initialized" in result.output.lower() or "init" in result.output.lower()
+
+
+class TestCLIDisableCommand:
+    """Tests the `muscle disable` CLI command."""
+
+    def test_disable_after_init(self, tmp_path: Path):
+        """muscle disable should succeed after init."""
+        runner = CliRunner()
+        manager = ProjectManager(tmp_path)
+        config = ProjectConfig(name="disable-test", path=tmp_path, languages=["Python"])
+        manager.init_project(config)
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(cli, ["disable"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        assert "disabled" in result.output.lower()
+        assert manager.is_project_enabled(tmp_path) is False
+
+    def test_disable_without_init(self, tmp_path: Path):
+        """muscle disable should warn if not initialized."""
+        runner = CliRunner()
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(cli, ["disable"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        assert "not initialized" in result.output.lower() or "init" in result.output.lower()
+
+
+class TestCLIStatusCommand:
+    """Tests the `muscle status` CLI command."""
+
+    def test_status_after_init(self, tmp_path: Path):
+        """muscle status should show project info after init."""
+        runner = CliRunner()
+        manager = ProjectManager(tmp_path)
+        config = ProjectConfig(
+            name="status-test",
+            path=tmp_path,
+            languages=["Python"],
+            platform="claude-code",
+        )
+        manager.init_project(config)
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            with patch(
+                "tools.muscle.tui.project_manager.ProjectManager.detect_project",
+                return_value=config,
+            ):
+                result = runner.invoke(cli, ["status"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        assert "status-test" in result.output
+        assert "claude-code" in result.output
+        assert "Enabled" in result.output
+
+    def test_status_not_initialized(self, tmp_path: Path):
+        """muscle status should indicate not initialized."""
+        runner = CliRunner()
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(cli, ["status"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        assert "Not initialized" in result.output or "init" in result.output.lower()
+
+
+class TestInitStoresEnablement:
+    """Tests that init stores project enablement in project_memory.db."""
+
+    def test_init_stores_enabled_state(self, tmp_path: Path):
+        """muscle init should store enabled=true in project_memory.db."""
+        runner = CliRunner()
+
+        with patch("tools.muscle.tui.project_manager.ProjectManager.detect_project") as mock_detect:
+            mock_detect.return_value = ProjectConfig(
+                name="init-enablement-test",
+                path=tmp_path,
+                languages=["Python"],
+            )
+
+            result = runner.invoke(
+                cli,
+                ["init", "--non-interactive", "--platform", "claude-code"],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0
+        manager = ProjectManager(tmp_path)
+        assert manager.is_project_enabled(tmp_path) is True
+
+    def test_init_claude_code_platform(self, tmp_path: Path):
+        """muscle init --platform claude-code should set platform correctly."""
+        runner = CliRunner()
+
+        with patch("tools.muscle.tui.project_manager.ProjectManager.detect_project") as mock_detect:
+            mock_detect.return_value = ProjectConfig(
+                name="claude-code-test",
+                path=tmp_path,
+                languages=["Python"],
+            )
+
+            result = runner.invoke(
+                cli,
+                ["init", "--non-interactive", "--platform", "claude-code"],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0
+        manager = ProjectManager(tmp_path)
+        loaded = manager.load_config(tmp_path)
+        assert loaded is not None
+        assert loaded.platform == "claude-code"
+

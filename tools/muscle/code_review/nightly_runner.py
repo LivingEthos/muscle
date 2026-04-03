@@ -64,6 +64,7 @@ class NightlyRunner:
             "total_issues": 0,
             "critical_issues": [],
             "high_issues": [],
+            "failures": [],
             "success": True,
         }
 
@@ -77,8 +78,22 @@ class NightlyRunner:
                     results["total_issues"] += result.get("total_issues", 0)
                     results["critical_issues"].extend(result.get("critical_issues", []))
                     results["high_issues"].extend(result.get("high_issues", []))
+                    if "error" in result:
+                        results["failures"].append(
+                            {
+                                "path": target,
+                                "error": result["error"],
+                            }
+                        )
+                        results["success"] = False
             except Exception as e:
                 logger.error(f"Failed to review {target}: {e}")
+                results["failures"].append(
+                    {
+                        "path": target,
+                        "error": str(e),
+                    }
+                )
                 results["success"] = False
 
         results["completed_at"] = datetime.now().isoformat()
@@ -94,7 +109,9 @@ class NightlyRunner:
                 target_path=str(self.project_path),
                 critical_count=len(results.get("critical_issues", [])),
                 high_count=len(results.get("high_issues", [])),
-                medium_count=results.get("total_issues", 0) - len(results.get("critical_issues", [])) - len(results.get("high_issues", [])),
+                medium_count=results.get("total_issues", 0)
+                - len(results.get("critical_issues", []))
+                - len(results.get("high_issues", [])),
                 low_count=0,
             )
             pipeline.learn_from_review(review_result)
@@ -112,9 +129,12 @@ class NightlyRunner:
             cmd = [
                 "muscle",
                 "review",
+                "--target",
                 target_path,
                 "--mode",
                 "review",
+                "--format",
+                "json",
                 "--intensity",
                 self.config.intensity,
             ]
@@ -130,19 +150,64 @@ class NightlyRunner:
                 return self._parse_review_output(result.stdout, target_path)
             else:
                 logger.warning(f"Review command failed for {target_path}: {result.stderr}")
-                return None
+                return {
+                    "path": target_path,
+                    "total_issues": 0,
+                    "critical_issues": [],
+                    "high_issues": [],
+                    "error": result.stderr.strip() or "Review command returned non-zero exit",
+                }
 
         except subprocess.TimeoutExpired:
             logger.error(f"Review timed out for {target_path}")
-            return None
+            return {
+                "path": target_path,
+                "total_issues": 0,
+                "critical_issues": [],
+                "high_issues": [],
+                "error": "Review timed out after 1 hour",
+            }
         except Exception as e:
             logger.error(f"Failed to run review for {target_path}: {e}")
-            return None
+            return {
+                "path": target_path,
+                "total_issues": 0,
+                "critical_issues": [],
+                "high_issues": [],
+                "error": str(e),
+            }
 
     def _parse_review_output(self, output: str, target_path: str) -> dict[str, Any]:
-        """Parse review output to extract issues."""
-        issues: list[dict[str, str]] = []
+        """Parse review output (JSON preferred) to extract issues."""
+        issues: list[dict[str, Any]] = []
+        # Try JSON first (machine-readable, preferred for nightly)
+        try:
+            data = json.loads(output)
+            issues = data.get("issues", [])
+            summary = data.get("summary", {})
 
+            critical_issues = [
+                {"severity": "critical", "description": i.get("title", "")}
+                for i in issues
+                if i.get("severity", "").upper() == "CRITICAL"
+            ]
+            high_issues = [
+                {"severity": "high", "description": i.get("title", "")}
+                for i in issues
+                if i.get("severity", "").upper() == "HIGH"
+            ]
+
+            return {
+                "path": target_path,
+                "total_issues": sum(summary.values()) if isinstance(summary, dict) else len(issues),
+                "critical_issues": critical_issues,
+                "high_issues": high_issues,
+            }
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+        # Fall back to text parsing
+        text_issues: list[dict[str, Any]] = []
         try:
             import re
 
@@ -150,18 +215,18 @@ class NightlyRunner:
             high_matches = re.findall(r"HIGH:\s*(.+)", output, re.IGNORECASE)
 
             for match in critical_matches:
-                issues.append({"severity": "critical", "description": match.strip()})
+                text_issues.append({"severity": "critical", "description": match.strip()})
             for match in high_matches:
-                issues.append({"severity": "high", "description": match.strip()})
+                text_issues.append({"severity": "high", "description": match.strip()})
 
         except Exception as e:
             logger.warning(f"Failed to parse review output: {e}")
 
         return {
             "path": target_path,
-            "total_issues": len(issues),
-            "critical_issues": [i for i in issues if i["severity"] == "critical"],
-            "high_issues": [i for i in issues if i["severity"] == "high"],
+            "total_issues": len(text_issues),
+            "critical_issues": [i for i in text_issues if i["severity"] == "critical"],
+            "high_issues": [i for i in text_issues if i["severity"] == "high"],
         }
 
     def _save_report(self, results: dict) -> Path:
@@ -212,10 +277,13 @@ class NightlyRunner:
                 lines.append(f"- {issue.get('description', 'N/A')}")
             lines.append("")
 
-        if not results.get("success"):
-            lines.append("## Errors")
+        if results.get("failures"):
+            lines.append("## Failures")
             lines.append("")
-            lines.append("Some targets failed to scan. Check logs for details.")
+            for failure in results["failures"]:
+                lines.append(
+                    f"- **{failure.get('path', 'unknown')}**: {failure.get('error', 'Unknown error')}"
+                )
             lines.append("")
 
         lines.append("---")

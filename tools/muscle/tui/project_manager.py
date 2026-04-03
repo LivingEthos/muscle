@@ -324,6 +324,7 @@ class ProjectManager:
         project_path: Path,
         api_key: str | None = None,
         hooks_enabled: bool | None = None,
+        review_gate: str | None = None,
         platform: str | None = None,
         cli_path: str | None = None,
         api_key_source: str | None = None,
@@ -344,6 +345,8 @@ class ProjectManager:
             data["project"]["api_key_source"] = "manual"
         if hooks_enabled is not None:
             data["project"]["hooks_enabled"] = hooks_enabled
+        if review_gate is not None:
+            data["project"]["review_gate"] = review_gate
         if platform is not None:
             data["project"]["platform"] = platform
         if cli_path is not None:
@@ -355,3 +358,49 @@ class ProjectManager:
             json.dump(data, f, indent=2)
 
         return True
+
+    def is_project_enabled(self, project_path: Path) -> bool:
+        """Check if MUSCLE is enabled for a project.
+
+        Args:
+            project_path: Path to the project root.
+
+        Returns:
+            True if MUSCLE is enabled, False otherwise.
+        """
+        from ..project_memory import ProjectMemory
+
+        try:
+            pm = ProjectMemory(str(project_path))
+            state = pm.get_automation_state("project_enabled")
+            if state and state.get("state_value"):
+                state_val = state["state_value"]
+                return str(state_val) == "true"
+            # Default to True if never set (opt-out model)
+            return True
+        except Exception:
+            return False
+
+    def set_project_enabled(self, project_path: Path, enabled: bool) -> bool:
+        """Enable or disable MUSCLE for a project.
+
+        Args:
+            project_path: Path to the project root.
+            enabled: True to enable, False to disable.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        from ..project_memory import ProjectMemory
+
+        try:
+            pm = ProjectMemory(str(project_path))
+            pm.set_automation_state(
+                str(project_path),
+                "project_enabled",
+                "true" if enabled else "false",
+            )
+            return True
+        except Exception as e:
+            print(f"Failed to set project enabled state: {e}")
+            return False

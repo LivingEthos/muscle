@@ -18,6 +18,10 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tools.muscle.project_memory import ProjectMemory
 
 logger = logging.getLogger(__name__)
 
@@ -343,3 +347,27 @@ class GlobalReviewKB:
 
     def get_stats(self) -> dict:
         return self.review_kb.get_statistics()
+
+
+# -----------------------------------------------------------------------------
+# Legacy import (MUS-012)
+# -----------------------------------------------------------------------------
+
+
+def import_from_project_memory(project_memory: ProjectMemory, project_path: str) -> dict:
+    """
+    Import review data from legacy .muscle/review_kb/review_kb.db into ProjectMemory.
+
+    This is a convenience wrapper that runs only the review_kb import step
+    of LegacyImporter.
+
+    Returns
+    -------
+    dict
+        Import stats dict with keys: imported, skipped, errors.
+    """
+    from tools.muscle.legacy_importer import LegacyImporter
+
+    importer = LegacyImporter(project_memory, project_path)
+    importer._import_review_kb()
+    return importer.stats.get("review_kb", {"imported": 0, "skipped": 0, "errors": 0})

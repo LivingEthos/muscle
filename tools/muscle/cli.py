@@ -24,19 +24,24 @@ except ImportError:
 import click
 from rich.console import Console
 from rich.live import Live
+from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.text import Text
 
+from .backup_manager import BackupManager
 from .budget_manager import BudgetManager
 from .code_generator import CodeGenerator
 from .code_review.learning_pipeline import LearningPipeline
 from .cost_optimizer import CostOptimizer
 from .evolver import Evolver
 from .interactive import InteractiveHandler
+from .learning_ingestor import LearningIngestor
 from .loop_controller import LoopController, LoopEvent
 from .m27_client import M27Client
 from .project_builder import ProjectBuilder
+from .project_memory import ProjectMemory
+from .project_memory_types import TaskStatus
 from .self_improver import SelfImprover
 from .session_manager import SessionManager
 from .strategy_kb import GlobalKnowledgeBase
@@ -285,16 +290,138 @@ def init(
             else:
                 console.print("[yellow]⚠[/yellow] OpenCode setup skipped (may already exist)")
 
+        # Store project enablement state in project_memory.db
+        manager.set_project_enabled(project.path, True)
+        console.print("[green]✓[/green] Project enabled in database")
+
         console.print()
         console.print("[bold green]MUSCLE initialized successfully![/bold green]")
         console.print()
         console.print("Run 'muscle tui' to start the TUI")
         console.print("Run 'muscle review --target ./src' to run a review")
+        console.print("Run 'muscle status' to check project status")
         if effective_platform in ("opencode", "auto"):
             console.print()
             console.print("[dim]For OpenCode, use the muscle_* tools directly[/dim]")
     else:
         console.print("[red]Failed to initialize project[/red]")
+
+
+@cli.command()
+def enable() -> None:
+    """Enable MUSCLE for the current project.
+
+    Stores project-local enablement in the project database.
+    Use after 'muscle init' if MUSCLE was previously disabled.
+
+    Examples:
+
+        muscle enable
+    """
+    from .tui.project_manager import ProjectManager
+
+    manager = ProjectManager()
+    project_path = Path.cwd()
+
+    # Check if project is initialized
+    if not manager.get_muscle_dir(project_path):
+        console.print("[yellow]Project not initialized. Run 'muscle init' first.[/yellow]")
+        return
+
+    if manager.set_project_enabled(project_path, True):
+        console.print("[green]MUSCLE enabled for this project.[/green]")
+    else:
+        console.print("[red]Failed to enable MUSCLE.[/red]")
+
+
+@cli.command()
+def disable() -> None:
+    """Disable MUSCLE for the current project.
+
+    Disables MUSCLE for this project without removing configuration.
+    Use 'muscle enable' to re-enable.
+
+    Examples:
+
+        muscle disable
+    """
+    from .tui.project_manager import ProjectManager
+
+    manager = ProjectManager()
+    project_path = Path.cwd()
+
+    # Check if project is initialized
+    if not manager.get_muscle_dir(project_path):
+        console.print("[yellow]Project not initialized. Run 'muscle init' first.[/yellow]")
+        return
+
+    if manager.set_project_enabled(project_path, False):
+        console.print("[green]MUSCLE disabled for this project.[/green]")
+    else:
+        console.print("[red]Failed to disable MUSCLE.[/red]")
+
+
+@cli.command()
+def status() -> None:
+    """Show MUSCLE status for the current project.
+
+    Displays whether MUSCLE is enabled/disabled, project info,
+    database path, and review counts.
+
+    Examples:
+
+        muscle status
+    """
+    from .project_memory import ProjectMemory
+    from .tui.project_manager import ProjectManager
+
+    manager = ProjectManager()
+    project_path = Path.cwd()
+    project = manager.get_current_project()
+
+    table = Table(title="MUSCLE Status")
+    table.add_column("Setting", style="cyan")
+    table.add_column("Value", style="green")
+
+    # Check if initialized
+    muscle_dir = manager.get_muscle_dir(project_path)
+    if not muscle_dir:
+        table.add_row("Status", "[yellow]Not initialized[/yellow]")
+        table.add_row("Run 'muscle init'", "to initialize")
+        console.print(table)
+        return
+
+    # Check enabled state
+    is_enabled = manager.is_project_enabled(project_path)
+    status_str = "[green]Enabled[/green]" if is_enabled else "[red]Disabled[/red]"
+    table.add_row("Status", status_str)
+
+    if project:
+        table.add_row("Project", project.name)
+        table.add_row("Platform", project.platform)
+        table.add_row("Languages", ", ".join(project.languages) if project.languages else "None")
+    else:
+        table.add_row("Project", project_path.name)
+
+    # Database path
+    db_path = muscle_dir / "project_memory.db"
+    if db_path.exists():
+        table.add_row("DB Path", str(db_path))
+    else:
+        table.add_row("DB Path", "Not created yet")
+
+    # Get statistics from project_memory
+    try:
+        pm = ProjectMemory(str(project_path))
+        stats = pm.get_statistics(str(project_path))
+        table.add_row("Total Reviews", str(stats.get("total_reviews", 0)))
+        table.add_row("Total Findings", str(stats.get("total_findings", 0)))
+        table.add_row("Learned Rules", str(stats.get("total_learned_rules", 0)))
+        table.add_row("Skills", str(stats.get("total_skills", 0)))
+    except Exception:
+        table.add_row("Reviews", "N/A")
+
+    console.print(table)
 
 
 @cli.command()
@@ -542,6 +669,34 @@ def run(
                 if live:
                     live.stop()
 
+        # Structured DB ingestion for task run
+        try:
+            project_path = str(Path.cwd())
+            pm = ProjectMemory(project_path)
+            ingestor = LearningIngestor(pm)
+            duration_ms = int(ctx.stats.total_duration_seconds * 1000)
+            status_map = {
+                SessionStatus.SUCCESS: TaskStatus.SUCCESS,
+                SessionStatus.FAILED: TaskStatus.FAILED,
+                SessionStatus.ABORTED: TaskStatus.SKIPPED,
+                SessionStatus.BUDGET_EXCEEDED: TaskStatus.FAILED,
+            }
+            task_status = status_map.get(ctx.stats.status, TaskStatus.FAILED)
+            outcome_msg = (
+                None if ctx.stats.status == SessionStatus.SUCCESS else ctx.stats.status.value
+            )
+            ingestor.write_task_run(
+                project_path=project_path,
+                title=task[:100] if task else "untitled",
+                description=task,
+                status=task_status,
+                outcome=outcome_msg,
+                token_cost=ctx.stats.total_tokens,
+                duration_ms=duration_ms,
+            )
+        except Exception as e:
+            logger.warning(f"LearningIngestor task ingestion failed: {e}")
+
         if format == "json":
             report = controller.get_session_report()
             if report:
@@ -756,7 +911,7 @@ def abort(session_id: str) -> None:
 
     Examples:
 
-        muscle abort 20260331_ab12
+        muscle abort 20260331_ab12345
     """
     from pathlib import Path
 
@@ -1066,6 +1221,171 @@ def improve_prompt() -> None:
     console.print(prompt)
 
 
+@cli.group(name="notes")
+def notes_group() -> None:
+    """Project note management commands"""
+    pass
+
+
+@notes_group.command(name="add")
+@click.option(
+    "--category",
+    "-c",
+    required=True,
+    type=click.Choice(["architecture", "workflow", "gotcha", "dependency", "integration"]),
+    help="Note category",
+)
+@click.option("--title", "-t", required=True, help="Note title")
+@click.option("--content", "-m", default="", help="Note content (multi-line supported)")
+@click.option("--file", "-f", type=click.Path(exists=True), help="Read content from file")
+def notes_add(category: str, title: str, content: str, file: str | None) -> None:
+    """Add a new project note.
+
+    Examples:
+
+        muscle notes add -c architecture -t "Event-driven architecture" -m "Use pub/sub for decoupling"
+
+        muscle notes add -c gotcha -t "Auth token expiry" -f /tmp/note.txt
+    """
+    from .project_memory import ProjectMemory
+    from .project_notes import ProjectNotes
+
+    note_content = content
+    if file:
+        note_content = Path(file).read_text(encoding="utf-8").strip()
+
+    project_path = str(Path.cwd())
+    memory = ProjectMemory(project_path)
+    notes = ProjectNotes(memory, project_path)
+    note_id = notes.add_note(category=category, title=title, content=note_content)
+    console.print(f"[green]Added note #{note_id}: [{category}] {title}[/green]")
+
+
+@notes_group.command(name="list")
+@click.option(
+    "--category",
+    "-c",
+    default=None,
+    type=click.Choice(["architecture", "workflow", "gotcha", "dependency", "integration"]),
+    help="Filter by category",
+)
+@click.option("--limit", "-l", default=50, help="Maximum notes to show")
+def notes_list(category: str | None, limit: int) -> None:
+    """List project notes, optionally filtered by category."""
+    from .project_memory import ProjectMemory
+    from .project_notes import ProjectNotes
+
+    project_path = str(Path.cwd())
+    memory = ProjectMemory(project_path)
+    notes = ProjectNotes(memory, project_path)
+
+    entries = notes.get_notes(category=category, limit=limit)
+    if not entries:
+        console.print("[yellow]No notes found[/yellow]")
+        return
+
+    table = Table(title="Project Notes")
+    table.add_column("ID", style="dim", width=4)
+    table.add_column("Category", style="cyan", width=14)
+    table.add_column("Title", style="white")
+    table.add_column("Updated", style="dim")
+
+    for entry in entries:
+        table.add_row(
+            str(entry.id),
+            entry.category,
+            entry.title[:60],
+            entry.updated_at[:10],
+        )
+    console.print(table)
+
+
+@notes_group.command(name="show")
+@click.argument("note_id", type=int)
+def notes_show(note_id: int) -> None:
+    """Show full content of a note."""
+    from .project_memory import ProjectMemory
+    from .project_notes import ProjectNotes
+
+    project_path = str(Path.cwd())
+    memory = ProjectMemory(project_path)
+    notes = ProjectNotes(memory, project_path)
+
+    entries = notes.get_notes(limit=1000)
+    entry = next((e for e in entries if e.id == note_id), None)
+    if entry is None:
+        console.print(f"[red]Note #{note_id} not found[/red]")
+        sys.exit(1)
+
+    console.print(
+        Panel(
+            entry.content or "(no content)",
+            title=f"[bold][{entry.category}] {entry.title}[/bold]",
+            subtitle=f"ID: {entry.id}  Updated: {entry.updated_at[:10]}",
+        )
+    )
+
+
+@notes_group.command(name="update")
+@click.argument("note_id", type=int)
+@click.option("--title", "-t", default=None, help="New title")
+@click.option("--content", "-m", default=None, help="New content")
+@click.option(
+    "--category",
+    "-c",
+    default=None,
+    type=click.Choice(["architecture", "workflow", "gotcha", "dependency", "integration"]),
+    help="New category",
+)
+def notes_update(
+    note_id: int, title: str | None, content: str | None, category: str | None
+) -> None:
+    """Update an existing note's title, content, or category."""
+    from .project_memory import ProjectMemory
+    from .project_notes import ProjectNotes
+
+    if not any([title, content, category]):
+        console.print(
+            "[yellow]No updates specified (use --title, --content, or --category)[/yellow]"
+        )
+        sys.exit(1)
+
+    project_path = str(Path.cwd())
+    memory = ProjectMemory(project_path)
+    notes = ProjectNotes(memory, project_path)
+
+    if notes.update_note(note_id, title=title, content=content, category=category):
+        console.print(f"[green]Updated note #{note_id}[/green]")
+    else:
+        console.print(f"[red]Note #{note_id} not found[/red]")
+        sys.exit(1)
+
+
+@notes_group.command(name="dedupe")
+@click.option(
+    "--threshold",
+    "-t",
+    default=0.85,
+    type=float,
+    help="Similarity threshold 0.0-1.0 (default: 0.85)",
+)
+def notes_dedupe(threshold: float) -> None:
+    """Detect and merge duplicate notes based on title similarity."""
+    from .project_memory import ProjectMemory
+    from .project_notes import ProjectNotes
+
+    if not (0.0 <= threshold <= 1.0):
+        console.print("[red]Threshold must be between 0.0 and 1.0[/red]")
+        sys.exit(1)
+
+    project_path = str(Path.cwd())
+    memory = ProjectMemory(project_path)
+    notes = ProjectNotes(memory, project_path)
+
+    merged = notes.dedupe_notes(similarity_threshold=threshold)
+    console.print(f"[green]Merged {merged} duplicate pair(s)[/green]")
+
+
 def _session_report_to_dict(report: SessionReport) -> dict:
     from .types import BudgetInfo, CodeArtifact, IterationReport
 
@@ -1123,6 +1443,15 @@ def _truncate(s: str, max_len: int) -> str:
     if len(s) <= max_len:
         return s
     return s[: max_len - 3] + "..."
+
+
+def _format_size(size_bytes: float) -> str:
+    """Format byte size as human-readable string."""
+    for unit in ("B", "KB", "MB", "GB"):
+        if size_bytes < 1024:
+            return f"{size_bytes:.1f}{unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f}TB"
 
 
 def _parse_timeout(timeout_str: str) -> int:
@@ -1267,7 +1596,6 @@ def review(
         ReviewMode,
         Severity,
     )
-    from .code_review.shadow_broker import ShadowBroker
 
     severity_map = {
         "critical": Severity.CRITICAL,
@@ -1295,15 +1623,8 @@ def review(
     if shadow:
         from .code_review.shadow_worker import WorkerManager
 
-        broker = ShadowBroker()
-        job_id = broker.create_job(
-            target_path=target,
-            mode=mode_map.get(mode, ReviewMode.REVIEW),
-            intensity=intensity_map.get(intensity, Intensity.MODERATE),
-        )
-        worker_manager = WorkerManager(broker)
-        worker_manager.submit_shadow_job(
-            job_id=job_id,
+        worker_manager = WorkerManager(project_path=str(Path.cwd()))
+        job_id = worker_manager.submit_shadow_job(
             target_path=target,
             mode=mode_map.get(mode, ReviewMode.REVIEW),
             intensity=intensity_map.get(intensity, Intensity.MODERATE),
@@ -1340,6 +1661,10 @@ def review(
                 console.print(f"[red]High: {stats['high']}[/red]")
             if stats.get("medium"):
                 console.print(f"[yellow]Medium: {stats['medium']}[/yellow]")
+            if stats.get("low"):
+                console.print(f"Low: {stats['low']}")
+            if stats.get("info"):
+                console.print(f"Info: {stats['info']}")
 
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("MINIMAX_API_KEY")
     if not api_key:
@@ -1359,10 +1684,49 @@ def review(
         max_fixes_per_round=max_fixes,
     )
 
+    # Project path resolved before controller creation for callback closure
+    project_path = str(Path(target).resolve().parent) if Path(target).is_file() else target
+
+    # Initialize ProjectMemory and LearningIngestor early for correction signal callback
+    try:
+        pm = ProjectMemory(project_path)
+        ingestor = LearningIngestor(pm)
+    except Exception as e:
+        logger.warning(f"ProjectMemory init failed: {e}")
+        pm = None
+        ingestor = None
+
+    # Correction signal callback for verification failures (MUS-023)
+    def on_correction_signal(
+        correction_type: str,
+        severity: str | None = None,
+        file_path: str | None = None,
+        line_number: int | None = None,
+        rule_id: str | None = None,
+        description: str | None = None,
+        **kwargs: object,
+    ) -> None:
+        if ingestor:
+            try:
+                ingestor.write_correction_signal(
+                    project_path=project_path,
+                    correction_type=correction_type,
+                    source_table="review_findings",
+                    source_id=0,  # Link to finding ID after ingest; 0 for immediate signal
+                    severity=severity,
+                    file_path=file_path,
+                    line_number=line_number,
+                    rule_id=rule_id,
+                    description=description,
+                )
+            except Exception as e:
+                logger.warning(f"Correction signal failed: {e}")
+
     controller = ReviewController(
         config=config,
         m27_client=m27_client,
         event_callback=event_handler,
+        correction_signal_callback=on_correction_signal,
     )
 
     try:
@@ -1372,22 +1736,40 @@ def review(
         # Self-learning: update CLAUDE.md, MEMORY.md, and skills
         if review_result:
             try:
-                project_path = str(Path(target).resolve().parent) if Path(target).is_file() else target
+                duration_ms = int(result.stats.duration_seconds * 1000)
                 pipeline = LearningPipeline(
                     project_path=project_path,
                     m27_client=m27_client,
                 )
-                learn_result = pipeline.learn_from_review(review_result)
+                learn_result = pipeline.learn_from_review(
+                    review_result,
+                    review_mode=config.mode.value,
+                    token_cost=result.stats.tokens_used,
+                    duration_ms=duration_ms,
+                )
                 if learn_result.get("rules_added"):
-                    console.print(
-                        f"[cyan]Learned {learn_result['rules_added']} new rules[/cyan]"
-                    )
+                    console.print(f"[cyan]Learned {learn_result['rules_added']} new rules[/cyan]")
                 if learn_result.get("skills_generated"):
                     console.print(
                         f"[cyan]Generated {learn_result['skills_generated']} new skills[/cyan]"
                     )
             except Exception as e:
                 logger.warning(f"Learning pipeline failed: {e}")
+
+            # Record change events after review (MUS-021)
+            if pm:
+                try:
+                    from .change_capture import ChangeCapture
+
+                    cc = ChangeCapture(project_path)
+                    capture_result = cc.capture_and_store(pm, learn_result.get("review_run_id"))
+                    if capture_result.get("changed_files_count", 0) > 0:
+                        logger.debug(
+                            f"Captured {capture_result['changed_files_count']} changed files "
+                            f"as learning evidence"
+                        )
+                except Exception as e:
+                    logger.warning(f"ChangeCapture failed: {e}")
 
         if format == "json" and review_result:
             output_data = {
@@ -1474,13 +1856,6 @@ def lifeline(target: str, prompt: str, model: str | None, intensity: str) -> Non
 
     from .m27_client import M27Client
 
-    intensity_map = {
-        "minimal": "quick scan, surface-level analysis",
-        "moderate": "thorough investigation with multiple hypotheses",
-        "intensive": "deep dive with code tracing and extensive testing",
-        "exhaustive": "comprehensive analysis including edge cases, performance, and security",
-    }
-
     m27_client = M27Client(api_key=api_key)
 
     system_prompt = f"""You are a debugging and investigation assistant. Your task is to:
@@ -1491,7 +1866,7 @@ def lifeline(target: str, prompt: str, model: str | None, intensity: str) -> Non
 
 Be methodical. Check edge cases. Verify your assumptions.
 
-Investigation intensity: {intensity_map.get(intensity, intensity_map["moderate"])}"""
+Investigation intensity: {intensity.capitalize()}"""
 
     user_prompt = f"""Target: {target}
 Task: {prompt}
@@ -1539,7 +1914,7 @@ def probe(job_id: str | None) -> None:
     """
     from .code_review.shadow_broker import ShadowBroker
 
-    broker = ShadowBroker()
+    broker = ShadowBroker(project_path=str(Path.cwd()))
 
     if job_id:
         job = broker.get_job(job_id)
@@ -1598,7 +1973,7 @@ def diagnosis(job_id: str | None) -> None:
     """
     from .code_review.shadow_broker import ShadowBroker
 
-    broker = ShadowBroker()
+    broker = ShadowBroker(project_path=str(Path.cwd()))
 
     if job_id:
         job = broker.get_job(job_id)
@@ -1811,6 +2186,429 @@ def _get_status_color(status: str) -> str:
     return color_map.get(status, "white")
 
 
+# ---------------------------------------------------------------------------
+# Memory inspection
+# ---------------------------------------------------------------------------
+
+
+@cli.group(name="memory")
+def memory_group() -> None:
+    """Inspect memory database, rules, and decisions."""
+    pass
+
+
+@memory_group.command(name="status")
+def memory_status() -> None:
+    """Show memory database statistics (rules, reviews, decisions)."""
+    project_path = str(Path.cwd())
+    try:
+        pm = ProjectMemory(project_path)
+        stats = pm.get_statistics(project_path)
+
+        db_path = pm._db_path
+        schema_version = pm.get_schema_version()
+
+        table = Table(title="Memory Status")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+        table.add_row("Database", str(db_path))
+        table.add_row("Schema Version", schema_version or "unknown")
+        table.add_row("Learned Rules", str(stats.get("total_learned_rules", 0)))
+        table.add_row("Review Runs", str(stats.get("total_reviews", 0)))
+        table.add_row("Total Findings", str(stats.get("total_findings", 0)))
+        table.add_row("Skills", str(stats.get("total_skills", 0)))
+        table.add_row("Agents", str(stats.get("total_agents", 0)))
+        avg_rate = stats.get("avg_rule_success_rate")
+        avg_rate_str = f"{avg_rate:.1%}" if avg_rate is not None else "N/A"
+        table.add_row("Avg Rule Success Rate", avg_rate_str)
+
+        console.print(table)
+    except Exception as e:
+        console.print(f"[red]Failed to get memory status: {e}[/red]")
+
+
+@memory_group.command(name="history")
+@click.option("--limit", "-n", default=10, help="Number of entries to show")
+def memory_history(limit: int) -> None:
+    """Show recent review sessions and memory decisions."""
+    project_path = str(Path.cwd())
+    try:
+        pm = ProjectMemory(project_path)
+
+        runs = pm.list_review_runs(project_path=project_path, limit=limit)
+        decisions = pm.list_decisions(project_path=project_path, limit=limit)
+
+        console.print("[bold cyan]Recent Review Runs[/bold cyan]")
+        if not runs:
+            console.print("[yellow]No review runs recorded.[/yellow]")
+        else:
+            runs_table = Table()
+            runs_table.add_column("ID", style="cyan", width=4)
+            runs_table.add_column("Mode", style="magenta")
+            runs_table.add_column("Findings", style="yellow", justify="right")
+            runs_table.add_column("Tokens", style="dim", justify="right")
+            runs_table.add_column("Created", style="green")
+            for r in runs:
+                runs_table.add_row(
+                    str(r["id"]),
+                    r.get("review_mode", "unknown"),
+                    str(r.get("findings_count", 0)),
+                    str(r.get("token_cost", 0)),
+                    r.get("created_at", "")[:19],
+                )
+            console.print(runs_table)
+
+        console.print()
+        console.print("[bold cyan]Recent Memory Decisions[/bold cyan]")
+        if not decisions:
+            console.print("[yellow]No memory decisions recorded.[/yellow]")
+        else:
+            dec_table = Table()
+            dec_table.add_column("ID", style="cyan", width=4)
+            dec_table.add_column("Type", style="magenta")
+            dec_table.add_column("Source", style="yellow")
+            dec_table.add_column("Reasoning", style="green")
+            for d in decisions:
+                reasoning = _truncate(d.get("reasoning", ""), 50)
+                dec_table.add_row(
+                    str(d["id"]),
+                    d.get("decision_type", "unknown"),
+                    d.get("source_table", ""),
+                    reasoning,
+                )
+            console.print(dec_table)
+    except Exception as e:
+        console.print(f"[red]Failed to get memory history: {e}[/red]")
+
+
+# ---------------------------------------------------------------------------
+# Skills inspection
+# ---------------------------------------------------------------------------
+
+
+@cli.group(name="skills")
+def skills_group() -> None:
+    """List available project skills (alias: muscle skills list)."""
+    pass
+
+
+@skills_group.command(name="list")
+@click.option("--path", default=None, help="Skills directory path")
+def skills_list(path: str | None) -> None:
+    """List skills from .muscle/skills/ directory."""
+    project_path = Path.cwd()
+    skills_dir = Path(path) if path else (project_path / ".muscle" / "skills")
+
+    if not skills_dir.exists():
+        console.print(f"[yellow]Skills directory not found: {skills_dir}[/yellow]")
+        return
+
+    skills_files: list[Path] = []
+    if skills_dir.is_dir():
+        skills_files = (
+            sorted(skills_dir.rglob("*.md"))
+            + sorted(skills_dir.rglob("*.yaml"))
+            + sorted(skills_dir.rglob("*.json"))
+        )
+    else:
+        skills_files = [skills_dir]
+
+    if not skills_files:
+        console.print("[yellow]No skills found.[/yellow]")
+        return
+
+    table = Table(title=f"Skills ({skills_dir})")
+    table.add_column("Name", style="cyan")
+    table.add_column("Path", style="green")
+    for sf in skills_files:
+        name = sf.stem
+        try:
+            rel_path = str(sf.relative_to(project_path))
+        except ValueError:
+            rel_path = str(sf)
+        table.add_row(name, rel_path)
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# Agents inspection
+# ---------------------------------------------------------------------------
+
+
+@cli.group(name="agents")
+def agents_group() -> None:
+    """List available project agents (alias: muscle agents list)."""
+    pass
+
+
+@agents_group.command(name="list")
+@click.option("--path", default=None, help="Agents directory path")
+def agents_list(path: str | None) -> None:
+    """List agents from .muscle/agents/ directory."""
+    project_path = Path.cwd()
+    agents_dir = Path(path) if path else (project_path / ".muscle" / "agents")
+
+    if not agents_dir.exists():
+        console.print(f"[yellow]Agents directory not found: {agents_dir}[/yellow]")
+        return
+
+    agents_files: list[Path] = []
+    if agents_dir.is_dir():
+        agents_files = (
+            sorted(agents_dir.rglob("*.md"))
+            + sorted(agents_dir.rglob("*.yaml"))
+            + sorted(agents_dir.rglob("*.json"))
+        )
+    else:
+        agents_files = [agents_dir]
+
+    if not agents_files:
+        console.print("[yellow]No agents found.[/yellow]")
+        return
+
+    table = Table(title=f"Agents ({agents_dir})")
+    table.add_column("Name", style="cyan")
+    table.add_column("Path", style="green")
+    for af in agents_files:
+        name = af.stem
+        try:
+            rel_path = str(af.relative_to(project_path))
+        except ValueError:
+            rel_path = str(af)
+        table.add_row(name, rel_path)
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# Backups management
+# ---------------------------------------------------------------------------
+
+
+@cli.group(name="backups")
+def backups_group() -> None:
+    """Backup list, inspect, and restore management."""
+    pass
+
+
+@backups_group.command(name="list")
+@click.option(
+    "--type",
+    "backup_type",
+    default=None,
+    help="Filter by backup type (full, claude_md, config, memory)",
+)
+@click.option("--limit", "-n", default=20, help="Maximum number of backups to list")
+def backups_list(backup_type: str | None, limit: int) -> None:
+    """List all available backups with timestamps, types, and sizes."""
+
+    project_path = str(Path.cwd())
+    try:
+        pm = ProjectMemory(project_path)
+        bm = BackupManager(pm, project_path)
+
+        valid_types: set[str] = {"full", "claude_md", "config", "memory"}
+        if backup_type and backup_type not in valid_types:
+            console.print(f"[red]Invalid backup type: {backup_type}[/red]")
+            console.print(f"Valid types: {', '.join(sorted(valid_types))}")
+            return
+
+        backups = bm.list_backups(backup_type=backup_type if backup_type else None, limit=limit)  # type: ignore[arg-type]
+
+        if not backups:
+            console.print("[yellow]No backups found.[/yellow]")
+            return
+
+        table = Table(title="Backups")
+        table.add_column("ID", style="cyan", width=4)
+        table.add_column("Type", style="magenta")
+        table.add_column("Created At", style="green")
+        table.add_column("Size", style="yellow", justify="right")
+        table.add_column("Retention", style="dim")
+
+        for b in backups:
+            size_str = _format_size(b.size_bytes)
+            table.add_row(str(b.id), b.backup_type, b.created_at, size_str, f"{b.retention_days}d")
+
+        console.print(table)
+    except Exception as e:
+        console.print(f"[red]Failed to list backups: {e}[/red]")
+
+
+@backups_group.command(name="show")
+@click.argument("backup_id", type=int)
+def backups_show(backup_id: int) -> None:
+    """Show backup metadata and contents preview."""
+    project_path = str(Path.cwd())
+    try:
+        pm = ProjectMemory(project_path)
+        bm = BackupManager(pm, project_path)
+
+        info = bm.inspect_backup(backup_id)
+        if not info:
+            console.print(f"[red]Backup #{backup_id} not found.[/red]")
+            return
+
+        table = Table(title=f"Backup #{backup_id}")
+        table.add_column("Property", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("Type", info["backup_type"])
+        table.add_row("Created", info["created_at"])
+        table.add_row("Size", _format_size(info["size_bytes"]))
+        table.add_row("Checksum", info["checksum"] or "N/A")
+        table.add_row("Archive", info["file_path"])
+        table.add_row("Retention", f"{info['retention_days']} days")
+
+        console.print(table)
+
+        if info.get("contents"):
+            contents_table = Table(title="Contents")
+            contents_table.add_column("Name", style="cyan")
+            contents_table.add_column("Size", style="yellow", justify="right")
+            contents_table.add_column("Type", style="dim")
+            for item in info["contents"]:
+                size_str = _format_size(item["size"]) if not item["isdir"] else "<dir>"
+                kind = "dir" if item["isdir"] else "file"
+                contents_table.add_row(item["name"], size_str, kind)
+            console.print(contents_table)
+        else:
+            console.print("[yellow]No contents info available.[/yellow]")
+
+    except Exception as e:
+        console.print(f"[red]Failed to show backup: {e}[/red]")
+
+
+@backups_group.command(name="restore")
+@click.argument("backup_id", type=int)
+@click.option("--dry-run", is_flag=True, help="Preview restore without making changes")
+def backups_restore(backup_id: int, dry_run: bool) -> None:
+    """Restore .muscle/ files from a backup snapshot.
+
+    By default performs the restoration. Use --dry-run to preview
+    what would be changed without modifying any files.
+    """
+    project_path = str(Path.cwd())
+    try:
+        pm = ProjectMemory(project_path)
+        bm = BackupManager(pm, project_path)
+
+        result = bm.restore_backup(backup_id, dry_run=dry_run)
+        if not result:
+            console.print(f"[red]Backup #{backup_id} not found.[/red]")
+            return
+
+        if "error" in result:
+            console.print(f"[red]Restore failed: {result['error']}[/red]")
+            return
+
+        console.print(f"[cyan]{result['message']}[/cyan]")
+
+        if result.get("files"):
+            table = Table(title="Files" + (" (dry-run)" if dry_run else ""))
+            table.add_column("Source", style="cyan")
+            table.add_column("Destination", style="green")
+            table.add_column("Size", style="yellow", justify="right")
+            for f in result["files"]:
+                table.add_row(f["name"], f["destination"], _format_size(f["size"]))
+            console.print(table)
+
+    except Exception as e:
+        console.print(f"[red]Failed to restore backup: {e}[/red]")
+
+
+@cli.group(name="audit")
+def audit_group() -> None:
+    """Audit trail: show recent publish, backup, skill, and agent actions."""
+    pass
+
+
+@audit_group.command(name="list")
+@click.option("--limit", "-n", default=30, help="Maximum number of entries to show")
+@click.option(
+    "--action",
+    "-a",
+    type=click.Choice(
+        [
+            "publish",
+            "backup",
+            "restore",
+            "skill_create",
+            "skill_revise",
+            "skill_archive",
+            "agent_create",
+            "agent_archive",
+        ]
+    ),
+    default=None,
+    help="Filter by action type",
+)
+def audit_list(limit: int, action: str | None) -> None:
+    """Show recent audit log entries (publish, backup, restore, skill/agent lifecycle)."""
+    project_path = str(Path.cwd())
+    try:
+        pm = ProjectMemory(project_path)
+        entries = pm.list_action_logs(
+            project_path=project_path,
+            action_type=action,
+            limit=limit,
+        )
+
+        table = Table(title=f"Recent Actions (last {len(entries)})")
+        table.add_column("When", style="dim", width=16)
+        table.add_column("Action", style="cyan", width=14)
+        table.add_column("Entity", style="yellow", width=14)
+        table.add_column("Details", style="white")
+
+        if not entries:
+            console.print("[dim]No audit entries yet.[/dim]")
+            return
+
+        for entry in entries:
+            details = entry.get("details_json", "{}")
+            # Parse details for display
+            try:
+                import json
+
+                details_obj = json.loads(details)
+                if entry.get("entity_type") == "backup":
+                    details_str = details_obj.get("backup_type", "")
+                    if entry.get("action_type") == "restore":
+                        details_str += f", restored={details_obj.get('restored_count', '?')} files"
+                elif entry.get("entity_type") == "skill":
+                    details_str = (
+                        details_obj.get("skill_name", "")
+                        or details_obj.get("trigger_pattern", "")
+                        or details_obj.get("skill_path", "")
+                    )
+                elif entry.get("entity_type") == "agent":
+                    details_str = details_obj.get("agent_name", "") or details_obj.get(
+                        "trigger_pattern", ""
+                    )
+                elif entry.get("entity_type") == "claude_md":
+                    details_str = "CLAUDE.md published"
+                else:
+                    details_str = str(details_obj)
+            except Exception:
+                details_str = details[:50]
+
+            entity_id_str = (
+                f"{entry.get('entity_type', '')}:{entry.get('entity_id', '')}"
+                if entry.get("entity_id")
+                else entry.get("entity_type", "")
+            )
+            table.add_row(
+                entry.get("created_at", "")[:16],
+                entry.get("action_type", ""),
+                entity_id_str,
+                details_str[:60],
+            )
+
+        console.print(table)
+
+    except Exception as e:
+        console.print(f"[red]Failed to list audit entries: {e}[/red]")
+
+
 @cli.group(name="settings")
 def settings_group() -> None:
     """MUSCLE settings and configuration management."""
@@ -1823,7 +2621,8 @@ def settings_show() -> None:
     from .tui.project_manager import ProjectManager
 
     manager = ProjectManager()
-    project = manager.detect_project()
+    project_path = Path.cwd()
+    project = manager.load_config(project_path)
 
     table = Table(title="MUSCLE Settings")
     table.add_column("Setting", style="cyan")
@@ -1911,7 +2710,7 @@ def settings_hooks(enable: bool | None, gate: str | None) -> None:
         updated = True
 
     if gate:
-        manager.update_muscle_config(project_path, platform=gate)
+        manager.update_muscle_config(project_path, review_gate=gate)
         console.print(f"[green]Review gate set to: {gate}[/green]")
         updated = True
 
@@ -1959,8 +2758,10 @@ def settings_platform(platform: str | None, cli_path: str | None) -> None:
 
 
 @settings_group.command(name="reset")
-@click.option("--force", is_flag=True, help="Skip confirmation")
-def settings_reset(force: bool) -> None:
+@click.option("--force", is_flag=True, help="Skip confirmation prompts")
+@click.option("--keep-data", is_flag=True, help="Keep .muscle/ project data")
+@click.option("--keep-config", is_flag=True, help="Keep ~/.muscle/ global config")
+def settings_reset(force: bool, keep_data: bool, keep_config: bool) -> None:
     """Reset MUSCLE settings to defaults.
 
     This will reset platform, hooks, and automation settings but
@@ -1979,6 +2780,7 @@ def settings_reset(force: bool) -> None:
     manager.update_muscle_config(
         project_path,
         hooks_enabled=True,
+        review_gate="block+fix",
         platform="auto",
         api_key_source="env",
     )
@@ -2068,7 +2870,9 @@ def uninstall(force: bool, keep_data: bool, keep_config: bool) -> None:
     console.print()
     console.print("[bold green]MUSCLE uninstalled from this project.[/bold green]")
     console.print()
-    console.print("[dim]To fully remove the CLI: pip uninstall muscle  (or: uv pip uninstall muscle)[/dim]")
+    console.print(
+        "[dim]To fully remove the CLI: pip uninstall muscle  (or: uv pip uninstall muscle)[/dim]"
+    )
 
 
 def main() -> None:

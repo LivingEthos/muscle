@@ -17,6 +17,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from tools.muscle.project_memory import ProjectMemory
+
 from .types import (
     BudgetInfo,
     BudgetMode,
@@ -520,3 +523,27 @@ class SessionManager:
 
         artifacts_dir = self.base_dir / session_id / "artifacts"
         return artifacts_dir if artifacts_dir.exists() else None
+
+
+# -----------------------------------------------------------------------------
+# Legacy import (MUS-012)
+# -----------------------------------------------------------------------------
+
+
+def import_from_project_memory(project_memory: ProjectMemory, project_path: str) -> dict:
+    """
+    Import session data from legacy .muscle/sessions/ into ProjectMemory.
+
+    This is a convenience wrapper that runs only the sessions import step
+    of LegacyImporter.
+
+    Returns
+    -------
+    dict
+        Import stats dict with keys: imported, skipped, errors.
+    """
+    from tools.muscle.legacy_importer import LegacyImporter
+
+    importer = LegacyImporter(project_memory, project_path)
+    importer._import_sessions()
+    return importer.stats.get("sessions", {"imported": 0, "skipped": 0, "errors": 0})

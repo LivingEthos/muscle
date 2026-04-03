@@ -1,15 +1,22 @@
 """
-Memory Manager - Updates CLAUDE.md, AGENT.md, and MEMORY.md with learnings using M2.7 intelligence.
+MemoryManager - Internal markdown tracking for .muscle/ workspace artifacts.
 
-Uses marker-based editing to only modify MUSCLE-managed sections.
+DB-FIRST ARCHITECTURE: project_memory.db is the SOURCE OF TRUTH.
+The internal markdown files managed here are BOUNDED INTERNAL ARTIFACTS only:
+- .muscle/CLAUDE.md  - Internal structured rules (Do/Don't/Project Skills)
+- .muscle/AGENT.md   - Internal agent reference tracking
+- .muscle/MEMORY.md  - Internal session logs, archived rules, pattern history
 
-Architecture Decision Record (ADR):
-- M2.7-powered summarization to compress memory entries
-- M2.7 relevance ranking for smart retrieval
-- Bounded edits via markers prevent corruption of user content
-- Deduplication before adding new entries
-- Pruning of old entries when superseded
-- Structured format for easy parsing
+These files are:
+  - NOT treated as authoritative
+  - Readable for backward compatibility with existing code
+  - NOT the primary record for any decision
+  - NOT consulted for root CLAUDE.md publishing decisions
+
+All authoritative decisions flow through project_memory.db.
+ClaudePublisher publishes to root CLAUDE.md using DB-backed data directly.
+
+Marker-based editing is used to only modify MUSCLE-managed sections.
 """
 
 from __future__ import annotations
@@ -31,7 +38,24 @@ MEMORY_SECTION_START = "<!-- MUSCLE_MEMORY_START -->"
 MEMORY_SECTION_END = "<!-- MUSCLE_MEMORY_END -->"
 
 
+def _get_claude_publisher_module() -> type | None:
+    """Lazy import to avoid circular dependencies."""
+    try:
+        from ..claude_publisher import ClaudePublisher
+
+        return ClaudePublisher
+    except ImportError:
+        return None
+
+
 class MemoryManager:
+    """
+    Internal markdown tracking for .muscle/ workspace artifacts.
+
+    INTERNAL ONLY: This class manages bounded internal artifacts.
+    project_memory.db is the authoritative source of truth.
+    """
+
     LEARNED_START = "<!-- MUSCLE_LEARNED_START -->"
     LEARNED_END = "<!-- MUSCLE_LEARNED_END -->"
 
@@ -42,19 +66,25 @@ class MemoryManager:
         self.m27 = m27_client
 
     def update_claude_md(self, entry: str, category: str = "general") -> bool:
-        """Add an entry to CLAUDE.md within markers, optionally summarized by M2.7."""
+        """INTERNAL TRACKING: Add an entry to .muscle/CLAUDE.md within markers.
+
+        This is internal tracking only. DB is the authoritative source."""
         if self.m27 and len(entry) > 200:
             entry = self._m27_summarize_entry(entry, category)
         return self._update_memory_file("CLAUDE.md", entry, category)
 
     def update_agent_md(self, entry: str, category: str = "agent") -> bool:
-        """Add an entry to AGENT.md within markers, optionally summarized by M2.7."""
+        """INTERNAL TRACKING: Add an entry to .muscle/AGENT.md within markers.
+
+        This is internal tracking only. DB is the authoritative source."""
         if self.m27 and len(entry) > 200:
             entry = self._m27_summarize_entry(entry, category)
         return self._update_memory_file("AGENT.md", entry, category)
 
     def update_memory_md(self, entry: str, category: str = "learned") -> bool:
-        """Add an entry to MEMORY.md within markers, optionally summarized by M2.7."""
+        """INTERNAL TRACKING: Add an entry to .muscle/MEMORY.md within markers.
+
+        This is internal tracking only. DB is the authoritative source."""
         if self.m27 and len(entry) > 200:
             entry = self._m27_summarize_entry(entry, category)
         return self._update_memory_file("MEMORY.md", entry, category)
@@ -435,9 +465,7 @@ Return a JSON array of the consolidated entries:
             content = content.rstrip("\n") + "\n\n" + self._rules_section_template() + "\n"
             filepath.write_text(content)
         else:
-            filepath.write_text(
-                f"# CLAUDE\n\n{self._rules_section_template()}\n"
-            )
+            filepath.write_text(f"# CLAUDE\n\n{self._rules_section_template()}\n")
 
         return filepath
 
@@ -463,9 +491,7 @@ Return a JSON array of the consolidated entries:
             content = content.rstrip("\n") + "\n\n" + self._memory_section_template() + "\n"
             filepath.write_text(content)
         else:
-            filepath.write_text(
-                f"# MEMORY\n\n{self._memory_section_template()}\n"
-            )
+            filepath.write_text(f"# MEMORY\n\n{self._memory_section_template()}\n")
 
         return filepath
 
@@ -497,7 +523,9 @@ Return a JSON array of the consolidated entries:
         confidence: str,
         validated_count: int,
     ) -> bool:
-        """Write a rule to CLAUDE.md under ### Do or ### Don't. Deduplicates."""
+        """INTERNAL TRACKING: Write a rule to .muscle/CLAUDE.md under ### Do or ### Don't.
+
+        This is internal tracking only. DB is the authoritative source for rules."""
         filepath = self._ensure_claude_md_structure()
         content = filepath.read_text()
         rules_section = self._extract_rules_section(content)
@@ -560,7 +588,10 @@ Return a JSON array of the consolidated entries:
         return True
 
     def read_rules(self) -> list[dict]:
-        """Parse rules from CLAUDE.md into list of dicts."""
+        """INTERNAL TRACKING: Parse rules from .muscle/CLAUDE.md into list of dicts.
+
+        This reads from internal markdown for backward compatibility.
+        DB is the authoritative source."""
         filepath = self.muscle_dir / "CLAUDE.md"
         if not filepath.exists():
             return []
@@ -606,10 +637,10 @@ Return a JSON array of the consolidated entries:
             return match.group(1), match.group(2), int(match.group(3))
         return "", "", 0
 
-    def update_rule_validation(
-        self, rule_text: str, validated_count: int, confidence: str
-    ) -> bool:
-        """Update an existing rule's validation count and confidence in-place."""
+    def update_rule_validation(self, rule_text: str, validated_count: int, confidence: str) -> bool:
+        """INTERNAL TRACKING: Update an existing rule's validation count in .muscle/CLAUDE.md.
+
+        This is internal tracking only. DB is the authoritative source."""
         filepath = self.muscle_dir / "CLAUDE.md"
         if not filepath.exists():
             return False
@@ -623,7 +654,9 @@ Return a JSON array of the consolidated entries:
             if stripped.startswith("- ") and rule_text.lower() in stripped.lower():
                 parsed_text, _, _ = self._parse_rule_line(stripped)
                 if parsed_text.lower() == rule_text.lower():
-                    lines[i] = f"- {parsed_text} (confidence: {confidence}, validated: {validated_count}x)"
+                    lines[i] = (
+                        f"- {parsed_text} (confidence: {confidence}, validated: {validated_count}x)"
+                    )
                     updated = True
                     break
 
@@ -633,7 +666,9 @@ Return a JSON array of the consolidated entries:
         return updated
 
     def archive_rule(self, rule_text: str, reason: str) -> bool:
-        """Remove rule from CLAUDE.md, add it to MEMORY.md under ## Archived Rules."""
+        """INTERNAL TRACKING: Remove rule from .muscle/CLAUDE.md, add to .muscle/MEMORY.md.
+
+        This is internal tracking only. DB is the authoritative source."""
         filepath = self.muscle_dir / "CLAUDE.md"
         if not filepath.exists():
             return False
@@ -675,7 +710,9 @@ Return a JSON array of the consolidated entries:
         low: int,
         actions: list[str],
     ) -> bool:
-        """Add a session summary under ## Review Sessions in MEMORY.md."""
+        """INTERNAL TRACKING: Add a session summary under ## Review Sessions in .muscle/MEMORY.md.
+
+        This is internal tracking only. DB is the authoritative source."""
         memory_path = self._ensure_memory_md_structure()
         memory_content = memory_path.read_text()
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -684,8 +721,53 @@ Return a JSON array of the consolidated entries:
             f"- [{timestamp}] critical={critical} high={high} medium={medium} low={low} "
             f"| actions: {actions_str}"
         )
-        memory_content = self._insert_under_header(
-            memory_content, "## Review Sessions", entry
-        )
+        memory_content = self._insert_under_header(memory_content, "## Review Sessions", entry)
         memory_path.write_text(memory_content)
         return True
+
+    def sync_to_root_claude_md(self) -> bool:
+        """DEPRECATED/FALLBACK: Sync from internal markdown to root CLAUDE.md.
+
+        This method reads from .muscle/CLAUDE.md (internal markdown) and is a
+        FALLBACK for backward compatibility only.
+
+        PREFERRED PATH: Use ClaudePublisher.publish() directly with DB-backed
+        data from LearningPipeline.learn_from_review().
+
+        This method exists for backward compatibility with code that may call it
+        directly. The authoritative path is:
+          LearningPipeline.learn_from_review() -> _publisher.publish(critical_rules=DB_DATA)
+
+        Returns True if sync succeeded, False otherwise.
+        """
+        claude_publisher_cls = _get_claude_publisher_module()
+        if claude_publisher_cls is None:
+            logger.warning("ClaudePublisher not available, skipping sync")
+            return False
+
+        try:
+            publisher = claude_publisher_cls(str(self.project_path))
+            return bool(publisher.update_markers())
+        except Exception as e:
+            logger.warning(f"Failed to sync to root CLAUDE.md: {e}")
+            return False
+
+    def ensure_root_claude_md_markers(self) -> bool:
+        """Ensure root CLAUDE.md has MUSCLE_PUBLISHED markers.
+
+        This is a utility for initial setup. The preferred path is
+        ClaudePublisher.insert_markers_if_missing() directly.
+
+        Returns True if markers exist or were inserted, False otherwise.
+        """
+        claude_publisher_cls = _get_claude_publisher_module()
+        if claude_publisher_cls is None:
+            logger.warning("ClaudePublisher not available")
+            return False
+
+        try:
+            publisher = claude_publisher_cls(str(self.project_path))
+            return bool(publisher.insert_markers_if_missing())
+        except Exception as e:
+            logger.warning(f"Failed to ensure root markers: {e}")
+            return False

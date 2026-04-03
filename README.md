@@ -1,403 +1,250 @@
-# MUSCLE - MiniMax Unified Self-Correcting Learning Engine
+# 💪 MUSCLE
 
-> "Give your code more muscle"
-
-**Self-learning code review that gets smarter with every task.**
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Supported Languages: Python, JavaScript, TypeScript, Go, Java, Rust, C++](https://img.shields.io/badge/Languages-Python%20%7C%20JavaScript%20%7C%20TypeScript%20%7C%20Go%20%7C%20Java%20%7C%20Rust%20%7C%20C++-blue.svg)](https://github.com/LivingEthos/muscle)
-
-## Overview
-
-MUSCLE is a self-learning code review companion that:
-- Runs post-task verification after Claude Code tasks
-- Traces root causes of issues through conversation
-- Auto-fixes or proposes fixes based on configurable automation
-- Updates CLAUDE.md/AGENT.md/MEMORY.md so Claude NEVER makes same mistake twice
-- Evolves its strategies over time when validated effective
-- Works locally with optional cloud sync in the future
-
-**Core Philosophy:** M2.7 is cheap enough to run constantly. If it learns your project, it approximates Claude Opus quality at a fraction of the cost.
-
-## Features
-
-- **Post-Task Verification**: Review gate runs after every Claude Code task
-- **Root Cause Tracing**: M2.7 traces issues to specific decisions
-- **Auto-Fix / Propose**: Configurable per severity level
-- **Memory File Updates**: CLAUDE.md, AGENT.md, MEMORY.md management
-- **Per-Project KB**: SQLite-based pattern and fix storage
-- **Strategy Evolution**: Evolves when validated effective
-- **TUI Interface**: Dashboard, reviews, history, settings
-- **Claude Code Plugin**: Slash commands, subagents, hooks
-- **Multi-Project Support**: Auto-detect + TUI switcher
-- **Dynamic Skill Generation**: Creates project-specific skills automatically
-- **Dynamic Agent Generation**: Creates specialized sub-agents for complex tasks
-- **GitHub Integration**: PRs, comments, issues, status checks
-- **Nightly Cron**: Background analysis with morning reports
-- **Shadow Mode**: Background review jobs with queue-based processing
-
-## Installation
-
-### Option 1: One-liner install (recommended)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/install.sh | bash
-```
-
-This installs the `muscle` CLI to `~/.muscle/src` and makes it available on your PATH.
-
-**Environment variables to customize the install:**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MUSCLE_INSTALL_DIR` | `~/.muscle/src` | Installation directory |
-| `MUSCLE_BRANCH` | `main` | Git branch or tag to install |
-| `MUSCLE_SKIP_UV` | `0` | Set to `1` to use pip instead of uv |
-| `MUSCLE_NO_INIT` | `0` | Set to `1` to skip running `muscle init` |
-
-**Reinstall or update:**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/install.sh | bash
-```
-
-The script is idempotent — re-running it updates an existing installation.
-
-### Option 2: Update
-
-To update MUSCLE to the latest version:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/scripts/update.sh | bash
-```
-
-Or check for updates without installing:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/scripts/update.sh | bash -s -- --check
-```
-
-### Option 3: Claude Code Plugin
-
-Install MUSCLE as a Claude Code plugin for slash command integration:
-
-```bash
-# Add the marketplace
-/plugin marketplace add LivingEthos/muscle
-
-# Install the plugin
-/plugin install muscle@muscle-marketplace
-```
-
-Then use the slash commands in any Claude Code session:
-
-```
-/muscle:review     # Standard code review
-/muscle:pressure   # Adversarial review
-/muscle:rescue     # Deep-dive investigation
-/muscle:status     # Check job status
-/muscle:result     # Get job results
-/muscle:cancel     # Cancel running jobs
-/muscle:setup      # Configure review gate
-```
-
-> **Note:** The plugin's slash commands shell out to the `muscle` CLI under the hood. Install the CLI (Option 1) first.
-
-### Option 3: Manual install
-
-```bash
-# Clone repository
-git clone https://github.com/LivingEthos/muscle.git
-cd muscle
-
-# Install dependencies
-uv sync
-
-# Install as CLI tool
-uv pip install -e .
-```
-
-## Quick Start
-
-```bash
-# Install MUSCLE
-curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/install.sh | bash
-
-# Set your API key
-export MINIMAX_API_KEY="your-token-plan-api-key"
-export ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic"
-
-# Initialize MUSCLE for a project
-muscle init
-
-# Run a code review
-muscle review --target ./src --mode review
-
-# Run with auto-fix
-muscle review --target ./src --mode auto-fix
-
-# Start the TUI
-muscle tui
-```
-
-## CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `muscle init` | Initialize MUSCLE for the current project |
-| `muscle review` | Review code for issues (review, auto-fix, plan, hybrid, pressure modes) |
-| `muscle tui` | Start the Terminal User Interface |
-| `muscle run` | Start a new MUSCLE session |
-| `muscle history` | List all MUSCLE sessions |
-| `muscle resume` | Resume a failed or incomplete session |
-| `muscle abort` | Abort a running session |
-| `muscle check` | Single-shot validation (compiler/linter/tester, no loop) |
-| `muscle kb` | Knowledge base management commands |
-| `muscle kb knowledge-add` | Add a strategy to the global knowledge base |
-| `muscle cost` | Cost optimization and cache management |
-| `muscle improve` | Self-improvement and analysis commands |
-| `muscle improve report` | Run self-review and show improvement report |
-| `muscle probe` | Check status of shadow (background) review jobs |
-| `muscle diagnosis` | Get final diagnosis/results from completed shadow jobs |
-| `muscle lifeline` | Deep-dive investigation and bug hunting |
-| `muscle nightly` | Nightly cron and report management (enable/disable/run/reports/cleanup) |
-
-## Review Modes
-
-| Mode | Description |
-|------|-------------|
-| `review` | Standard review, reports issues |
-| `auto-fix` | Automatically applies fixes for auto-fixable issues |
-| `plan` | Generates handoff plan for manual fixes |
-| `hybrid` | Auto-fix safe issues, plan for complex ones |
-| `pressure` | Adversarial review that challenges design decisions |
-
-## Claude Code Plugin
-
-MUSCLE provides a Claude Code plugin with slash commands.
-
-### Install from marketplace
-
-```bash
-/plugin marketplace add LivingEthos/muscle
-/plugin install muscle@muscle-marketplace
-```
-
-### Or load locally for development
-
-```bash
-claude --plugin-dir ./tools/muscle/plugin
-```
-
-### Available commands
-
-```bash
-/muscle:review     # Standard review on changes
-/muscle:pressure   # Adversarial review
-/muscle:rescue     # Delegate deep-dive investigation
-/muscle:status     # Check job status
-/muscle:result     # Get job results
-/muscle:cancel     # Cancel running jobs
-/muscle:setup      # Configure review gate
-```
-
-### OpenCode Integration
-
-MUSCLE also works with OpenCode. After installing MUSCLE, run the setup script:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/scripts/opencode-setup.sh | bash
-```
-
-This script:
-1. Verifies MUSCLE is installed
-2. Configures your API key
-3. Initializes the project
-4. Installs the `muscle-review` skill for OpenCode
-
-After setup, restart OpenCode and use:
-
-```
-/muscle-review              # Standard review
-/muscle-review src          # Review specific path
-/muscle-review src pressure # Pressure mode review
-```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         USER                                         │
-└────────────────────────────┬────────────────────────────────────────┘
-                             ↓
-┌─────────────────────────────────────────────────────────────────────┐
-│                    MUSCLE CORE                                       │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐             │
-│  │   Review     │  │   Pattern    │  │    Skill     │             │
-│  │  Controller │→→│   Detector   │→→│  Generator   │             │
-│  └──────────────┘  └──────────────┘  └──────────────┘             │
-│         ↓                ↓                ↓                         │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐             │
-│  │   Memory     │  │    Fix      │  │   Agent      │             │
-│  │   Manager    │  │   Tracker   │  │  Generator   │             │
-│  └──────────────┘  └──────────────┘  └──────────────┘             │
-└────────────────────────────┬────────────────────────────────────────┘
-                             ↓
-┌─────────────────────────────────────────────────────────────────────┐
-│                     INTEGRATIONS                                      │
-│     GitHub │ GitLab │ Jenkins │ MCP │ Claude Code Plugin             │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-## Directory Structure
-
-```
-~/.muscle/
-├── global_config.yaml       # Global MUSCLE settings
-└── global_kb.db            # Optional: cross-project learnings
-
-/path/to/project/
-├── .muscle/                 # MUSCLE project directory
-│   ├── project.db           # SQLite: patterns, fixes, history
-│   ├── config.yaml          # Project config
-│   ├── strategy_kb.json     # Evolved review strategies
-│   ├── CLAUDE.md           # Project conventions (MUSCLE-managed)
-│   ├── AGENT.md             # Agent-specific memory
-│   ├── MEMORY.md            # Miscellaneous learnings
-│   ├── skills/              # Dynamically generated project skills
-│   ├── agents/              # Dynamically generated sub-agents
-│   ├── reports/             # Nightly review reports
-│   └── logs/                # Review logs
-└── .git/
-```
-
-## Configuration
-
-### Automation Levels
-
-| Level | Critical/High | Medium/Low | Description |
-|-------|---------------|------------|-------------|
-| 1: Auto-fix | Auto-fix | Auto-fix if confident | Maximum automation |
-| 2: Propose | Propose | Propose | Human in loop |
-| 3: Hybrid | Auto-fix | Propose + accept | Balanced |
-| 4: Ask | Ask | Ask | Full control |
-
-### Review Gate Behaviors
-
-| Mode | Critical/High | Medium/Low | Fluidity | Accuracy |
-|------|--------------|-----------|----------|----------|
-| Block+Fix | Auto-fix, then allow | Warn, then allow | High | High |
-| Block All | Must address | Must address | Medium | Highest |
-| Warn Only | Notify | Notify | Highest | Medium |
-| Disabled | No auto | No auto | Highest | User-defined |
-
-## Development
-
-```bash
-# Install dev dependencies
-uv sync --dev
-
-# Run tests
-uv run pytest tests/ -v
-
-# Quality checks (ALL must pass)
-uv run mypy tools/muscle/
-uv run ruff check tools/muscle/
-uv run ruff format --check tools/muscle/
-uv run pytest tests/
-
-# Auto-fix issues
-uv run ruff check tools/muscle/ --fix
-uv run ruff format tools/muscle/
-```
-
-## Quality Gates
-
-All code must pass before merging:
-
-| Check | Command | Required |
-|-------|---------|----------|
-| Types | `uv run mypy tools/muscle/` | Yes |
-| Lint | `uv run ruff check tools/muscle/` | Yes |
-| Format | `uv run ruff format --check tools/muscle/` | Yes |
-| Tests | `uv run pytest tests/` | Yes |
-
-## The Compounding Advantage
-
-```
-Review #1 → Review #2 → Review #3 → ... → Review #N
-(learns)   (remembers)   (evolves)       (expert)
-   ↓          ↓           ↓               ↓
-"Auth here"  "Known      "Pressure       "This repo
-was missed"  pattern"    works better"   knows no bugs"
-```
-
-## Troubleshooting
-
-### API Key Issues
-
-```bash
-# Set your API key
-export MINIMAX_API_KEY="your-token-plan-api-key"
-
-# For global API endpoint
-export ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic"
-
-# For China endpoint
-export ANTHROPIC_BASE_URL="https://api.minimaxi.com/anthropic"
-```
-
-### Empty or Truncated Responses
-
-MUSCLE handles truncated M2.7 responses with JSON recovery:
-- Regex-based extraction for structured findings
-- Fallback to partial parsing when needed
-- Logs show recovery attempts
-
-### Rate Limiting
-
-MUSCLE implements exponential backoff for retryable errors (429, 5xx, timeouts).
-
-## Examples
-
-### Python Project Review
-
-```bash
-muscle review --target ./src --language python --mode review --severity medium
-```
-
-### Auto-Fix JavaScript
-
-```bash
-muscle review --target ./src --language javascript --mode auto-fix --intensity intensive
-```
-
-### Pressure Mode Review
-
-```bash
-muscle review --target ./src --mode pressure --focus design,failure,race,auth
-```
-
-### Shadow Mode (Background)
-
-```bash
-muscle review --target ./src --shadow
-muscle probe  # Check status
-muscle diagnosis --job-id <job-id>  # Get results
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run quality checks: `uv run mypy tools/muscle/ && uv run ruff check tools/muscle/`
-5. Submit a PR
-
-## License
-
-MIT License - see LICENSE file for details.
+### *MiniMax Unified Self-Correcting Learning Engine*
 
 ---
 
-*Last updated: 2026-04-01*
+> **Give your code more muscle.**  
+> A local-first, self-learning code review and iterative code-generation CLI that remembers your codebase — powered by MiniMax M2.7.
+
+---
+
+## ⚡ What Is MUSCLE?
+
+MUSCLE is a CLI tool that makes your AI coding assistant **get smarter every time you use it**.
+
+| What it does | Why it matters |
+|---|---|
+| 🔍 **Reviews code** with static analyzers + M2.7 semantic analysis | Catches bugs *and* design flaws |
+| 🧠 **Remembers your codebase** in `.muscle/CLAUDE.md`, `.muscle/AGENT.md`, `.muscle/MEMORY.md` | Claude never makes the same mistake twice |
+| 🔄 **Iterative generation** with generate → evaluate → evolve loops | Produces working, tested code |
+| 🛠️ **Auto-fixes** safe issues, plans risky ones | Saves hours of manual review |
+| 🌙 **Nightly background reviews** | Wakes up to a report of what changed |
+
+**Core philosophy:** M2.7 is cheap enough to run constantly. If it learns your project, it approximates Claude Opus quality at a fraction of the cost.
+
+---
+
+## 🎬 Quick Start
+
+```bash
+# 1. Install (one line)
+curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/install.sh | bash
+
+# 2. Set your API key
+export MINIMAX_API_KEY="your-token-plan-api-key"
+export ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic"
+
+# 3. Initialize your project
+muscle init
+
+# 4. Review code — pick your mode
+muscle review --target ./src --mode review        # 📖 Read-only report
+muscle review --target ./src --mode auto-fix      # 🔧 Auto-fix safe issues
+muscle review --target ./src --mode hybrid        # ⚡ Fix low-risk, plan high-risk
+muscle review --target ./src --mode pressure      # 🔥 Adversarial stress-test
+
+# 5. Or run the generation loop
+muscle run --task "Build a REST API with auth" --language python --output ./out
+```
+
+**That's it.** No cloud account. No server. No ops.
+
+---
+
+## 🚀 Core Features
+
+### Code Review That Learns
+
+```
+muscle review --target ./src --mode auto-fix
+```
+
+- Runs **Ruff, ESLint, TSC, Clippy** (static) + **M2.7 semantic analysis**
+- Classifies issues by **severity**, **category**, and **fixability**
+- Auto-fixes what it can, hands off what it can't
+- Writes learnings to `.muscle/CLAUDE.md` — so **Claude remembers next time**
+
+### Iterative Code Generation
+
+```
+muscle run --task "CLI tool with argparse" --language python --output ./gen
+```
+
+- **Generate** → **Evaluate** (compiler, tests, linters) → **Evolve** on failure
+- Resumes from saved sessions — stop and pick up where you left off
+- Tracks token budgets, enforces cost limits
+
+### Per-Project Memory
+
+MUSCLE builds three memory files as it works:
+
+| File | What it stores |
+|---|---|
+| `.muscle/CLAUDE.md` | Project conventions, patterns, anti-patterns |
+| `.muscle/AGENT.md` | How to work with this specific codebase |
+| `.muscle/MEMORY.md` | Learned rules, decisions, recurring issues |
+
+Over time, **Claude Code becomes a domain expert on your repo** — at negligible extra cost.
+
+---
+
+## 🎛️ Review Modes
+
+| Mode | What it does |
+|------|---|
+| `review` | Scan and report — no changes |
+| `auto-fix` | Apply fixes for issues classified as safe |
+| `plan` | Generate a markdown handoff plan (no code changes) |
+| `hybrid` | Auto-fix low-risk issues, plan high-risk ones |
+| `pressure` | Adversarial mode — stress-tests design and hidden failure modes |
+
+---
+
+## 📁 Project Structure
+
+```
+.muscle/                          # Created by `muscle init`
+├── CLAUDE.md                     # 🧠 Project conventions & patterns
+├── AGENT.md                      # 🤖 How Claude should work with this repo
+├── MEMORY.md                     # 📝 Learned rules and decisions
+├── knowledge/strategies.db       # 🗄️ SQLite: evolved strategies
+├── review_kb/review_kb.db       # 🗄️ SQLite: review findings & patterns
+├── sessions/<session_id>/        # 💾 Iteration history + artifacts
+├── reports/                      # 📊 Nightly + ad-hoc review reports
+└── config.yaml                   # ⚙️  Per-project settings
+```
+
+---
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     muscle CLI                          │
+│  ┌──────────┐   ┌──────────┐   ┌──────────────┐      │
+│  │  review  │   │   run    │   │     tui      │      │
+│  └────┬─────┘   └────┬─────┘   └──────┬───────┘      │
+│       │               │                 │               │
+│       ▼               ▼                 ▼               │
+│  ┌─────────────────────────────────────────────┐       │
+│  │            ReviewController                 │       │
+│  │  StaticAnalyzer → CodeReviewer → FixGen    │       │
+│  └──────────────────────┬──────────────────────┘       │
+│                         ▼                               │
+│  ┌─────────────────────────────────────────────┐       │
+│  │           LearningPipeline                   │       │
+│  │  MemoryManager → PatternDetector → Skills   │       │
+│  └─────────────────────────────────────────────┘       │
+│                                                         │
+│  ┌─────────────────────────────────────────────┐       │
+│  │            LoopController                    │       │
+│  │  CodeGenerator → EvaluatorRegistry → Evolver│       │
+│  └─────────────────────────────────────────────┘       │
+└─────────────────────────────────────────────────────────┘
+```
+
+See [docs/architecture.md](docs/architecture.md) for the full deep-dive.
+
+---
+
+## 🔌 Claude Code Plugin
+
+Install as a plugin for seamless integration:
+
+```bash
+/plugin marketplace add LivingEthos/muscle
+/plugin install muscle@muscle-marketplace
+```
+
+Then use slash commands directly in Claude Code:
+
+```
+/muscle:review    # Run a review on selected code or files
+/muscle:pressure   # Adversarial review mode
+/muscle:status     # Show current review/job status
+/muscle:history    # List past review sessions
+/muscle:probe      # Check background shadow jobs
+/muscle:rescue     # Abort a stuck session
+```
+
+---
+
+## 📦 Installation
+
+### Option 1: One-liner (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/install.sh | bash
+```
+
+### Option 2: Manual
+
+```bash
+git clone https://github.com/LivingEthos/muscle.git
+cd muscle
+uv sync              # Install deps with uv
+uv pip install -e .  # Install CLI
+```
+
+### Option 3: Claude Code plugin
+
+```bash
+/plugin marketplace add LivingEthos/muscle
+/plugin install muscle@muscle-marketplace
+```
+
+---
+
+## 🛠️ All Commands
+
+| Command | Description |
+|---------|-------------|
+| `muscle init` | Initialize `.muscle/` for the current project |
+| `muscle review` | Review code (`review`, `auto-fix`, `plan`, `hybrid`, `pressure`) |
+| `muscle run` | Start the generate → evaluate → evolve loop |
+| `muscle check` | Single-shot validation without the full loop |
+| `muscle history` | List persisted sessions |
+| `muscle resume` | Resume an incomplete session |
+| `muscle abort` | Abort a running session |
+| `muscle probe` | Show shadow review job status |
+| `muscle diagnosis` | Show completed shadow review results |
+| `muscle nightly` | Manage nightly review metadata & reports |
+| `muscle kb` | Inspect strategy knowledge base |
+| `muscle cost` | Inspect token/cost usage |
+| `muscle improve` | Self-improvement log explorer |
+| `muscle tui` | Launch the terminal UI |
+| `muscle uninstall` | Remove all `.muscle/` data |
+
+Run `muscle --help` for the full command surface.
+
+---
+
+## 🌐 Supported Languages
+
+![Python](https://img.shields.io/badge/Python-3.10+-blue) ![JavaScript](https://img.shields.io/badge/JavaScript-ES2024+-yellow) ![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue) ![Go](https://img.shields.io/badge/Go-1.21+-00ADD8) ![Rust](https://img.shields.io/badge/Rust-1.70+-orange) ![Java](https://img.shields.io/badge/Java-17+-red) ![C++](https://img.shields.io/badge/C++-17+-00599C)
+
+---
+
+## 🔒 Security & Privacy
+
+- **Local-first**: All data stays on your machine by default
+- **No telemetry**: Zero tracking, zero phone-home
+- **Memory is yours**: `.muscle/` data never leaves your environment
+- **API key only**: MUSCLE only needs your MiniMax API key — no other credentials
+
+---
+
+## 📄 License
+
+MIT — see [LICENSE](LICENSE) for details.
+
+---
+
+<div align="center">
+
+**Built with 💪 by [LivingEthos](https://github.com/LivingEthos)**  
+**Powered by [MiniMax M2.7](https://www.minimax.io/)**
+
+*Give your code more muscle.*
+</div>

@@ -16,6 +16,10 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tools.muscle.project_memory import ProjectMemory
 
 logger = logging.getLogger(__name__)
 
@@ -285,3 +289,27 @@ class FixTracker:
         finally:
             if conn:
                 conn.close()
+
+
+# -----------------------------------------------------------------------------
+# Legacy import (MUS-012)
+# -----------------------------------------------------------------------------
+
+
+def import_from_project_memory(project_memory: ProjectMemory, project_path: str) -> dict:
+    """
+    Import fix tracking data from legacy .muscle/fix_tracker/fix_tracker.db into ProjectMemory.
+
+    This is a convenience wrapper that runs only the fix_tracker import step
+    of LegacyImporter.
+
+    Returns
+    -------
+    dict
+        Import stats dict with keys: imported, skipped, errors.
+    """
+    from tools.muscle.legacy_importer import LegacyImporter
+
+    importer = LegacyImporter(project_memory, project_path)
+    importer._import_fix_tracker()
+    return importer.stats.get("fix_tracker", {"imported": 0, "skipped": 0, "errors": 0})

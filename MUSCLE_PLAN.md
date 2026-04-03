@@ -1,388 +1,119 @@
-# MUSCLE - MiniMax Unified Self-Correcting Learning Engine
+# MUSCLE Master Plan
 
-> "Give your code more muscle"
+Last updated: 2026-04-02
+Status: Active
 
-**Version:** 0.1.0
-**Last Updated:** 2026-03-31
-**Status:** v0.1.0 — Functional, in active development
+This is the high-level product plan for MUSCLE.
 
----
+Completed implementation handoffs and point-in-time review reports have been
+retired so this file stays focused on the current product direction.
 
-## Executive Summary
+`Forsight-plan.md` remains a separate experimental track and is intentionally
+out of scope for this execution plan.
 
-MUSCLE is a self-learning code review companion that:
-- Runs post-task verification after Claude Code tasks
-- Traces root causes of issues through conversation
-- Auto-fixes or proposes fixes based on configurable automation
-- Updates memory files so Claude NEVER makes the same mistake twice
-- Evolves its strategies over time when validated effective
-- Works locally with optional cloud sync in the future
+## Product Goal
 
-**Core Philosophy:** M2.7 is cheap enough to run constantly. If it learns your project, it approximates Claude Opus quality at a fraction of the cost.
+MUSCLE should become a per-project Claude Code companion that uses MiniMax M2.7
+to capture evidence from work, compress it into durable project memory, safely
+publish the right rules into the real root `CLAUDE.md`, and gradually create
+useful project-specific skills and agents.
 
----
+## Verified Current State
 
-## Installation
+The current worktree already contains a substantial refactor foundation.
 
-### One-liner (recommended)
+Verified on 2026-04-02:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/install.sh | bash
-```
-
-### Claude Code Plugin marketplace
-
-```bash
-/plugin marketplace add LivingEthos/muscle
-/plugin install muscle@muscle-marketplace
-```
-
-### Manual
+- targeted implementation suite passed:
+  `520 passed, 1 skipped in 23.69s`
+- project-local `project_memory.db` scaffolding exists
+- migrations and legacy import paths exist
+- learning ingestion, change capture, notes, and correction-signal plumbing exist
+- root `CLAUDE.md` publishing exists
+- backup inspection and restore CLI exists
+- a memory decision engine exists
 
-```bash
-git clone https://github.com/LivingEthos/muscle.git
-cd muscle
-uv sync && uv pip install -e .
-```
+## Where Implementation Stopped
 
----
+The repo is no longer at the prototype-only stage, but the refactor is not yet
+fully consolidated.
 
-## The Compounding Advantage
+Current stop point:
 
-```
-Review #1 → Review #2 → Review #3 → ... → Review #N
-(learns)   (remembers)   (evolves)       (expert)
-   ↓          ↓           ↓               ↓
-"Auth here"  "Known      "Pressure       "This repo
-was missed"   pattern"    works better"   knows no bugs"
-```
+- the DB-first architecture is partially wired, but some old and new paths still
+  coexist
+- review evidence ingestion is still split across more than one layer
+- publishing and backup logic still need to converge on one shared runtime path
+- explicit Claude Code project controls are incomplete
+- skill generation exists, but full DB-backed specialization lifecycle is not done
+- agent generation exists, but it is not yet a fully integrated closed loop
+- the TUI is still only partially data-backed
+- background review state still needs project-local discipline
 
----
+## Active Plan Files
 
-## Feature Set
+- `MUSCLE_PLAN.md`
+- `Forsight-plan.md`
+- `GroupTink-collab.md`
 
-### Core Features (P0) ✅
+These are now the only active planning documents.
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| **Post-Task Verification** | ✅ | Review gate runs after every Claude Code task |
-| **Root Cause Tracing** | ✅ | M2.7 traces issues to specific decisions |
-| **Auto-Fix / Propose** | ✅ | Configurable per severity level |
-| **Memory File Updates** | ✅ | CLAUDE.md, AGENT.md, MEMORY.md management |
-| **Per-Project KB** | ✅ | SQLite-based pattern and fix storage |
+## Delivery Phases
 
-### Important Features (P1) ✅
+### Phase 1: Stabilize the DB-First Spine
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| **Strategy Evolution** | ✅ | Evolves when validated effective |
-| **TUI Interface** | ✅ | Dashboard, reviews, history, settings |
-| **Claude Code Plugin** | ✅ | Slash commands, subagents, hooks |
-| **Multi-Project Support** | ✅ | Auto-detect + TUI switcher |
-| **Dynamic Skill Generation** | ✅ | Creates project-specific skills automatically |
-| **Dynamic Agent Generation** | ✅ | Creates specialized sub-agents for complex tasks |
+Finish the integration work that is already underway:
 
-### Adapters & Integrations (P1)
+- unify review ingestion
+- unify publishing and backup ownership
+- make the database the clear source of truth
+- define the remaining role of `.muscle/*.md`
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| **GitHub Adapter** | ✅ | PRs, comments, issues, status checks |
-| **GitLab Adapter** | ✅ | MRs, pipelines (basic) |
-| **Jenkins Adapter** | ✅ | Build triggers, artifact retrieval |
-| **Git Adapter** | ✅ | diff, status, branch operations |
-| **MCP Client** | ✅ | MCP server integration |
-| **Claude Code Plugin** | ✅ | See plugin integration below |
+### Phase 2: Complete Claude Code Project Controls
 
-### Future Features (P2-P3)
+Make MUSCLE understandable and controllable per project:
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| **Cloud Sync** | ❌ Future | Optional cross-machine sync |
-| **Nightly Cron Reports** | ⚠️ Partial | `nightly_runner.py` exists, cron not wired |
-| **Shadow Worker Background Jobs** | ⚠️ Partial | Broker/worker exist, need daemonization |
+- real Claude Code init behavior
+- `enable`, `disable`, and `status`
+- memory, skill, agent, and backup inspection commands
+- truthful plugin docs and help text
 
----
+### Phase 3: Finish Skill and Agent Lifecycle
 
-## Architecture
+Turn learning into specialization:
 
-### Directory Structure
+- DB-backed skill lifecycle
+- evidence-driven agent creation
+- bounded agent and skill revision flows
+- root `CLAUDE.md` references for active specializations
 
-```
-~/.muscle/
-├── global_config.yaml       # Global MUSCLE settings
-└── global_kb.db            # Optional: cross-project learnings
-
-/path/to/project/
-├── .muscle/                 # MUSCLE project directory
-│   ├── project.db           # SQLite: patterns, fixes, history
-│   ├── config.yaml          # Project config
-│   ├── strategy_kb.json     # Evolved review strategies
-│   ├── CLAUDE.md           # Project conventions (MUSCLE-managed)
-│   ├── AGENT.md             # Agent-specific memory
-│   ├── MEMORY.md            # Miscellaneous learnings
-│   ├── skills/              # Dynamically generated project skills
-│   │   └── ...
-│   ├── agents/              # Dynamically generated sub-agents
-│   │   └── ...
-│   ├── reports/             # Nightly review reports
-│   ├── logs/                # Review logs
-│   └── agent_kb/            # Cached agent knowledge base
-└── .git/
-```
+### Phase 4: Make the Management Surfaces Real
 
-### Key Principles
-
-1. **`.muscle/` by default** - Works even without Claude Code
-2. **All local first** - Cloud sync is a future feature
-3. **Per-project isolation** - Each project has its own KB
-4. **Memory file boundaries** - MUSCLE edits only within markers
-
----
+Finish the day-to-day UX:
 
-## Configuration Options
+- project-local background job tracking
+- live TUI dashboard and inspection views
+- basic TUI actions
+- audit and observability surfaces
 
-### Automation Levels
+### Phase 5: Hardening and Release
 
-| Level | Critical/High | Medium/Low | Description |
-|-------|---------------|------------|-------------|
-| **1: Auto-fix** | Auto-fix | Auto-fix if confident | Maximum automation |
-| **2: Propose** | Propose | Propose | Human in loop |
-| **3: Hybrid** | Auto-fix | Propose + accept | Balanced |
-| **4: Ask** | Ask | Ask | Full control |
-
-### Review Gate Behaviors
-
-| Mode | Critical/High | Medium/Low | Fluidity | Accuracy |
-|------|--------------|-----------|----------|----------|
-| **Block+Fix** | Auto-fix, then allow | Warn, then allow | High | High |
-| **Block All** | Must address | Must address | Medium | Highest |
-| **Warn Only** | Notify | Notify | Highest | Medium |
-| **Disabled** | No auto | No auto | Highest | User-defined |
-
----
-
-## Memory File Management
-
-### Marker System
-
-Each memory file has its own marker pair:
-
-| File | Markers |
-|------|---------|
-| `CLAUDE.md` | `<!-- MUSCLE_LEARNED_START -->` / `<!-- MUSCLE_LEARNED_END -->` |
-| `AGENT.md` | `<!-- MUSCLE_AGENTS_START -->` / `<!-- MUSCLE_AGENTS_END -->` |
-| `MEMORY.md` | `<!-- MUSCLE_MEMORY_START -->` / `<!-- MUSCLE_MEMORY_END -->` |
-
-### Update Rules
-
-1. **Bounded sections** - Only edit within markers
-2. **No bloat** - Prune old entries when new ones supersede
-3. **No duplicates** - Check before adding
-4. **User content preserved** - Never modify outside markers
-
----
-
-## Self-Learning System
-
-### Knowledge Bases
-
-| KB | Storage | Purpose | Evolution |
-|----|---------|---------|-----------|
-| **Pattern KB** | `project.db` | Learn from mistakes | Compounding |
-| **Fix KB** | `project.db` | Track what worked | Validation-based |
-| **Strategy KB** | `strategy_kb.json` | Evolve review approach | When validated |
-| **Memory Files** | `.muscle/*.md` | Human-readable learnings | Continuous |
-| **Generated Skills** | `.muscle/skills/*.md` | Project-specific agent skills | When validated |
-| **Agent KB** | `.muscle/agent_kb/` | Community agent patterns | From awesome-claude-* repos |
-
----
-
-## TUI Design
-
-### Navigation
-- **Arrow keys** - Navigate
-- **Enter** - Select/Confirm
-- **q** - Quit/Back
-
-### Views
-1. Dashboard (default)
-2. Reviews
-3. History
-4. Settings
-5. Knowledge Base
-6. Fixes
-7. Project Switcher
-
----
-
-## Claude Code Plugin
-
-### Slash Commands
-
-| Command | Description |
-|---------|-------------|
-| `/muscle:review` | Standard review on changes |
-| `/muscle:pressure` | Adversarial review |
-| `/muscle:rescue` | Delegate deep-dive investigation |
-| `/muscle:status` | Check job status |
-| `/muscle:result` | Get job results |
-| `/muscle:cancel` | Cancel running jobs |
-| `/muscle:setup` | Configure review gate |
-
-### Plugin Components
-- **Commands**: 7 slash commands (review, pressure, rescue, status, result, cancel, setup)
-- **Agents**: rescue_agent.md, verification_agent.md
-- **Skills**: code-review/SKILL.md (model-invoked skill)
-- **Hooks**: Stop event hook runs `muscle review` after each task completion
-
-### Marketplace Distribution
-
-The plugin is distributed via Claude Code's plugin marketplace:
-
-```bash
-/plugin marketplace add LivingEthos/muscle
-/plugin install muscle@muscle-marketplace
-```
-
-Uses `git-subdir` source to pull from the main repo's `tools/muscle/plugin/` directory.
-
----
-
-## CLI Commands
-
-| Command | Status | Description |
-|---------|--------|-------------|
-| `muscle init` | ✅ | Initialize MUSCLE for the current project |
-| `muscle review` | ✅ | Review code for issues (5 modes) |
-| `muscle tui` | ✅ | Terminal User Interface |
-| `muscle run` | ✅ | Start a new generation session |
-| `muscle history` | ✅ | List all sessions |
-| `muscle resume` | ⚠️ Partial | Loads session, full resume WIP |
-| `muscle abort` | ❌ | Stub |
-| `muscle check` | ❌ | Stub |
-| `muscle kb` | ✅ | stats / export / import / clear |
-| `muscle cost` | ✅ | stats / clear |
-| `muscle improve` | ✅ | report / export / import / clear / prompt |
-| `muscle probe` | ✅ | Shadow job status |
-| `muscle diagnosis` | ✅ | Shadow job results |
-| `muscle lifeline` | ✅ | Deep-dive investigation |
-
-### Review Modes
-
-| Mode | Description |
-|------|-------------|
-| `review` | Standard review, reports issues |
-| `auto-fix` | Automatically applies fixes for auto-fixable issues |
-| `plan` | Generates handoff plan for manual fixes |
-| `hybrid` | Auto-fix safe issues, plan for complex ones |
-| `pressure` | Adversarial review that challenges design decisions |
-
----
-
-## Implementation Phases
-
-### Phase 1: Core Infrastructure ✅ COMPLETE
-- [x] Rename SCLE → MUSCLE globally
-- [x] Create `.muscle/` directory structure
-- [x] Implement SQLite KB schema
-- [x] Basic memory file management
-- [x] Guided init flow
-- [x] JSON recovery for truncated responses
-
-### Phase 2: TUI ✅ COMPLETE
-- [x] `muscle init` command with guided setup
-- [x] Dashboard view with project health
-- [x] Reviews view
-- [x] History view
-- [x] Settings view
-- [x] Knowledge base view
-- [x] Fixes view
-- [x] Project switcher
-- [x] Arrow key navigation
-- [x] Project auto-detection
-
-### Phase 3: Claude Code Plugin ✅ COMPLETE
-- [x] Plugin manifest (`plugin.json`)
-- [x] Slash commands (7 commands)
-- [x] Subagents (rescue_agent, verification_agent)
-- [x] Stop hook (`hooks/hooks.json` for review gate)
-- [x] Agent-invoked skill (code-review/SKILL.md)
-- [x] Marketplace distribution (`marketplace.json`)
-
-### Phase 4: Self-Learning Engine ✅ COMPLETE
-- [x] **Pattern Detection** - `pattern_detector.py` (3+ occurrence threshold)
-- [x] **Dynamic Skill Generation** - `skill_generator.py`
-- [x] **Dynamic Agent Generation** - `agent_generator.py`
-- [x] **Memory Manager** - `memory_manager.py` (3 marker types)
-- [x] **Fix Tracking & Validation** - `fix_tracker.py`
-- [x] **Strategy Evolution** - `strategy_evolver.py`
-- [x] **Agent Knowledge Base** - `agent_kb_fetcher.py` (VoltAgent/travisvn repos)
-- [x] **CLAUDE.md/AGENT.md/MEMORY.md Integration**
-
-### Phase 5: External Integrations ✅ COMPLETE
-- [x] GitHub adapter (PRs, issues, comments, checks)
-- [x] GitLab adapter (MRs, pipelines)
-- [x] Jenkins adapter (build triggers, artifacts)
-- [x] Git adapter (diff, status, branch ops)
-- [x] MCP client (server integration)
-- [x] GitHub integration layer (`github_integration.py`)
-
-### Phase 6: Background & Nightly ✅ PARTIAL
-- [x] Shadow mode broker/worker (`shadow_broker.py`, `shadow_worker.py`)
-- [x] Nightly runner (`nightly_runner.py`)
-- [x] Morning reports (JSON + markdown)
-- [ ] Cron daemonization (future)
-
-### Phase 7: Polish & Future ❌ INCOMPLETE
-- [ ] Cloud sync architecture
-- [ ] Performance optimization
-- [ ] Comprehensive test coverage
-- [ ] Daemonized background worker
-
----
-
-## Self-Review Results
-
-MUSCLE ran self-review on `code_reviewer.py`:
-- Found **12 issues** (2 critical, 5 high, 5 medium)
-- JSON recovery successfully extracts findings from truncated responses
-- Pressure mode identifies design weaknesses
-
-**Issues identified:**
-- SYSTEM_PROMPT not protected against prompt injection
-- Shared M27Client across threads without synchronization
-- No timeout on M27Client.chat() calls
-- JSON recovery heuristics could discard valid findings
-
----
-
-## Quality Gates
-
-All code must pass before merging:
-
-| Check | Command | Required |
-|-------|---------|----------|
-| Types | `uv run mypy tools/muscle/` | Yes |
-| Lint | `uv run ruff check tools/muscle/` | Yes |
-| Format | `uv run ruff format --check tools/muscle/` | Yes |
-| Tests | `uv run pytest tests/` | Yes |
-
----
-
-## Change Log
-
-| Date | Version | Changes |
-|------|---------|---------|
-| 2026-03-31 | 0.1.0 | Initial plan created |
-| 2026-03-31 | 0.1.1 | Phase 1 complete: Core infrastructure |
-| 2026-03-31 | 0.1.2 | Phase 2 complete: TUI with dashboard, views, navigation |
-| 2026-03-31 | 0.1.3 | Phase 3 complete: Claude Code plugin with 7 commands, 2 agents |
-| 2026-03-31 | 0.1.4 | Phase 4 complete: Self-learning engine (pattern detection, skill/agent generation, strategy evolution) |
-| 2026-03-31 | 0.1.5 | Phase 5 complete: External integrations (GitHub, GitLab, Jenkins, MCP) |
-| 2026-03-31 | 0.1.6 | Phase 6 partial: Shadow mode, nightly runner, morning reports |
-| 2026-03-31 | 0.1.7 | Add curl installer, Claude Code marketplace, code-review SKILL.md |
-| 2026-03-31 | 0.1.8 | Fix hooks.json format, marketplace naming, PATH symlink |
-
----
-
-*This is a living document. Update as implementation progresses.*
+Prepare for a production push:
+
+- changed-files-first background scope
+- token and automation guardrails
+- quality gates
+- smoke coverage
+- docs and release cleanup
+
+## Success Criteria
+
+MUSCLE is ready for the next release when all of the following are true:
+
+- `project_memory.db` is the authoritative per-project memory store
+- the real root `CLAUDE.md` is updated safely and predictably
+- project-local enable/disable/status is reliable
+- skills and agents are created from evidence, not ad hoc helpers
+- the TUI reflects live project state
+- background work is project-scoped and budget-aware
+- full quality gates pass

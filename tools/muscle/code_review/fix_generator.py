@@ -269,6 +269,23 @@ Provide the JSON output with the fixed code."""
             logger.error(f"Rollback failed: {e}")
             return False
 
+    def reject_fix(self, issue: ReviewIssue) -> None:
+        """
+        Record that a proposed fix was rejected or dismissed by the user.
+
+        This is called when a user explicitly rejects or undoes a fix that was
+        applied. The rejection signal is recorded via the correction_signal_callback
+        on ReviewController if one is configured.
+
+        Args:
+            issue: The ReviewIssue whose fix was rejected.
+        """
+        logger.info(f"Fix rejected by user: {issue.file_path}:{issue.line_number} - {issue.title}")
+        # The actual signal recording is done via the correction_signal_callback
+        # wired through ReviewController. This method exists to provide a hook
+        # for the CLI to report user rejections.
+        # Callers should also invoke the callback directly if they have access to it.
+
     def verify_fix(self, file_path: str, language: str | None) -> bool:
         if not self.verify_compile:
             return True

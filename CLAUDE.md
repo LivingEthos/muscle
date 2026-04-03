@@ -4,7 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-MUSCLE (MiniMax Unified Self-Correcting Learning Engine) is a self-learning code review tool that uses the MiniMax M2.7 model via an Anthropic-compatible API. It reviews code, traces root causes, auto-fixes issues, and evolves its review strategies over time through a per-project SQLite knowledge base.
+MUSCLE (MiniMax Unified Self-Correcting Learning Engine) is a local-first code review and iterative code-generation tool that uses the MiniMax M2.7 model via an Anthropic-compatible API.
+
+Current reality in this repo:
+
+- `tools/muscle/` is the active implementation.
+- The strongest working path today is `muscle review` plus its post-review learning pipeline.
+- Runtime learning currently writes to `.muscle/CLAUDE.md`, `.muscle/AGENT.md`, and `.muscle/MEMORY.md`.
+- The root `CLAUDE.md` file you are reading is a maintainer guide for Claude Code working in this repository.
+- When editing this repository, treat MUSCLE as the product under development, not as a required development assistant or workflow dependency.
 
 ## Build & Development Commands
 
@@ -39,17 +47,23 @@ uv run ruff format tools/muscle/
 - **`tools/muscle/`** - Active development. The main MUSCLE package, installed as the `muscle` CLI via `pyproject.toml` entry point (`tools.muscle.cli:main`).
 - **`tools/scle/`** - Legacy predecessor ("SCLE"). Shares similar structure but is not actively developed. Do not confuse the two.
 
-### Core Pipeline (tools/muscle/)
+### Core Runtime Flows (tools/muscle/)
 
-The system follows a pipeline: **Review Controller -> Pattern Detector -> Skill/Agent Generator -> Memory Manager**.
+The active package has two main runtime flows:
+
+1. `muscle run`: **LoopController -> CodeGenerator -> EvaluatorRegistry -> Evolver**
+2. `muscle review`: **ReviewController -> StaticAnalyzer -> CodeReviewer -> LearningPipeline**
 
 | Module | Role |
 |--------|------|
 | `cli.py` | Click-based CLI entry point. All commands defined here. |
 | `m27_client.py` | HTTP client for MiniMax M2.7 via Anthropic-compatible API. Handles streaming, retries, JSON recovery from truncated responses. |
 | `loop_controller.py` | Orchestrates generate-evaluate-fix loops with event callbacks. |
-| `session_manager.py` | SQLite-backed session persistence and resume. |
+| `session_manager.py` | File-based session persistence and resume under `.muscle/sessions/<session_id>/`. |
 | `budget_manager.py` | Token/cost budget tracking and enforcement. |
+| `code_generator.py` | Prompts M2.7 for code, parses fenced code blocks, and writes generated files. |
+| `evaluator_registry.py` | Picks compiler/test/lint evaluators by language and aggregates results. |
+| `evolver.py` | Turns failures into an improved next strategy, with optional StrategyKB lookup. |
 
 ### Code Review Subsystem (tools/muscle/code_review/)
 
@@ -57,13 +71,16 @@ The system follows a pipeline: **Review Controller -> Pattern Detector -> Skill/
 |--------|------|
 | `review_controller.py` | Orchestrates full review flow across modes (review, auto-fix, plan, hybrid, pressure). |
 | `code_reviewer.py` | Sends code to M2.7 for analysis, parses structured findings. |
+| `static_analyzer.py` | Runs local analyzers like Ruff, ESLint, TSC, Clippy, and normalizes findings. |
+| `fix_generator.py` | Applies suggested code replacements for auto-fixable issues. |
+| `handoff_generator.py` | Produces markdown handoff plans for manual follow-up. |
+| `learning_pipeline.py` | Runs after reviews and updates memory files plus recurring-pattern learning hooks. |
 | `pattern_detector.py` | Identifies recurring patterns across reviews. |
-| `memory_manager.py` | Manages CLAUDE.md/AGENT.md/MEMORY.md updates with structured rules. |
-| `learning_pipeline.py` | Orchestrates self-learning after reviews (pattern detection -> strategy evolution -> memory update). |
+| `memory_manager.py` | Manages `.muscle/CLAUDE.md`, `.muscle/AGENT.md`, and `.muscle/MEMORY.md` with structured rules. |
 | `skill_generator.py` | Generates project-specific Claude Code skills from detected patterns. |
 | `agent_generator.py` | Creates specialized sub-agents for complex review tasks. |
 | `shadow_broker.py` / `shadow_worker.py` | Background (shadow mode) review job queue and workers. |
-| `nightly_runner.py` | Cron-based nightly analysis with morning reports. |
+| `nightly_runner.py` | Stores nightly schedule metadata and generates nightly reports. |
 | `strategy_evolver.py` | Evolves review strategies based on validated effectiveness. |
 | `fix_tracker.py` | Tracks fix attempts and their outcomes. |
 
@@ -75,20 +92,44 @@ The system follows a pipeline: **Review Controller -> Pattern Detector -> Skill/
 
 ### Claude Code Plugin (`tools/muscle/plugin/`)
 
-The plugin provides slash commands (`/muscle:review`, `/muscle:pressure`, etc.), subagents (rescue, verification), hooks, and skills. Commands shell out to the `muscle` CLI.
+The plugin bundle contains slash-command definitions, hooks, skills, and subagent docs for the MUSCLE product. When working on this repository, edit and verify those files as source artifacts rather than assuming the plugin workflow itself is part of your development loop.
 
 ### Data Storage
 
-- Per-project SQLite DB at `.muscle/project.db` - patterns, fixes, session history.
-- Global config at `~/.muscle/global_config.yaml`.
-- Strategy KB at `.muscle/strategy_kb.json`.
+Per-project state:
+
+- `.muscle/config.yaml` - JSON content written by `ProjectManager`
+- `.muscle/strategy_kb.json` - bootstrap strategy metadata file
+- `.muscle/knowledge/strategies.db` - StrategyKB SQLite database
+- `.muscle/review_kb/review_kb.db` - ReviewKB SQLite database
+- `.muscle/sessions/<session_id>/` - `meta.json`, `iterations.jsonl`, `report.json`, `context.json`, artifacts
+- `.muscle/CLAUDE.md`, `.muscle/AGENT.md`, `.muscle/MEMORY.md`
+- `.muscle/skills/`, `.muscle/agents/`, `.muscle/reports/`, `.muscle/logs/`
+
+Global state:
+
+- `~/.muscle/cache/cache.db`
+- `~/.muscle/shadow_jobs.json`
+- `~/.muscle/improvement_log.json`
+- `~/.muscle/prompts/`
+- `~/.muscle/global/strategies.db`
+- `~/.muscle/global_review/review_kb.db`
+- `~/.muscle/<session_id>.pid`
+
+## Current Maturity Notes
+
+- `tools/muscle/` is the active package tree. `tools/scle/` is legacy.
+- The TUI is a working shell, but several views still render placeholder/sample data.
+- GitHub, GitLab, Jenkins, and MCP adapters exist as modules, but not all are first-class CLI workflows yet.
+- `LearningPipeline` is wired after reviews and memory-file updates are real today. The deeper recurring-pattern ecosystem is present and still maturing.
+- Some plugin docs are currently stale. In particular, do not rely on `muscle shadow ...` examples or `muscle settings platform --hooks`; use the actual CLI help instead.
 
 ## Key Patterns
 
-- **API Client**: `M27Client` uses the Anthropic SDK format but routes to MiniMax (`ANTHROPIC_BASE_URL`). It implements JSON recovery for truncated M2.7 responses using regex extraction.
+- **API Client**: `M27Client` uses direct HTTP calls against MiniMax's Anthropic-compatible API and includes retry, rate limiting, and JSON recovery behavior.
 - **Event-driven loops**: `LoopController` emits `LoopEvent` callbacks for streaming, evaluation, and iteration tracking.
-- **Review modes**: `review`, `auto-fix`, `plan`, `hybrid`, `pressure` - each with different fix/report behavior configured via `RunConfig`.
-- **Types**: Core types in `tools/muscle/types.py` use dataclasses (not Pydantic). Code review types in `tools/muscle/code_review/types.py`.
+- **Review modes**: `review`, `auto-fix`, `plan`, `hybrid`, `pressure` are defined in `tools/muscle/code_review/types.py`.
+- **Types**: Core types in `tools/muscle/types.py` use dataclasses, not Pydantic.
 
 ## Environment Variables
 
@@ -110,28 +151,15 @@ The plugin provides slash commands (`/muscle:review`, `/muscle:pressure`, etc.),
 - **Mypy**: strict (`disallow_untyped_defs`, `warn_return_any`).
 - Python 3.10+ required.
 
-## context-mode -- MANDATORY routing rules
+<!-- MUSCLE_PUBLISHED_START -->
+### Critical Rules
 
-You have context-mode MCP tools available. These rules are NOT optional -- they protect your context window from flooding. A single unrouted command can dump 56 KB into context and waste the entire session.
+### Frequent Mistakes
 
-### BLOCKED commands -- do NOT attempt these
+### Active Agent Calls
 
-**curl / wget**: Intercepted and replaced with error. Use `ctx_fetch_and_index(url, source)` or `ctx_execute(language: "javascript", code: "const r = await fetch(...)")`.
+### Active Skill Calls
 
-**Inline HTTP**: Intercepted. Use `ctx_execute(language, code)` to run HTTP calls in sandbox.
+### Tooling Notes
 
-**WebFetch**: Denied entirely. Use `ctx_fetch_and_index(url, source)` then `ctx_search(queries)`.
-
-### REDIRECTED tools -- use sandbox equivalents
-
-**Bash (>20 lines output)**: Use `ctx_batch_execute(commands, queries)` or `ctx_execute(language: "shell", code: "...")`.
-
-**Read (for analysis)**: If reading to Edit, Read is correct. If reading to analyze/explore, use `ctx_execute_file(path, language, code)`.
-
-### Tool selection hierarchy
-
-1. `ctx_batch_execute(commands, queries)` -- run multiple commands + search in ONE call
-2. `ctx_search(queries)` -- query indexed content
-3. `ctx_execute(language, code)` / `ctx_execute_file(path, language, code)` -- sandbox execution
-4. `ctx_fetch_and_index(url, source)` then `ctx_search(queries)` -- web content
-5. `ctx_index(content, source)` -- store content for later search
+<!-- MUSCLE_PUBLISHED_END -->

@@ -1,6 +1,6 @@
 {
   "name": "muscle",
-  "description": "MUSCLE - Self-learning code review that gets smarter with every task. Commands: /muscle:review, /muscle:pressure, /muscle:rescue, /muscle:status, /muscle:result, /muscle:cancel, /muscle:setup, /muscle:check, /muscle:history, /muscle:probe, /muscle:diagnosis, /muscle:lifeline, /muscle:kb-stats, /muscle:settings-show, /muscle:settings-api-key",
+  "description": "MUSCLE - Self-learning code review that gets smarter with every task. Commands: /muscle:review, /muscle:pressure, /muscle:rescue, /muscle:setup, /muscle:check, /muscle:history, /muscle:probe, /muscle:diagnosis, /muscle:lifeline, /muscle:kb-stats, /muscle:settings-show, /muscle:settings-api-key, /muscle:nightly-status, /muscle:init, /muscle:enable, /muscle:disable, /muscle:status",
   "version": "0.1.0",
   "author": {
     "name": "MUSCLE Team",
@@ -9,5 +9,9 @@
   "homepage": "https://github.com/LivingEthos/muscle",
   "repository": "https://github.com/LivingEthos/muscle",
   "license": "MIT",
-  "keywords": ["code-review", "self-improving", "ai", "minimax", "quality", "auto-fix"]
+  "keywords": ["code-review", "self-improving", "ai", "minimax", "quality", "auto-fix"],
+  "install": {
+    "script": "bash -c 'set -e; INSTALL_DIR=\"${HOME}/.muscle/src\"; if command -v muscle &>/dev/null; then echo \"[MUSCLE] CLI already installed\"; elif [ -f \"${INSTALL_DIR}/tools/muscle/pyproject.toml\" ]; then echo \"[MUSCLE] Repo found, installing CLI...\"; (cd \"${INSTALL_DIR}\" && uv pip install -e . 2>/dev/null || python -m pip install -e . --quiet) && echo \"[MUSCLE] CLI installed successfully\"; else echo \"[MUSCLE] Cloning repository...\"; git clone --branch main --depth 1 https://github.com/LivingEthos/muscle.git \"${INSTALL_DIR}\" && (cd \"${INSTALL_DIR}\" && (uv pip install -e . 2>/dev/null || python -m pip install -e . --quiet)) && mkdir -p \"${HOME}/.local/bin\" && [ ! -f \"${HOME}/.local/bin/muscle\" ] && ln -sf \"${INSTALL_DIR}/.venv/bin/muscle\" \"${HOME}/.local/bin/muscle\" 2>/dev/null || true && echo \"[MUSCLE] CLI installed successfully\"; fi'",
+    "description": "Installs the MUSCLE CLI backend (muscle) if not already installed"
+  }
 }

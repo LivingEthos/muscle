@@ -43,6 +43,7 @@ from .types import (
     ReviewStats,
     Severity,
 )
+from .verification_loop import VerificationLoop
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +68,13 @@ class ReviewController:
         event_callback: Callable[[ReviewEvent, dict], None] | None = None,
         use_kb: bool = True,
         kb_path: str | None = None,
+        verification_loop: VerificationLoop | None = None,
+        correction_signal_callback: Callable[..., None] | None = None,
     ):
         self.config = config
         self.m27_client = m27_client
         self.event_callback = event_callback
+        self.correction_signal_callback = correction_signal_callback
 
         self.static_analyzer = StaticAnalyzer(
             target_path=config.target_path,
@@ -83,6 +87,7 @@ class ReviewController:
         self.handoff_generator = HandoffGenerator(m27_client)
         self.review_kb = ReviewKB(kb_path) if use_kb else None
         self.global_review_kb = GlobalReviewKB() if use_kb else None
+        self.verification_loop = verification_loop or VerificationLoop(m27_client)
 
         self._review_context: ReviewContext | None = None
 
@@ -168,6 +173,7 @@ class ReviewController:
 
         fix_lock = Lock()
         fixed_count = 0
+        failed_fixes = 0
 
         def apply_single_fix(issue: ReviewIssue) -> tuple[bool, ReviewIssue]:
             result = self.fix_generator.apply_fix_from_suggestion(issue)
@@ -180,14 +186,38 @@ class ReviewController:
                 try:
                     success, issue = future.result()
                     if success:
-                        with fix_lock:
-                            fixed_count += 1
-                        self._emit(
-                            ReviewEvent.FIX_APPLIED,
-                            {"file": issue.file_path, "line": issue.line_number},
+                        # Verify fix before counting as success (MUS-023)
+                        verification_result = self.verification_loop.verify_fix(
+                            issue=issue,
+                            fixed_content=Path(issue.file_path).read_text(encoding="utf-8"),
                         )
-                        if self.review_kb:
-                            self.review_kb.record_fix_attempt(issue.title, True, 0)
+                        if verification_result.fix_verified:
+                            with fix_lock:
+                                fixed_count += 1
+                            self._emit(
+                                ReviewEvent.FIX_APPLIED,
+                                {"file": issue.file_path, "line": issue.line_number},
+                            )
+                            if self.review_kb:
+                                self.review_kb.record_fix_attempt(issue.title, True, 0)
+                        else:
+                            with fix_lock:
+                                failed_fixes += 1
+                            ctx.stats.failed_fixes += 1
+                            self._emit(
+                                ReviewEvent.FIX_ROLLBACK,
+                                {"file": issue.file_path, "line": issue.line_number},
+                            )
+                            # Record correction signal (MUS-023)
+                            if self.correction_signal_callback:
+                                self.correction_signal_callback(
+                                    correction_type="fix_failed",
+                                    severity=issue.severity.name,
+                                    file_path=issue.file_path,
+                                    line_number=issue.line_number,
+                                    rule_id=issue.cwe_id or issue.title,
+                                    description=issue.description,
+                                )
                 except Exception as e:
                     logger.warning(f"Fix application failed: {e}")
 
@@ -241,8 +271,24 @@ class ReviewController:
                 try:
                     success, issue = future.result()
                     if success:
-                        with fix_lock:
-                            fixed_count += 1
+                        # Verify fix before counting as success (MUS-023)
+                        verification_result = self.verification_loop.verify_fix(
+                            issue=issue,
+                            fixed_content=Path(issue.file_path).read_text(encoding="utf-8"),
+                        )
+                        if verification_result.fix_verified:
+                            with fix_lock:
+                                fixed_count += 1
+                        else:
+                            if self.correction_signal_callback:
+                                self.correction_signal_callback(
+                                    correction_type="fix_failed",
+                                    severity=issue.severity.name,
+                                    file_path=issue.file_path,
+                                    line_number=issue.line_number,
+                                    rule_id=issue.cwe_id or issue.title,
+                                    description=issue.description,
+                                )
                 except Exception as e:
                     logger.warning(f"Fix application failed: {e}")
 

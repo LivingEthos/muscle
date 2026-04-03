@@ -40,17 +40,38 @@ class TestNightlyRunner:
         runner.config.intensity = "moderate"
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 3600)):
             result = runner._run_review_on_path("/fake/path")
-        assert result is None
+        assert result is not None
+        assert "error" in result
+        assert "timed out" in result["error"]
 
     def test_run_review_on_path_error(self, runner):
         runner.config.enabled = True
         with patch("subprocess.run", side_effect=Exception("Boom")):
             result = runner._run_review_on_path("/fake/path")
-        assert result is None
+        assert result is not None
+        assert "error" in result
+        assert "Boom" in result["error"]
 
     def test_parse_review_output_empty(self, runner):
         result = runner._parse_review_output("", "/fake")
         assert result["total_issues"] == 0
+
+    def test_parse_review_output_json(self, runner):
+        json_output = json.dumps({
+            "session_id": "nightly-20260402",
+            "target_path": "/fake",
+            "issues": [
+                {"severity": "CRITICAL", "title": "SQL injection in query", "auto_fixable": False},
+                {"severity": "HIGH", "title": "Missing null check", "auto_fixable": False},
+                {"severity": "MEDIUM", "title": "Unused variable", "auto_fixable": True},
+            ],
+            "summary": {"critical": 1, "high": 1, "medium": 1, "low": 0, "info": 0},
+        })
+        result = runner._parse_review_output(json_output, "/fake")
+        assert result["total_issues"] == 3  # Sum of all summary values
+        assert len(result["critical_issues"]) == 1
+        assert len(result["high_issues"]) == 1
+        assert result["critical_issues"][0]["description"] == "SQL injection in query"
 
     def test_parse_review_output_critical(self, runner):
         output = "Some code here\nCRITICAL: SQL injection vulnerability in query\nMore code"
@@ -71,6 +92,7 @@ class TestNightlyRunner:
             "total_issues": 5,
             "critical_issues": [{"description": "Bug"}],
             "high_issues": [{"description": "Warning"}],
+            "failures": [],
             "targets": [],
             "success": True,
         }

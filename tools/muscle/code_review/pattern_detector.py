@@ -31,6 +31,7 @@ class PatternCluster:
     files: list[str]
     severity_counts: dict[str, int]
     confidence: float
+    evidence_count: int = 0
     semantically_related_issues: list[dict] = field(default_factory=list)
 
 
@@ -45,14 +46,34 @@ class PatternInfo:
 
 
 class PatternDetector:
-    def __init__(self, kb_path: str | None = None, m27_client: Any | None = None):
+    def __init__(
+        self,
+        kb_path: str | None = None,
+        m27_client: Any | None = None,
+        project_memory: Any | None = None,
+    ):
         from .review_kb import ReviewKB
 
         self.kb = ReviewKB(kb_path) if kb_path else ReviewKB()
         self.m27 = m27_client
+        self._pm = project_memory
         self.min_occurrences = 3
         self._patterns: dict[str, PatternCluster] = {}
         self._cluster_cache: dict[str, list[dict]] = {}
+
+    def _get_evidence_from_decisions(self, pattern: str) -> int:
+        """Query memory_decisions for evidence count supporting a pattern (DB-first evidence sourcing)."""
+        if not self._pm:
+            return 0
+
+        try:
+            decisions = self._pm.list_decisions(decision_type="create_skill", limit=100)
+            # Count decisions whose reasoning mentions the pattern
+            count = sum(1 for d in decisions if pattern.lower() in d.get("reasoning", "").lower())
+            return count
+        except Exception as e:
+            logger.debug(f"Could not query memory_decisions for evidence: {e}")
+            return 0
 
     def detect_patterns(self) -> list[PatternCluster]:
         """Scan review history and identify recurring patterns using M2.7 semantic analysis."""
@@ -78,9 +99,11 @@ class PatternDetector:
             issues = cluster["issues"]
 
             if len(issues) >= self.min_occurrences:
+                canonical = cluster.get("canonical_pattern", issues[0].get("code_pattern", ""))
+                evidence_count = self._get_evidence_from_decisions(canonical)
                 self._patterns[cluster_id] = PatternCluster(
                     pattern_id=cluster_id,
-                    pattern=cluster.get("canonical_pattern", issues[0].get("code_pattern", "")),
+                    pattern=canonical,
                     category=cluster.get("category", issues[0].get("category", "unknown")),
                     summary=cluster.get("summary", ""),
                     root_cause=cluster.get("root_cause", ""),
@@ -88,6 +111,7 @@ class PatternDetector:
                     files=list({i.get("file_path", "") for i in issues}),
                     severity_counts=self._count_severities(issues),
                     confidence=cluster.get("confidence", 0.5),
+                    evidence_count=evidence_count,
                     semantically_related_issues=issues,
                 )
 
@@ -100,6 +124,7 @@ class PatternDetector:
 
         for pattern, data in pattern_data.items():
             if data["occurrences"] >= self.min_occurrences:
+                evidence_count = self._get_evidence_from_decisions(pattern)
                 self._patterns[pattern] = PatternCluster(
                     pattern_id=pattern,
                     pattern=pattern,
@@ -110,6 +135,7 @@ class PatternDetector:
                     files=list(data["files"]),
                     severity_counts=data["severity_counts"],
                     confidence=self._calculate_confidence(data),
+                    evidence_count=evidence_count,
                     semantically_related_issues=[],
                 )
 

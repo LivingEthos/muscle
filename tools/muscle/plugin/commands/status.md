@@ -1,15 +1,12 @@
 ---
-description: Check status of running or completed MUSCLE shadow (background) jobs
-args:
-  - name: job-id
-    description: Specific job ID to check (shows all if not specified)
-    required: false
+description: Show the current nightly review schedule status (alias for muscle nightly status)
+args: []
 ---
 
-Check the status of MUSCLE shadow jobs. Execute:
+Show the current nightly review schedule status. Execute:
 
 ```bash
-muscle shadow status ${job_id:+--job-id "$job_id"}
+muscle nightly status
 ```
 
-Show job status (pending, running, completed, failed) with timestamps.
+Displays whether nightly review is enabled, the scheduled run time, and the target path. This is an alias for `muscle nightly status`.

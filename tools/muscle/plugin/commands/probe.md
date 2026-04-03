@@ -1,15 +1,15 @@
 ---
-description: Quick probe of a shadow job's current progress without waiting for completion
+description: Check the status of shadow (background) review jobs
 args:
   - name: job-id
-    description: Job ID to probe (shows most recent if not specified)
+    description: Specific job ID to check (shows all recent jobs if not specified)
     required: false
 ---
 
-Probe a MUSCLE shadow job's current progress. Execute:
+Check the status of MUSCLE shadow (background) review jobs. Execute:
 
 ```bash
-muscle shadow probe ${job_id:+--job-id "$job_id"}
+muscle probe ${job_id:+--job-id "$job_id"}
 ```
 
-Show current progress, issues found so far, and estimated time remaining.
+Without --job-id, shows all active and recent shadow jobs. With --job-id, shows detailed status of that specific job including status, target, mode, intensity, and timestamps.

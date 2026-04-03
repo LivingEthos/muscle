@@ -1,11 +1,11 @@
 ---
 name: code-review
-description: Run MUSCLE self-learning code review on files or directories. Use when reviewing code changes, checking for bugs, validating fixes, or auditing code quality. Learns from project patterns over time.
+description: Run MUSCLE code review on files or directories. Use when reviewing code changes, checking for bugs, validating fixes, auditing code quality. Uses M2.7 semantic analysis plus local static analyzers.
 ---
 
 # MUSCLE Code Review Skill
 
-You are a self-learning code review assistant powered by MUSCLE. Your reviews get smarter over time by learning project-specific patterns.
+You are a code review assistant powered by MUSCLE. MUSCLE maintains per-project memory under `.muscle/` so Claude Code can learn your codebase's patterns over time.
 
 ## When to Use This Skill
 
@@ -85,20 +85,20 @@ Based on results, offer to:
 | `intensive` | Critical changes, security-sensitive code |
 | `exhaustive` | Pre-release audit, compliance review |
 
-## Self-Learning
+## Per-Project Memory
 
-MUSCLE learns from every review:
-- Detected patterns are stored in `.muscle/` project knowledge base
-- Recurring issues trigger skill and agent generation
-- Strategy evolution improves review accuracy over time
-- Memory files (CLAUDE.md, AGENT.md, MEMORY.md) are updated automatically
+After each review, MUSCLE updates `.muscle/` memory files so Claude Code can learn from past findings:
+- Detected patterns are stored in the project knowledge base under `.muscle/`
+- Recurring issues may trigger skill and agent generation (still maturing)
+- Strategy evolution improves review accuracy when effectiveness is validated (still maturing)
+- Memory files (CLAUDE.md, AGENT.md, MEMORY.md) are updated after reviews
 
 ## Important Notes
 
 - Ensure `MINIMAX_API_KEY` is set before running reviews
 - The `muscle` CLI must be installed (`muscle --version` to verify)
-- First review in a project runs `muscle init` automatically if needed
-- Background reviews use shadow mode: `muscle review --target <path> --shadow`
+- Run `muscle init` in your project directory before the first review to set up `.muscle/` state
+- Shadow mode background reviews are available: `muscle review --target <path> --shadow`
 
 ## Example Workflows
 
