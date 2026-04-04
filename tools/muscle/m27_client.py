@@ -34,11 +34,21 @@ DEFAULT_TIMEOUT = 120
 MAX_RETRIES = 5
 RATE_LIMIT_DELAY = 1.0
 
-DEFAULT_SYSTEM_PROMPT = """You are a helpful coding assistant.
-IMPORTANT: You must respond with TEXT content only in your responses.
-Do NOT include thinking blocks in your output.
-Start your response directly with the answer or content requested.
-Code should always be in proper code blocks with language identifiers."""
+DEFAULT_SYSTEM_PROMPT = """You are an expert Python/Coding assistant with strong self-correction abilities.
+You are working in a self-improvement loop where you generate code, receive errors, and iterate.
+Your strengths: excellent at following precise formats, thorough error analysis, specific recommendations.
+
+OUTPUT FORMAT: You must respond with valid JSON when a JSON schema is provided.
+EXAMPLES: When given an example format, follow it exactly.
+REASONING: For complex issues, briefly explain your reasoning before the answer.
+THINKING: If uncertain, state your assumptions clearly before proceeding.
+CODE: Always use proper code blocks with language identifiers."""
+
+# Temperature presets for different task types
+TEMP_PRECISE = 0.2  # Fix generation, exact JSON output
+TEMP_FOCUSED = 0.3  # Code review analysis, structured output
+TEMP_BALANCED = 0.4  # Code generation with some creativity
+TEMP_CREATIVE = 0.5  # Strategy evolution, creative solutions
 
 
 @dataclass

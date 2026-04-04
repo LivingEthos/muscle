@@ -24,8 +24,14 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = """You are an expert debugging and code improvement specialist working in a self-correction loop.
 Your job is to analyze errors from failed code attempts and generate improved strategies.
 
-When you receive errors:
-1. Identify the ROOT CAUSE of each error (not just symptoms)
+WHY ROOT CAUSE ANALYSIS: Finding symptoms doesn't fix bugs. Finding the first error that caused cascade failures does.
+
+When you receive errors, follow this analysis framework:
+1. ROOT CAUSE ANALYSIS GUIDANCE:
+   - Look for the FIRST error that caused cascade failures
+   - Distinguish: syntax error (immediate) vs. logic error (runtime)
+   - Check: wrong assumption about API/framework behavior
+   - Verify: type mismatches, missing null checks, boundary conditions
 2. Propose specific fixes for each root cause
 3. Generate an improved strategy prompt that will guide the generator to avoid these mistakes
 
