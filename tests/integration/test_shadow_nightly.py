@@ -1,8 +1,8 @@
 """
-Integration tests for shadow mode and nightly runner.
+Integration tests for shadow mode and long evaluation runner.
 
 Tests ShadowBroker -> ShadowWorker job lifecycle and
-NightlyRunner report generation.
+LongEvalRunner report generation.
 """
 
 from __future__ import annotations
@@ -240,25 +240,24 @@ class TestShadowWorkerIntegration:
             ShadowBroker._initialized = False
 
 
-class TestNightlyRunnerIntegration:
-    """Tests nightly review scheduling and report generation."""
+class TestLongEvalRunnerIntegration:
+    """Tests long evaluation review and report generation."""
 
-    def test_nightly_runner_generates_report(self, tmp_path: Path):
-        """NightlyRunner should generate a report file."""
-        from tools.muscle.code_review.nightly_runner import NightlyConfig, NightlyRunner
+    def test_long_eval_runner_generates_report(self, tmp_path: Path):
+        """LongEvalRunner should generate a report file."""
+        from tools.muscle.code_review.long_eval_runner import LongEvalConfig, LongEvalRunner
 
         # Create a simple source file to review
         src = tmp_path / "src"
         src.mkdir()
         (src / "main.py").write_text('def main():\n    print("hello")\n')
 
-        config = NightlyConfig(
-            enabled=True,
+        config = LongEvalConfig(
             target_paths=[str(src)],
             intensity="minimal",
         )
 
-        runner = NightlyRunner(str(tmp_path), config=config)
+        runner = LongEvalRunner(str(tmp_path), config=config)
 
         # Mock the subprocess call that runs muscle review
         with patch("subprocess.run") as mock_run:
@@ -266,7 +265,7 @@ class TestNightlyRunnerIntegration:
                 returncode=0,
                 stdout=json.dumps(
                     {
-                        "session_id": "nightly-001",
+                        "session_id": "long_eval-001",
                         "issues": [],
                         "critical_count": 0,
                         "high_count": 0,
@@ -274,32 +273,21 @@ class TestNightlyRunnerIntegration:
                 ),
                 stderr="",
             )
-            result = runner.run_nightly()
+            result = runner.run_long_eval()
 
         assert result is not None
         assert "started_at" in result
         assert "completed_at" in result
 
-    def test_nightly_runner_disabled(self, tmp_path: Path):
-        """Disabled runner should return None without doing work."""
-        from tools.muscle.code_review.nightly_runner import NightlyConfig, NightlyRunner
-
-        config = NightlyConfig(enabled=False)
-        runner = NightlyRunner(str(tmp_path), config=config)
-
-        result = runner.run_nightly()
-        assert result is None
-
-    def test_nightly_saves_report_file(self, tmp_path: Path):
+    def test_long_eval_saves_report_file(self, tmp_path: Path):
         """Reports should be persisted to .muscle/reports/."""
-        from tools.muscle.code_review.nightly_runner import NightlyConfig, NightlyRunner
+        from tools.muscle.code_review.long_eval_runner import LongEvalConfig, LongEvalRunner
 
-        config = NightlyConfig(
-            enabled=True,
+        config = LongEvalConfig(
             target_paths=[str(tmp_path)],
         )
 
-        runner = NightlyRunner(str(tmp_path), config=config)
+        runner = LongEvalRunner(str(tmp_path), config=config)
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
@@ -307,32 +295,16 @@ class TestNightlyRunnerIntegration:
                 stdout=json.dumps({"issues": [], "critical_count": 0}),
                 stderr="",
             )
-            runner.run_nightly()
+            runner.run_long_eval()
 
         reports_dir = tmp_path / ".muscle" / "reports"
         assert reports_dir.exists()
 
-    def test_schedule_manager(self, tmp_path: Path):
-        """ScheduleManager should persist and load schedule config."""
-        from tools.muscle.code_review.nightly_runner import ScheduleManager
-
-        mgr = ScheduleManager(str(tmp_path))
-
-        mgr.enable_nightly(run_time="02:00")
-        schedule = mgr.get_schedule()
-
-        assert schedule["nightly"]["enabled"] is True
-        assert schedule["nightly"]["run_time"] == "02:00"
-
-        mgr.disable_nightly()
-        schedule = mgr.get_schedule()
-        assert schedule["nightly"]["enabled"] is False
-
-    def test_nightly_reports_listing(self, tmp_path: Path):
+    def test_long_eval_reports_listing(self, tmp_path: Path):
         """Recent reports should be listable."""
-        from tools.muscle.code_review.nightly_runner import NightlyRunner
+        from tools.muscle.code_review.long_eval_runner import LongEvalRunner
 
-        runner = NightlyRunner(str(tmp_path))
+        runner = LongEvalRunner(str(tmp_path))
 
         # Create some fake report files
         reports_dir = tmp_path / ".muscle" / "reports"
@@ -340,7 +312,7 @@ class TestNightlyRunnerIntegration:
 
         for i in range(3):
             report = {"total_issues": i * 2, "started_at": f"2024-01-0{i + 1}T03:00:00"}
-            (reports_dir / f"nightly_2024010{i + 1}.json").write_text(json.dumps(report))
+            (reports_dir / f"long_eval_2024010{i + 1}.json").write_text(json.dumps(report))
 
         reports = runner.list_reports(limit=5)
         assert isinstance(reports, list)

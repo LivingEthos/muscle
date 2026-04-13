@@ -53,3 +53,5 @@ node_modules/
 Thumbs.db
 *.tmp
 .opencode/
+.serena/
+EVALUATION_REPORT.md

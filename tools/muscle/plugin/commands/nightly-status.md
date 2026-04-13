@@ -1,12 +1,10 @@
 ---
-description: Show the current nightly review schedule status
+description: "[DEPRECATED] Replaced by long-eval-reports"
 args: []
 ---
 
-Show the current nightly review schedule status. Execute:
+This command has been removed. Use `muscle long-eval reports` instead.
 
 ```bash
-muscle nightly status
+muscle long-eval reports
 ```
-
-Displays whether nightly review is enabled, the scheduled run time, and the target path.

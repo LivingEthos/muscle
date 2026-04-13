@@ -19,7 +19,7 @@ MUSCLE is a CLI tool that makes your AI coding assistant **get smarter every tim
 | 🧠 **Remembers your codebase** in `.muscle/CLAUDE.md`, `.muscle/AGENT.md`, `.muscle/MEMORY.md` | Claude never makes the same mistake twice |
 | 🔄 **Iterative generation** with generate → evaluate → evolve loops | Produces working, tested code |
 | 🛠️ **Auto-fixes** safe issues, plans risky ones | Saves hours of manual review |
-| 🌙 **Nightly background reviews** | Wakes up to a report of what changed |
+| 🔍 **Deep evaluation reports** | Run manual deep reviews with `muscle long-eval run` |
 
 **Core philosophy:** M2.7 is cheap enough to run constantly. If it learns your project, it approximates Claude Opus quality at a fraction of the cost.
 
@@ -111,7 +111,7 @@ Over time, **Claude Code becomes a domain expert on your repo** — at negligibl
 ├── knowledge/strategies.db       # 🗄️ SQLite: evolved strategies
 ├── review_kb/review_kb.db       # 🗄️ SQLite: review findings & patterns
 ├── sessions/<session_id>/        # 💾 Iteration history + artifacts
-├── reports/                      # 📊 Nightly + ad-hoc review reports
+├── reports/                      # 📊 Long evaluation + ad-hoc review reports
 └── config.yaml                   # ⚙️  Per-project settings
 ```
 
@@ -209,7 +209,7 @@ uv pip install -e .  # Install CLI
 | `muscle abort` | Abort a running session |
 | `muscle probe` | Show shadow review job status |
 | `muscle diagnosis` | Show completed shadow review results |
-| `muscle nightly` | Manage nightly review metadata & reports |
+| `muscle long-eval` | Manual deep evaluation and reports |
 | `muscle kb` | Inspect strategy knowledge base |
 | `muscle cost` | Inspect token/cost usage |
 | `muscle improve` | Self-improvement log explorer |

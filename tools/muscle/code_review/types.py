@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class Severity(Enum):
@@ -42,6 +43,7 @@ class ReviewIssue:
     code_snippet: str
     suggested_fix: str | None = None
     auto_fixable: bool = False
+    source_agent: str | None = None
 
 
 @dataclass
@@ -59,6 +61,15 @@ class ReviewResult:
     auto_fixed_count: int = 0
     fixed_issues: list[ReviewIssue] = field(default_factory=list)
     unfixed_issues: list[ReviewIssue] = field(default_factory=list)
+    workflow_name: str | None = None
+    execution_mode: str = "local"
+    worktree_path: str | None = None
+    base_branch: str | None = None
+    sync_summary: dict[str, Any] | None = None
+    applied_back_files: list[str] = field(default_factory=list)
+    artifact_dir: str | None = None
+    scope_summary: dict[str, Any] | None = None
+    raw_issues: list[ReviewIssue] = field(default_factory=list)
 
 
 @dataclass
@@ -109,6 +120,15 @@ class ReviewConfig:
     shadow_mode: bool = False
     failsafe: bool = False
     pressure_focus: PressureFocus | None = None
+    workflow_name: str | None = None
+    review_profile: str = "smart"
+    scope_mode: str = "auto"
+    execution_mode: str = "local"
+    worktree_enabled: bool = False
+
+    def __post_init__(self) -> None:
+        if self.execution_mode == "worktree" and not self.worktree_enabled:
+            object.__setattr__(self, "worktree_enabled", True)
 
 
 @dataclass
@@ -174,6 +194,45 @@ class ShadowJob:
     completed_at: str | None = None
     result: ReviewResult | None = None
     error_message: str | None = None
+
+
+@dataclass(frozen=True)
+class ReviewScope:
+    complexity: str
+    changed_files: list[str] = field(default_factory=list)
+    source_files: list[str] = field(default_factory=list)
+    doc_files: list[str] = field(default_factory=list)
+    test_files: list[str] = field(default_factory=list)
+    touched_languages: list[str] = field(default_factory=list)
+    review_agents: list[str] = field(default_factory=list)
+    review_intensity: str = Intensity.MODERATE.value
+    test_scope: str = "none"
+    auto_fix_cap: int = 1
+    public_api_changed: bool = False
+    docs_only: bool = False
+    tests_only: bool = False
+    line_count: int = 0
+    reasoning: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert ReviewScope to a JSON-serializable dict."""
+        return {
+            "complexity": self.complexity,
+            "changed_files": self.changed_files,
+            "source_files": self.source_files,
+            "doc_files": self.doc_files,
+            "test_files": self.test_files,
+            "touched_languages": self.touched_languages,
+            "review_agents": self.review_agents,
+            "review_intensity": self.review_intensity,
+            "test_scope": self.test_scope,
+            "auto_fix_cap": self.auto_fix_cap,
+            "public_api_changed": self.public_api_changed,
+            "docs_only": self.docs_only,
+            "tests_only": self.tests_only,
+            "line_count": self.line_count,
+            "reasoning": self.reasoning,
+        }
 
 
 @dataclass

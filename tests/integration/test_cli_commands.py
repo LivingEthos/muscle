@@ -306,45 +306,75 @@ class TestImproveCLI:
 
 
 # ---------------------------------------------------------------------------
-# Nightly commands
+# Long evaluation commands
 # ---------------------------------------------------------------------------
 
 
-class TestNightlyCLI:
-    """Tests for the nightly command group."""
+class TestLongEvalCLI:
+    """Tests for the long-eval command group."""
 
-    def test_nightly_enable(self, runner: CliRunner):
-        """nightly enable should set schedule."""
-        with patch("tools.muscle.code_review.nightly_runner.ScheduleManager") as mock_cls:
-            mock_mgr = MagicMock()
-            mock_cls.return_value = mock_mgr
-
-            result = runner.invoke(cli, ["nightly", "enable", "--time", "03:00"])
-            assert result.exit_code == 0
-
-    def test_nightly_disable(self, runner: CliRunner):
-        """nightly disable should remove schedule."""
-        with patch("tools.muscle.code_review.nightly_runner.ScheduleManager") as mock_cls:
-            mock_mgr = MagicMock()
-            mock_cls.return_value = mock_mgr
-
-            result = runner.invoke(cli, ["nightly", "disable"])
-            assert result.exit_code == 0
-
-    def test_nightly_status(self, runner: CliRunner):
-        """nightly status should show schedule state."""
-        with patch("tools.muscle.code_review.nightly_runner.ScheduleManager") as mock_cls:
-            mock_mgr = MagicMock()
-            mock_mgr.get_schedule.return_value = {
-                "nightly": {
-                    "enabled": True,
-                    "run_time": "03:00",
-                    "next_run": "2024-01-02T03:00:00",
-                }
+    def test_long_eval_run(self, runner: CliRunner):
+        """long-eval run should execute a deep evaluation."""
+        with patch("tools.muscle.code_review.long_eval_runner.LongEvalRunner") as mock_cls:
+            mock_runner = MagicMock()
+            mock_runner.run_long_eval.return_value = {
+                "total_issues": 3,
+                "duration_seconds": 12.5,
+                "critical_issues": [],
+                "high_issues": [],
             }
-            mock_cls.return_value = mock_mgr
+            mock_cls.return_value = mock_runner
 
-            result = runner.invoke(cli, ["nightly", "status"])
+            result = runner.invoke(cli, ["long-eval", "run"])
+            assert result.exit_code == 0
+
+    def test_long_eval_reports(self, runner: CliRunner):
+        """long-eval reports should list recent reports."""
+        with patch("tools.muscle.code_review.long_eval_runner.LongEvalRunner") as mock_cls:
+            mock_runner = MagicMock()
+            mock_runner.list_reports.return_value = []
+            mock_cls.return_value = mock_runner
+
+            result = runner.invoke(cli, ["long-eval", "reports"])
+            assert result.exit_code == 0
+
+    def test_long_eval_cleanup_with_force(self, runner: CliRunner):
+        """long-eval cleanup --force should remove old reports."""
+        with patch("tools.muscle.code_review.long_eval_runner.LongEvalRunner") as mock_cls:
+            mock_runner = MagicMock()
+            mock_runner.cleanup_old_reports.return_value = 2
+            mock_cls.return_value = mock_runner
+
+            result = runner.invoke(cli, ["long-eval", "cleanup", "--force"])
+            assert result.exit_code == 0
+
+    def test_long_eval_benchmark(self, runner: CliRunner):
+        """long-eval benchmark should execute the benchmark harness."""
+        with patch("tools.muscle.code_review.review_benchmark.ReviewBenchmarkRunner") as mock_cls:
+            mock_runner = MagicMock()
+            mock_runner.run_benchmark.return_value = {
+                "aggregate": {
+                    "baseline": {
+                        "high_critical_recall": 0.5,
+                        "false_positive_rate": 0.2,
+                        "tokens_used": 100,
+                    },
+                    "candidate": {
+                        "high_critical_recall": 0.8,
+                        "false_positive_rate": 0.1,
+                        "tokens_used": 70,
+                    },
+                },
+                "thresholds": {
+                    "high_critical_recall_up_20pct": True,
+                    "false_positive_rate_not_worse": True,
+                    "token_cost_down_30pct": True,
+                },
+                "report_paths": {"json": "/tmp/report.json"},
+            }
+            mock_cls.return_value = mock_runner
+
+            result = runner.invoke(cli, ["long-eval", "benchmark"])
             assert result.exit_code == 0
 
 

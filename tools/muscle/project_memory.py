@@ -1502,9 +1502,15 @@ class ProjectMemory:
         target_path: str,
         mode: str,
         intensity: str,
+        execution_mode: str = "local",
         changed_files_json: str | None = None,
         timeout_seconds: int = 300,
         token_budget: int | None = None,
+        workflow_name: str | None = None,
+        worktree_path: str | None = None,
+        base_branch: str | None = None,
+        artifact_dir: str | None = None,
+        scope_json: str | None = None,
     ) -> int:
         """Insert a row into the shadow_jobs table. Returns the row ID."""
         conn = None
@@ -1515,8 +1521,9 @@ class ProjectMemory:
                 """
                 INSERT INTO shadow_jobs
                 (project_path, job_id, target_path, mode, intensity, status, created_at,
-                 changed_files_json, timeout_seconds, token_budget)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 changed_files_json, timeout_seconds, token_budget, execution_mode, workflow_name,
+                 worktree_path, base_branch, artifact_dir, scope_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_path,
@@ -1529,6 +1536,12 @@ class ProjectMemory:
                     changed_files_json,
                     timeout_seconds,
                     token_budget,
+                    execution_mode,
+                    workflow_name,
+                    worktree_path,
+                    base_branch,
+                    artifact_dir,
+                    scope_json,
                 ),
             )
             conn.commit()
@@ -1608,6 +1621,12 @@ class ProjectMemory:
         completed_at: str | None = None,
         result: str | None = None,
         error_message: str | None = None,
+        execution_mode: str | None = None,
+        workflow_name: str | None = None,
+        worktree_path: str | None = None,
+        base_branch: str | None = None,
+        artifact_dir: str | None = None,
+        scope_json: str | None = None,
     ) -> bool:
         """Update status and related fields of a shadow job."""
         conn = None
@@ -1620,10 +1639,29 @@ class ProjectMemory:
                 SET status = ?, started_at = COALESCE(?, started_at),
                     completed_at = COALESCE(?, completed_at),
                     result = COALESCE(?, result),
-                    error_message = ?
+                    error_message = ?,
+                    execution_mode = COALESCE(?, execution_mode),
+                    workflow_name = COALESCE(?, workflow_name),
+                    worktree_path = COALESCE(?, worktree_path),
+                    base_branch = COALESCE(?, base_branch),
+                    artifact_dir = COALESCE(?, artifact_dir),
+                    scope_json = COALESCE(?, scope_json)
                 WHERE job_id = ?
                 """,
-                (status, started_at, completed_at, result, error_message, job_id),
+                (
+                    status,
+                    started_at,
+                    completed_at,
+                    result,
+                    error_message,
+                    execution_mode,
+                    workflow_name,
+                    worktree_path,
+                    base_branch,
+                    artifact_dir,
+                    scope_json,
+                    job_id,
+                ),
             )
             conn.commit()
             return cursor.rowcount > 0

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from tools.muscle.migrations import CURRENT_SCHEMA_VERSION
 from tools.muscle.project_memory import ProjectMemory
 
 
@@ -49,8 +50,7 @@ class TestProjectMemoryInitialization:
         """Test that schema version is set after initialization."""
         version = pm.get_schema_version()
         assert version is not None
-        # Schema version should be set by migrations (currently 1.5.0)
-        assert version in ("1.0.0", "1.1.0", "1.3.0", "1.3.1", "1.4.0", "1.5.0")
+        assert version == CURRENT_SCHEMA_VERSION
 
 
 class TestTaskHelpers:
@@ -581,7 +581,7 @@ class TestAutomationStateHelpers:
         """Test setting an automation state."""
         state_id = pm.set_automation_state(
             project_path=str(temp_project_dir),
-            state_key="nightly_last_run",
+            state_key="long_eval_last_run",
             state_value="2026-04-01T00:00:00",
         )
         assert state_id > 0
@@ -678,9 +678,7 @@ class TestBackupHelpers:
             retention_days=90,
         )
 
-        auto_backups = pm.list_backups(
-            project_path=str(temp_project_dir), backup_type="automatic"
-        )
+        auto_backups = pm.list_backups(project_path=str(temp_project_dir), backup_type="automatic")
         assert len(auto_backups) == 1
         assert auto_backups[0]["backup_type"] == "automatic"
 
@@ -842,9 +840,7 @@ class TestActionLogHelpers:
             entity_type="claude_md",
         )
 
-        backup_logs = pm.list_action_logs(
-            project_path=str(temp_project_dir), action_type="backup"
-        )
+        backup_logs = pm.list_action_logs(project_path=str(temp_project_dir), action_type="backup")
         assert len(backup_logs) == 1
         assert backup_logs[0]["action_type"] == "backup"
 
@@ -863,9 +859,7 @@ class TestActionLogHelpers:
             entity_id=1,
         )
 
-        skill_logs = pm.list_action_logs(
-            project_path=str(temp_project_dir), entity_type="skill"
-        )
+        skill_logs = pm.list_action_logs(project_path=str(temp_project_dir), entity_type="skill")
         assert len(skill_logs) == 1
         assert skill_logs[0]["entity_type"] == "skill"
 

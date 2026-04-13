@@ -14,6 +14,7 @@ import pytest
 from click.testing import CliRunner
 
 from tools.muscle.cli import cli
+from tools.muscle.tui.project_manager import ProjectConfig, ProjectManager
 
 
 class TestReviewCommand:
@@ -32,15 +33,21 @@ class TestReviewCommand:
         mock_result.medium_count = 0
         mock_result.low_count = 0
         mock_result.info_count = 0
+        mock_result.workflow_name = "review-smart"
+        mock_result.execution_mode = "local"
 
         mock_run_result = MagicMock()
         mock_run_result.handoff_plan = None
+        mock_run_result.stats.duration_seconds = 0.0
+        mock_run_result.stats.tokens_used = 0
+        mock_run_result.stats.duration_seconds = 0.0
+        mock_run_result.stats.tokens_used = 0
 
         mock_instance = MagicMock()
         mock_instance.run.return_value = mock_run_result
         mock_instance.get_review_result.return_value = mock_result
 
-        with patch("tools.muscle.code_review.review_controller.ReviewController") as mock_class:
+        with patch("tools.muscle.code_review.ReviewController") as mock_class:
             mock_class.return_value = mock_instance
             yield mock_instance
 
@@ -192,6 +199,90 @@ class TestReviewCommand:
 
         assert result.exit_code == 0
 
+    def test_review_uses_cli_execution_override(self, runner, tmp_path):
+        env = os.environ.copy()
+        env["MINIMAX_API_KEY"] = "test-key"
+        target = tmp_path / "main.py"
+        target.write_text("print('hello')\n", encoding="utf-8")
+
+        mock_result = MagicMock()
+        mock_result.session_id = "abc123"
+        mock_result.target_path = str(target)
+        mock_result.issues = []
+        mock_result.critical_count = 0
+        mock_result.high_count = 0
+        mock_result.medium_count = 0
+        mock_result.low_count = 0
+        mock_result.info_count = 0
+
+        mock_run_result = MagicMock()
+        mock_run_result.handoff_plan = None
+        mock_run_result.stats.duration_seconds = 0.0
+        mock_run_result.stats.tokens_used = 0
+
+        with patch("tools.muscle.code_review.ReviewController") as mock_class:
+            mock_instance = MagicMock()
+            mock_instance.run.return_value = mock_run_result
+            mock_instance.get_review_result.return_value = mock_result
+            mock_class.return_value = mock_instance
+
+            result = runner.invoke(
+                cli,
+                ["review", "--target", str(target), "--execution", "worktree"],
+                env=env,
+            )
+
+        assert result.exit_code == 0
+        config = mock_class.call_args.kwargs["config"]
+        assert config.execution_mode == "worktree"
+
+    def test_review_uses_nearest_project_execution_config(self, runner, tmp_path, monkeypatch):
+        env = os.environ.copy()
+        env["MINIMAX_API_KEY"] = "test-key"
+
+        manager = ProjectManager(base_path=tmp_path)
+        assert manager.init_project(
+            ProjectConfig(
+                name="benchmark-project",
+                path=tmp_path,
+                languages=["python"],
+                review_execution="worktree",
+            )
+        )
+
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        target = src_dir / "main.py"
+        target.write_text("print('hello')\n", encoding="utf-8")
+        monkeypatch.chdir(src_dir)
+
+        mock_result = MagicMock()
+        mock_result.session_id = "abc123"
+        mock_result.target_path = str(target)
+        mock_result.issues = []
+        mock_result.critical_count = 0
+        mock_result.high_count = 0
+        mock_result.medium_count = 0
+        mock_result.low_count = 0
+        mock_result.info_count = 0
+
+        mock_run_result = MagicMock()
+        mock_run_result.handoff_plan = None
+        mock_run_result.stats.duration_seconds = 0.0
+        mock_run_result.stats.tokens_used = 0
+
+        with patch("tools.muscle.code_review.ReviewController") as mock_class:
+            mock_instance = MagicMock()
+            mock_instance.run.return_value = mock_run_result
+            mock_instance.get_review_result.return_value = mock_result
+            mock_class.return_value = mock_instance
+
+            result = runner.invoke(cli, ["review", "--target", str(target)], env=env)
+
+        assert result.exit_code == 0
+        config = mock_class.call_args.kwargs["config"]
+        assert config.execution_mode == "worktree"
+
 
 class TestReviewLearningIntegration:
     @pytest.fixture
@@ -212,6 +303,8 @@ class TestReviewLearningIntegration:
 
         mock_run_result = MagicMock()
         mock_run_result.handoff_plan = None
+        mock_run_result.stats.duration_seconds = 0.0
+        mock_run_result.stats.tokens_used = 0
 
         mock_controller = MagicMock()
         mock_controller.run.return_value = mock_run_result
@@ -228,7 +321,7 @@ class TestReviewLearningIntegration:
 
         with (
             patch(
-                "tools.muscle.code_review.review_controller.ReviewController",
+                "tools.muscle.code_review.ReviewController",
                 return_value=mock_controller,
             ),
             patch(
@@ -275,7 +368,7 @@ class TestReviewLearningIntegration:
 
         with (
             patch(
-                "tools.muscle.code_review.review_controller.ReviewController",
+                "tools.muscle.code_review.ReviewController",
                 return_value=mock_controller,
             ),
             patch(

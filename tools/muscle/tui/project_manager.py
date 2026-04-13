@@ -37,6 +37,7 @@ class ProjectConfig:
     languages: list[str] = field(default_factory=list)
     automation_level: str = "auto-fix"
     review_gate: str = "block+fix"
+    review_execution: str = "local"
     triggers: list[str] = field(default_factory=list)
     github_enabled: bool = False
     memory_location: str = DEFAULT_MUSCLE_DIR
@@ -132,6 +133,7 @@ class ProjectManager:
                 "languages": config.languages,
                 "automation_level": config.automation_level,
                 "review_gate": config.review_gate,
+                "review_execution": config.review_execution,
                 "triggers": config.triggers,
                 "github_enabled": config.github_enabled,
                 "memory_location": config.memory_location,
@@ -190,6 +192,25 @@ class ProjectManager:
             return muscle_dir
         return None
 
+    def find_nearest_muscle_dir(self, start_path: Path | None = None) -> Path | None:
+        current = (start_path or self.base_path).resolve()
+        if current.is_file():
+            current = current.parent
+
+        while True:
+            muscle_dir = current / DEFAULT_MUSCLE_DIR
+            if muscle_dir.exists():
+                return muscle_dir
+            if current == current.parent:
+                return None
+            current = current.parent
+
+    def find_nearest_project_path(self, start_path: Path | None = None) -> Path | None:
+        muscle_dir = self.find_nearest_muscle_dir(start_path)
+        if muscle_dir is None:
+            return None
+        return muscle_dir.parent
+
     def load_config(self, project_path: Path) -> ProjectConfig | None:
         muscle_dir = project_path / DEFAULT_MUSCLE_DIR
         config_path = muscle_dir / CONFIG_FILE
@@ -208,6 +229,7 @@ class ProjectManager:
             languages=data.get("languages", []),
             automation_level=data.get("automation_level", "auto-fix"),
             review_gate=data.get("review_gate", "block+fix"),
+            review_execution=data.get("review_execution", "local"),
             triggers=data.get("triggers", []),
             github_enabled=data.get("github_enabled", False),
             memory_location=data.get("memory_location", DEFAULT_MUSCLE_DIR),
@@ -217,6 +239,12 @@ class ProjectManager:
             hooks_enabled=data.get("hooks_enabled", True),
             cli_path=data.get("cli_path"),
         )
+
+    def load_nearest_config(self, start_path: Path | None = None) -> ProjectConfig | None:
+        project_path = self.find_nearest_project_path(start_path)
+        if project_path is None:
+            return None
+        return self.load_config(project_path)
 
     def find_all_projects(self) -> list[ProjectConfig]:
         projects = []
@@ -325,6 +353,7 @@ class ProjectManager:
         api_key: str | None = None,
         hooks_enabled: bool | None = None,
         review_gate: str | None = None,
+        review_execution: str | None = None,
         platform: str | None = None,
         cli_path: str | None = None,
         api_key_source: str | None = None,
@@ -347,6 +376,8 @@ class ProjectManager:
             data["project"]["hooks_enabled"] = hooks_enabled
         if review_gate is not None:
             data["project"]["review_gate"] = review_gate
+        if review_execution is not None:
+            data["project"]["review_execution"] = review_execution
         if platform is not None:
             data["project"]["platform"] = platform
         if cli_path is not None:

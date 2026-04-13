@@ -1,0 +1,29 @@
+name: review-comprehensive
+description: |
+  Comprehensive review workflow.
+  Run the full review committee, synthesize findings, and emit structured artifacts.
+nodes:
+  - id: classify
+    type: classify
+  - id: correctness-security
+    type: review_agent
+    agent: correctness_security
+    depends_on: [classify]
+  - id: error-handling
+    type: review_agent
+    agent: error_handling_concurrency
+    depends_on: [classify]
+  - id: test-impact
+    type: review_agent
+    agent: test_impact_coverage
+    depends_on: [classify]
+  - id: docs-impact
+    type: review_agent
+    agent: docs_api_impact
+    depends_on: [classify]
+  - id: synthesize
+    type: synthesize
+    depends_on: [correctness-security, error-handling, test-impact, docs-impact]
+  - id: gate
+    type: gate
+    depends_on: [synthesize]

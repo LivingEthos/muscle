@@ -77,12 +77,18 @@ class TestPluginJson:
             "plugin.json description must not list non-existent `muscle shadow` group"
         )
 
-    def test_plugin_description_includes_nightly_status(self, plugin_json: dict):
-        """The plugin description should include nightly-status command."""
+    def test_plugin_description_includes_long_eval(self, plugin_json: dict):
+        """The plugin description should include long-eval-reports command."""
         desc = plugin_json["description"]
-        assert "nightly-status" in desc, (
-            "plugin.json description should include nightly-status command"
+        assert "long-eval-reports" in desc, (
+            "plugin.json description should include long-eval-reports command"
         )
+
+    def test_plugin_description_includes_new_review_controls(self, plugin_json: dict):
+        """The plugin description should include settings-review and long-eval-benchmark."""
+        desc = plugin_json["description"]
+        assert "settings-review" in desc
+        assert "long-eval-benchmark" in desc
 
 
 class TestCommandDocCompleteness:
@@ -102,17 +108,21 @@ class TestCommandDocCompleteness:
         "kb-stats",
         "settings-show",
         "settings-api-key",
+        "settings-review",
         "status",
-        "nightly-status",
+        "long-eval-benchmark",
+        "long-eval-reports",
         "cancel",  # documented as unavailable
         "result",  # redirects to diagnosis
     }
 
     def test_all_expected_docs_exist(self, command_docs: dict[str, dict]):
         """All commands referenced in plugin.json should have doc files."""
-        # Check that status and nightly-status both exist (distinct commands)
+        # Check that status and long-eval-reports both exist (distinct commands)
         doc_names = set(command_docs.keys())
-        assert "nightly-status" in doc_names, "nightly-status.md must exist"
+        assert "settings-review" in doc_names, "settings-review.md must exist"
+        assert "long-eval-benchmark" in doc_names, "long-eval-benchmark.md must exist"
+        assert "long-eval-reports" in doc_names, "long-eval-reports.md must exist"
         assert "status" in doc_names, "status.md must exist"
 
     def test_no_orphaned_docs(self, command_docs: dict[str, dict]):

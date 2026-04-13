@@ -1,0 +1,34 @@
+name: review-smart
+description: |
+  Default smart review workflow.
+  Classify scope, run only the relevant review agents, synthesize findings,
+  and emit structured artifacts.
+nodes:
+  - id: classify
+    type: classify
+  - id: correctness-security
+    type: review_agent
+    agent: correctness_security
+    depends_on: [classify]
+    when: agent_enabled:correctness_security
+  - id: error-handling
+    type: review_agent
+    agent: error_handling_concurrency
+    depends_on: [classify]
+    when: agent_enabled:error_handling_concurrency
+  - id: test-impact
+    type: review_agent
+    agent: test_impact_coverage
+    depends_on: [classify]
+    when: agent_enabled:test_impact_coverage
+  - id: docs-impact
+    type: review_agent
+    agent: docs_api_impact
+    depends_on: [classify]
+    when: agent_enabled:docs_api_impact
+  - id: synthesize
+    type: synthesize
+    depends_on: [correctness-security, error-handling, test-impact, docs-impact]
+  - id: gate
+    type: gate
+    depends_on: [synthesize]

@@ -8,4 +8,4 @@ Show current MUSCLE settings. Execute:
 muscle settings show
 ```
 
-Report the project name, platform, API key status, hooks, review gate mode, and automation level.
+Report the project name, platform, API key status, hooks, review gate mode, review execution mode, and automation level.

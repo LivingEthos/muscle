@@ -80,7 +80,7 @@ The active package has two main runtime flows:
 | `skill_generator.py` | Generates project-specific Claude Code skills from detected patterns. |
 | `agent_generator.py` | Creates specialized sub-agents for complex review tasks. |
 | `shadow_broker.py` / `shadow_worker.py` | Background (shadow mode) review job queue and workers. |
-| `nightly_runner.py` | Stores nightly schedule metadata and generates nightly reports. |
+| `long_eval_runner.py` | Manual deep evaluation runner and report generation. |
 | `strategy_evolver.py` | Evolves review strategies based on validated effectiveness. |
 | `fix_tracker.py` | Tracks fix attempts and their outcomes. |
 

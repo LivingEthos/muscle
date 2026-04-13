@@ -165,7 +165,7 @@ tools/muscle/
 │   ├── agent_kb_fetcher.py   # Fetches from VoltAgent/awesome-claude-* repos
 │   ├── shadow_broker.py      # Shadow job queue (pending/running/completed)
 │   ├── shadow_worker.py       # Background job processor
-│   ├── nightly_runner.py      # Nightly cron with morning reports
+│   ├── long_eval_runner.py    # Manual deep evaluation with reports
 │   └── static_analyzer.py    # Static analysis via language tools (ruff, eslint, etc.)
 ├── adapters/                   # External integrations
 │   ├── __init__.py
@@ -242,7 +242,7 @@ export ANTHROPIC_BASE_URL="https://api.minimaxi.com/anthropic"
 | `muscle diagnosis` | ✅ | Shadow job results |
 | `muscle lifeline` | ✅ | Deep-dive investigation |
 | `muscle kb knowledge-add` | ✅ | Add strategy to global knowledge base |
-| `muscle nightly` | ✅ | Nightly cron management (enable/disable/run/reports/cleanup) |
+| `muscle long-eval` | ✅ | Manual deep evaluation (run/reports/cleanup) |
 
 ---
 

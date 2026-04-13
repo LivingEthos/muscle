@@ -61,6 +61,35 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _resolve_project_context(start_path: Path | None = None) -> tuple[Path, Any]:
+    from .tui.project_manager import ProjectManager
+
+    base_path = (start_path or Path.cwd()).resolve()
+    manager = ProjectManager(base_path=base_path)
+    config = manager.load_nearest_config(base_path)
+    if config is not None:
+        return config.path, config
+
+    project_path = manager.find_nearest_project_path(base_path)
+    if project_path is not None:
+        return project_path, manager.load_config(project_path)
+
+    fallback = base_path.parent if base_path.is_file() else base_path
+    return fallback, None
+
+
+def _resolve_review_execution_mode(
+    target_path: Path,
+    cli_execution_mode: str | None,
+) -> tuple[str, Path, Any]:
+    project_path, project_config = _resolve_project_context(target_path)
+    if cli_execution_mode:
+        return cli_execution_mode, project_path, project_config
+    if project_config is not None:
+        return project_config.review_execution, project_path, project_config
+    return "local", project_path, project_config
+
+
 def _create_m27_client() -> M27Client:
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("MINIMAX_API_KEY")
     return M27Client(api_key=api_key)
@@ -122,12 +151,19 @@ def cli() -> None:
     default="auto",
     help="Target platform",
 )
+@click.option(
+    "--review-execution",
+    type=click.Choice(["local", "worktree"]),
+    default=None,
+    help="Default execution mode for auto-fix and hybrid runs",
+)
 @click.option("--api-key", help="MINIMAX/M2.7 API key (or set MINIMAX_API_KEY env var)")
 @click.option("--hooks/--no-hooks", default=True, help="Enable/disable post-task review hooks")
 @click.option("--cli-path", help="Path to muscle CLI (auto-detected if not specified)")
 def init(
     non_interactive: bool,
     platform: str,
+    review_execution: str | None,
     api_key: str | None,
     hooks: bool,
     cli_path: str | None,
@@ -178,6 +214,7 @@ def init(
     if non_interactive:
         project.automation_level = "auto-fix"
         project.review_gate = "block+fix"
+        project.review_execution = review_execution or "local"
         project.triggers = ["review-gate", "manual"]
         project.github_enabled = False
         project.memory_location = ".muscle"
@@ -199,6 +236,15 @@ def init(
         choice = console.input("Select [1-4] (default: 1): ").strip() or "1"
         gates = {"1": "block+fix", "2": "block-all", "3": "warn", "4": "disabled"}
         project.review_gate = gates.get(choice, "block+fix")
+
+        if review_execution:
+            project.review_execution = review_execution
+        else:
+            console.print("\n[bold]Fix Execution:[/bold]")
+            console.print("  [1] Local checkout (Recommended)")
+            console.print("  [2] Isolated worktree for auto-fix/hybrid")
+            choice = console.input("Select [1-2] (default: 1): ").strip() or "1"
+            project.review_execution = "worktree" if choice == "2" else "local"
 
         console.print("\n[bold]Triggers:[/bold]")
         console.print("  [x] Review Gate (Recommended)")
@@ -283,7 +329,7 @@ def init(
                 console.print("  muscle_review, muscle_pressure, muscle_rescue, muscle_lifeline")
                 console.print("  muscle_check, muscle_probe, muscle_diagnosis, muscle_result")
                 console.print("  muscle_history, muscle_kb_stats, muscle_settings_*")
-                console.print("  muscle_init, muscle_nightly, muscle_improve, muscle_cost_*")
+                console.print("  muscle_init, muscle_long_eval, muscle_improve, muscle_cost_*")
                 console.print("  muscle_tui, muscle_run, muscle_abort")
                 console.print()
                 console.print("[dim]MUSCLE automatically calls muscle_review on session idle[/dim]")
@@ -1559,6 +1605,20 @@ def _parse_budget(budget_str: str) -> tuple[BudgetMode, int]:
     default=None,
     help="Pressure focus: design,failure,race,auth,data,rollback,reliability (comma-separated)",
 )
+@click.option(
+    "--workflow",
+    default=None,
+    type=click.Choice(
+        ["review-smart", "review-comprehensive", "review-fix-verify", "pressure-review"]
+    ),
+    help="Override the built-in review workflow",
+)
+@click.option(
+    "--execution",
+    default=None,
+    type=click.Choice(["local", "worktree"]),
+    help="Override review execution mode for this run",
+)
 def review(
     target: str,
     language: str | None,
@@ -1571,6 +1631,8 @@ def review(
     intensity: str,
     failsafe: bool,
     focus: str | None,
+    workflow: str | None,
+    execution: str | None,
 ) -> None:
     """Review code for issues, auto-fix where possible, and generate handoff plans.
 
@@ -1620,14 +1682,23 @@ def review(
         "exhaustive": Intensity.EXHAUSTIVE,
     }
 
+    resolved_target = Path(target).resolve()
+    execution_mode, resolved_project_path, _ = _resolve_review_execution_mode(
+        resolved_target,
+        execution,
+    )
+    project_path = str(resolved_project_path)
+
     if shadow:
         from .code_review.shadow_worker import WorkerManager
 
-        worker_manager = WorkerManager(project_path=str(Path.cwd()))
+        worker_manager = WorkerManager(project_path=project_path)
         job_id = worker_manager.submit_shadow_job(
-            target_path=target,
+            target_path=str(resolved_target),
             mode=mode_map.get(mode, ReviewMode.REVIEW),
             intensity=intensity_map.get(intensity, Intensity.MODERATE),
+            execution_mode=execution_mode,
+            workflow_name=workflow,
         )
         console.print(f"[cyan]Shadow job created: {job_id}[/cyan]")
         console.print("Check status with: muscle probe")
@@ -1665,6 +1736,8 @@ def review(
                 console.print(f"Low: {stats['low']}")
             if stats.get("info"):
                 console.print(f"Info: {stats['info']}")
+            if data.get("artifact_dir"):
+                console.print(f"[dim]Artifacts: {data['artifact_dir']}[/dim]")
 
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("MINIMAX_API_KEY")
     if not api_key:
@@ -1677,15 +1750,17 @@ def review(
     m27_client = M27Client(api_key=api_key)
 
     config = ReviewConfig(
-        target_path=target,
+        target_path=str(resolved_target),
         language=language,
         mode=mode_map.get(mode, ReviewMode.REVIEW),
+        intensity=intensity_map.get(intensity, Intensity.MODERATE),
         severity_threshold=severity_map.get(severity, Severity.LOW),
         max_fixes_per_round=max_fixes,
+        workflow_name=workflow,
+        review_profile="comprehensive" if workflow == "review-comprehensive" else "smart",
+        execution_mode=execution_mode,
+        worktree_enabled=execution_mode == "worktree",
     )
-
-    # Project path resolved before controller creation for callback closure
-    project_path = str(Path(target).resolve().parent) if Path(target).is_file() else target
 
     # Initialize ProjectMemory and LearningIngestor early for correction signal callback
     try:
@@ -1727,6 +1802,7 @@ def review(
         m27_client=m27_client,
         event_callback=event_handler,
         correction_signal_callback=on_correction_signal,
+        project_path=project_path,
     )
 
     try:
@@ -1793,12 +1869,17 @@ def review(
                     "low": review_result.low_count,
                     "info": review_result.info_count,
                 },
+                "workflow_name": review_result.workflow_name,
+                "execution_mode": review_result.execution_mode,
+                "duration_seconds": result.stats.duration_seconds,
+                "tokens_used": result.stats.tokens_used,
             }
             console.print(json.dumps(output_data, indent=2))
         else:
             if review_result:
                 console.print("\n[bold]Review Summary[/bold]")
                 console.print(f"Target: {review_result.target_path}")
+                console.print(f"Execution: {review_result.execution_mode}")
                 console.print(f"Issues found: {len(review_result.issues)}")
                 if review_result.critical_count:
                     console.print(f"[red]Critical: {review_result.critical_count}[/red]")
@@ -1981,11 +2062,13 @@ def diagnosis(job_id: str | None) -> None:
             console.print(f"[red]Job {job_id} not found[/red]")
             sys.exit(1)
     else:
-        recent = broker.get_recent_jobs(limit=1)
-        if not recent:
+        recent_completed = [
+            item for item in broker.get_recent_jobs(limit=20) if item.get("status") == "completed"
+        ]
+        if not recent_completed:
             console.print("[yellow]No completed jobs found[/yellow]")
             sys.exit(1)
-        job = recent[0]
+        job = recent_completed[0]
         job_id = job["job_id"]
 
     if job["status"] != "completed":
@@ -2001,7 +2084,7 @@ def diagnosis(job_id: str | None) -> None:
 
     console.print(f"[bold green]Diagnosis for Job {job_id}:[/bold green]\n")
 
-    if "issues" in result:
+    if isinstance(result, dict) and "issues" in result:
         issues = result["issues"]
         console.print(f"Issues found: {len(issues)}")
 
@@ -2022,7 +2105,7 @@ def diagnosis(job_id: str | None) -> None:
             color = "red" if sev in ("CRITICAL", "HIGH") else "yellow"
             console.print(f"  [{color}]{sev}[/] {issue.get('title', 'Unknown')}")
 
-    elif "pressure_findings" in result:
+    elif isinstance(result, dict) and "pressure_findings" in result:
         findings = result.get("pressure_findings", [])
         console.print(f"Pressure findings: {len(findings)}")
         for finding in findings[:10]:
@@ -2034,86 +2117,34 @@ def diagnosis(job_id: str | None) -> None:
         console.print(result)
 
 
-@cli.group(name="nightly")
-def nightly_group() -> None:
-    """Nightly cron and report management."""
+@cli.group(name="long-eval")
+def long_eval_group() -> None:
+    """Manual deep evaluation and report management."""
     pass
 
 
-@nightly_group.command(name="enable")
-@click.option("--time", "-t", default="03:00", help="Run time in HH:MM format (default: 03:00)")
-@click.option("--target", default=None, help="Target path to review (default: current directory)")
-def nightly_enable(time: str, target: str | None) -> None:
-    """Enable nightly review at a scheduled time.
+@long_eval_group.command(name="run")
+@click.option("--target", "-t", default=None, help="Target path to review")
+def long_eval_run(target: str | None) -> None:
+    """Run a deep evaluation pass on the project (manual).
+
+    This runs a thorough review across target paths, generates a report,
+    and triggers the learning pipeline.
 
     Examples:
 
-        muscle nightly enable                  # Enable at 03:00 AM
+        muscle long-eval run                    # Evaluate current directory
 
-        muscle nightly enable --time 02:30      # Enable at 02:30 AM
-
-        muscle nightly enable --target ./src    # Review ./src directory
+        muscle long-eval run --target ./src     # Evaluate ./src directory
     """
-    from .code_review.nightly_runner import NightlyConfig, NightlyRunner, ScheduleManager
+    from .code_review.long_eval_runner import LongEvalConfig, LongEvalRunner
 
     project_path = target or str(Path.cwd())
-    schedule_mgr = ScheduleManager(project_path)
-    schedule_mgr.enable_nightly(run_time=time)
-    console.print(f"[green]Nightly review enabled at {time}[/green]")
-    console.print(f"Project: {project_path}")
+    config = LongEvalConfig(target_paths=[project_path] if target else None)
+    runner = LongEvalRunner(project_path, config)
+    console.print(f"[cyan]Running long evaluation on {project_path}...[/cyan]")
 
-    runner = NightlyRunner(project_path, NightlyConfig(enabled=True, run_time=time))
-    report = runner.run_nightly()
-    if report:
-        console.print(
-            f"[cyan]Immediate run completed: {report.get('total_issues', 0)} issues found[/cyan]"
-        )
-    else:
-        console.print("[yellow]Nightly scheduled but no report generated yet.[/yellow]")
-
-
-@nightly_group.command(name="disable")
-def nightly_disable() -> None:
-    """Disable nightly review schedule."""
-    from .code_review.nightly_runner import ScheduleManager
-
-    schedule_mgr = ScheduleManager(str(Path.cwd()))
-    schedule_mgr.disable_nightly()
-    console.print("[green]Nightly review disabled.[/green]")
-
-
-@nightly_group.command(name="status")
-def nightly_status() -> None:
-    """Show nightly schedule status."""
-    from .code_review.nightly_runner import ScheduleManager
-
-    schedule_mgr = ScheduleManager(str(Path.cwd()))
-    schedule = schedule_mgr.get_schedule()
-
-    table = Table(title="Nightly Schedule Status")
-    table.add_column("Setting", style="cyan")
-    table.add_column("Value", style="green")
-
-    nightly = schedule.get("nightly", {})
-    enabled = nightly.get("enabled", False)
-    table.add_row("Enabled", f"[{'green' if enabled else 'red'}]" + ("Yes" if enabled else "No"))
-    table.add_row("Run Time", nightly.get("run_time", "Not set"))
-    table.add_row("Next Run", nightly.get("next_run", "Not scheduled"))
-
-    console.print(table)
-
-
-@nightly_group.command(name="run")
-@click.option("--target", "-t", default=None, help="Target path to review")
-def nightly_run(target: str | None) -> None:
-    """Run nightly review immediately (one-shot)."""
-    from .code_review.nightly_runner import NightlyConfig, NightlyRunner
-
-    project_path = target or str(Path.cwd())
-    runner = NightlyRunner(project_path, NightlyConfig(enabled=True))
-    console.print(f"[cyan]Running nightly review on {project_path}...[/cyan]")
-
-    result = runner.run_nightly()
+    result = runner.run_long_eval()
     if result:
         console.print(f"[green]Completed: {result.get('total_issues', 0)} issues found[/green]")
         console.print(f"Duration: {result.get('duration_seconds', 0):.1f}s")
@@ -2127,21 +2158,21 @@ def nightly_run(target: str | None) -> None:
         console.print("[yellow]No report generated.[/yellow]")
 
 
-@nightly_group.command(name="reports")
+@long_eval_group.command(name="reports")
 @click.option("--limit", "-n", default=7, help="Number of reports to show")
-def nightly_reports(limit: int) -> None:
-    """List recent nightly reports."""
-    from .code_review.nightly_runner import NightlyRunner
+def long_eval_reports(limit: int) -> None:
+    """List recent long evaluation reports."""
+    from .code_review.long_eval_runner import LongEvalRunner
 
-    runner = NightlyRunner(str(Path.cwd()))
+    runner = LongEvalRunner(str(Path.cwd()))
     reports = runner.list_reports(limit=limit)
 
     if not reports:
-        console.print("[yellow]No nightly reports found.[/yellow]")
-        console.print("Run 'muscle nightly run' to generate the first report.")
+        console.print("[yellow]No long evaluation reports found.[/yellow]")
+        console.print("Run 'muscle long-eval run' to generate the first report.")
         return
 
-    table = Table(title=f"Recent Nightly Reports (last {len(reports)})")
+    table = Table(title=f"Recent Long Evaluation Reports (last {len(reports)})")
     table.add_column("Date", style="cyan")
     table.add_column("Total Issues", style="yellow")
     table.add_column("Critical", style="red")
@@ -2158,14 +2189,14 @@ def nightly_reports(limit: int) -> None:
     console.print(table)
 
 
-@nightly_group.command(name="cleanup")
+@long_eval_group.command(name="cleanup")
 @click.option("--days", "-d", default=30, help="Keep reports for N days")
 @click.option("--force", is_flag=True, help="Skip confirmation")
-def nightly_cleanup(days: int, force: bool) -> None:
-    """Clean up old nightly reports."""
-    from .code_review.nightly_runner import NightlyRunner
+def long_eval_cleanup(days: int, force: bool) -> None:
+    """Clean up old long evaluation reports."""
+    from .code_review.long_eval_runner import LongEvalRunner
 
-    runner = NightlyRunner(str(Path.cwd()))
+    runner = LongEvalRunner(str(Path.cwd()))
     if not force:
         if not click.confirm(f"Remove reports older than {days} days?"):
             console.print("[yellow]Aborted.[/yellow]")
@@ -2173,6 +2204,59 @@ def nightly_cleanup(days: int, force: bool) -> None:
 
     removed = runner.cleanup_old_reports(days_to_keep=days)
     console.print(f"[green]Removed {removed} old reports.[/green]")
+
+
+@long_eval_group.command(name="benchmark")
+@click.option(
+    "--baseline",
+    default="legacy",
+    type=click.Choice(["legacy", "review-smart", "review-comprehensive"]),
+    help="Baseline review path to compare against",
+)
+@click.option(
+    "--candidate",
+    default="review-smart",
+    type=click.Choice(["review-smart", "review-comprehensive", "review-fix-verify"]),
+    help="Candidate workflow to benchmark",
+)
+@click.option(
+    "--history/--no-history",
+    default=True,
+    help="Include review_runs/review_findings history replay trends",
+)
+def long_eval_benchmark(baseline: str, candidate: str, history: bool) -> None:
+    """Run the manual review benchmark harness."""
+    from .code_review.review_benchmark import ReviewBenchmarkRunner
+
+    console.print(f"[cyan]Running benchmark: baseline={baseline}, candidate={candidate}[/cyan]")
+    runner = ReviewBenchmarkRunner(str(Path.cwd()))
+    report = runner.run_benchmark(
+        baseline=baseline,
+        candidate=candidate,
+        include_history=history,
+    )
+    aggregate = report["aggregate"]
+    thresholds = report["thresholds"]
+    console.print("[bold]Benchmark Complete[/bold]")
+    console.print(
+        f"High/Critical recall: {aggregate['baseline']['high_critical_recall']:.2%} -> "
+        f"{aggregate['candidate']['high_critical_recall']:.2%}"
+    )
+    console.print(
+        f"False positive rate: {aggregate['baseline']['false_positive_rate']:.2%} -> "
+        f"{aggregate['candidate']['false_positive_rate']:.2%}"
+    )
+    console.print(
+        f"Token cost: {aggregate['baseline']['tokens_used']} -> "
+        f"{aggregate['candidate']['tokens_used']}"
+    )
+    console.print(f"Reports: {report['report_paths']['json']}")
+    console.print(
+        "Thresholds: "
+        f"recall+20%={thresholds['high_critical_recall_up_20pct']}, "
+        f"fp_not_worse={thresholds['false_positive_rate_not_worse']}, "
+        f"token-30%={thresholds['token_cost_down_30pct']}"
+    )
 
 
 def _get_status_color(status: str) -> str:
@@ -2618,11 +2702,7 @@ def settings_group() -> None:
 @settings_group.command(name="show")
 def settings_show() -> None:
     """Show current MUSCLE settings."""
-    from .tui.project_manager import ProjectManager
-
-    manager = ProjectManager()
-    project_path = Path.cwd()
-    project = manager.load_config(project_path)
+    _, project = _resolve_project_context(Path.cwd())
 
     table = Table(title="MUSCLE Settings")
     table.add_column("Setting", style="cyan")
@@ -2635,6 +2715,7 @@ def settings_show() -> None:
         table.add_row("Hooks Enabled", str(project.hooks_enabled))
         table.add_row("CLI Path", project.cli_path or "Not set")
         table.add_row("Review Gate", project.review_gate)
+        table.add_row("Review Execution", project.review_execution)
         table.add_row("Automation Level", project.automation_level)
     else:
         table.add_row("Project", "Not initialized")
@@ -2661,7 +2742,7 @@ def settings_api_key(key: str | None, source: str | None) -> None:
     from .tui.project_manager import ProjectManager
 
     manager = ProjectManager()
-    project_path = Path.cwd()
+    project_path, _ = _resolve_project_context(Path.cwd())
 
     if key:
         os.environ["MINIMAX_API_KEY"] = key
@@ -2701,7 +2782,7 @@ def settings_hooks(enable: bool | None, gate: str | None) -> None:
     from .tui.project_manager import ProjectManager
 
     manager = ProjectManager()
-    project_path = Path.cwd()
+    project_path, _ = _resolve_project_context(Path.cwd())
 
     updated = False
     if enable is not None:
@@ -2716,6 +2797,31 @@ def settings_hooks(enable: bool | None, gate: str | None) -> None:
 
     if not updated:
         console.print("No changes made. Use --enable/--disable or --gate to make changes.")
+
+
+@settings_group.command(name="review")
+@click.option(
+    "--execution",
+    type=click.Choice(["local", "worktree"]),
+    help="Review execution mode",
+)
+def settings_review(execution: str | None) -> None:
+    """Configure review execution settings."""
+    from .tui.project_manager import ProjectManager
+
+    manager = ProjectManager()
+    project_path, project = _resolve_project_context(Path.cwd())
+
+    if execution:
+        if not manager.update_muscle_config(project_path, review_execution=execution):
+            console.print("[red]Failed to update review execution mode.[/red]")
+            return
+        console.print(f"[green]Review execution set to: {execution}[/green]")
+        return
+
+    current = project.review_execution if project is not None else "local"
+    console.print(f"Current review execution: {current}")
+    console.print("Use --execution local|worktree to change it.")
 
 
 @settings_group.command(name="platform")
@@ -2735,7 +2841,7 @@ def settings_platform(platform: str | None, cli_path: str | None) -> None:
     from .tui.project_manager import ProjectManager
 
     manager = ProjectManager()
-    project_path = Path.cwd()
+    project_path, _ = _resolve_project_context(Path.cwd())
 
     updated = False
     if platform:
@@ -2775,12 +2881,13 @@ def settings_reset(force: bool, keep_data: bool, keep_config: bool) -> None:
             return
 
     manager = ProjectManager()
-    project_path = Path.cwd()
+    project_path, _ = _resolve_project_context(Path.cwd())
 
     manager.update_muscle_config(
         project_path,
         hooks_enabled=True,
         review_gate="block+fix",
+        review_execution="local",
         platform="auto",
         api_key_source="env",
     )

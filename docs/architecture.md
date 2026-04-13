@@ -65,7 +65,7 @@ flowchart TD
     Learning --> Skills["SkillGenerator"]
 
     Review --> Shadow["ShadowBroker + ShadowWorker"]
-    Review --> Nightly["NightlyRunner + ScheduleManager"]
+    Review --> LongEval["LongEvalRunner"]
 ```
 
 ## Primary Entry Points
@@ -319,7 +319,7 @@ That means the learning loop is real today, but its strongest compounding effect
 comes from memory-file updates and persisted session history, with the deeper
 pattern/skill ecosystem still maturing.
 
-## Shadow Reviews and Nightly Runs
+## Shadow Reviews and Long Evaluations
 
 ### Shadow Mode
 
@@ -331,17 +331,17 @@ pattern/skill ecosystem still maturing.
 The worker runs review jobs in-process and updates status for `muscle probe` and
 `muscle diagnosis`.
 
-### Nightly Mode
+### Long Evaluation Mode
 
-Nightly support is split into two pieces:
+Long evaluation is a manual deep-review workflow:
 
-- `ScheduleManager` writes scheduling metadata to `.muscle/schedule.json`
-- `NightlyRunner` runs one or more review scans and writes reports to `.muscle/reports/`
+- `LongEvalRunner` runs one or more review scans and writes reports to `.muscle/reports/`
+- Triggered manually via `muscle long-eval run`
 
 Important implementation detail:
 
-- the schedule is stored locally, but this is not an OS-level cron daemon
-- `muscle nightly enable` also triggers an immediate run in addition to writing schedule metadata
+- there is no scheduling or automatic overnight execution
+- the deep evaluation is always user-triggered and runs immediately
 
 ## Persistence Model
 
@@ -371,9 +371,8 @@ These files and directories live under the target project:
       context.json
       artifacts/
   reports/
-    nightly_YYYY-MM-DD.json
-    nightly_YYYY-MM-DD.md
-  schedule.json               # Nightly schedule metadata
+    long_eval_YYYY-MM-DD.json
+    long_eval_YYYY-MM-DD.md
   budget.json                 # Optional auto-budget state
 ```
 
@@ -401,7 +400,7 @@ These files and directories live under the user home directory:
 - evaluator selection and execution
 - review modes
 - shadow job commands
-- nightly report generation
+- long evaluation report generation
 - git auto-commit for successful run sessions
 - webhook notifications for run sessions
 - learning pipeline memory updates

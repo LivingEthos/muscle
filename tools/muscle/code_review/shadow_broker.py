@@ -10,6 +10,7 @@ isolated job tracking with no global shared state.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,17 @@ from ..project_memory import ProjectMemory
 
 if TYPE_CHECKING:
     from .types import Intensity, ReviewMode
+
+
+SHADOW_JOBS_FILE = Path.cwd() / ".muscle" / "shadow_jobs.json"
+
+
+def _default_project_path() -> str:
+    """Resolve a backward-compatible project root for legacy no-arg initialization."""
+    shadow_jobs_parent = SHADOW_JOBS_FILE.parent
+    if shadow_jobs_parent.name == ".muscle":
+        return str(shadow_jobs_parent.parent)
+    return str(shadow_jobs_parent)
 
 
 class ShadowBroker:
@@ -33,7 +45,7 @@ class ShadowBroker:
 
     def __init__(
         self,
-        project_path: str,
+        project_path: str | None = None,
         db_path: str | None = None,
     ) -> None:
         """
@@ -45,7 +57,8 @@ class ShadowBroker:
             db_path: Optional path to the project_memory.db. Defaults to
                 <project_path>/.muscle/project_memory.db.
         """
-        self._project_path = Path(project_path).resolve()
+        resolved_project_path = project_path or _default_project_path()
+        self._project_path = Path(resolved_project_path).resolve()
         self._memory = ProjectMemory(str(self._project_path), db_path)
 
     @property
@@ -57,9 +70,11 @@ class ShadowBroker:
         target_path: str,
         mode: ReviewMode,
         intensity: Intensity,
+        execution_mode: str = "local",
         changed_files: list[str] | None = None,
         timeout_seconds: int = 300,
         token_budget: int | None = None,
+        workflow_name: str | None = None,
     ) -> str:
         """
         Create a new shadow job.
@@ -77,8 +92,6 @@ class ShadowBroker:
         Returns:
             The job_id (8-character hex string).
         """
-        import json
-
         job_id = str(uuid.uuid4())[:8]
         changed_files_json = json.dumps(changed_files) if changed_files else None
 
@@ -88,9 +101,11 @@ class ShadowBroker:
             target_path=target_path,
             mode=mode.value,
             intensity=intensity.value,
+            execution_mode=execution_mode,
             changed_files_json=changed_files_json,
             timeout_seconds=timeout_seconds,
             token_budget=token_budget,
+            workflow_name=workflow_name,
         )
         return job_id
 
@@ -111,8 +126,6 @@ class ShadowBroker:
         job = self._memory.get_shadow_job(job_id)
         if not job:
             return False
-        import json
-
         result_json = json.dumps(result) if result else None
         self._memory.update_shadow_job_status(
             job_id,
@@ -149,23 +162,27 @@ class ShadowBroker:
 
     def get_job(self, job_id: str) -> dict | None:
         """Return the full job record, or None if not found."""
-        return self._memory.get_shadow_job(job_id)
+        return self._decode_job_record(self._memory.get_shadow_job(job_id))
 
     def get_all_jobs(self, limit: int = 100) -> list[dict]:
         """Return all jobs for this project."""
-        return self._memory.list_shadow_jobs(project_path=self.project_path, limit=limit)
+        jobs = self._memory.list_shadow_jobs(project_path=self.project_path, limit=limit)
+        return [job for item in jobs if (job := self._decode_job_record(item)) is not None]
 
     def get_active_jobs(self) -> list[dict]:
         """Return all pending/running jobs for this project."""
-        return self._memory.get_active_shadow_jobs(self.project_path)
+        jobs = self._memory.get_active_shadow_jobs(self.project_path)
+        return [job for item in jobs if (job := self._decode_job_record(item)) is not None]
 
     def get_pending_jobs(self) -> list[dict]:
         """Return all pending jobs for this project."""
-        return self._memory.get_pending_shadow_jobs(self.project_path)
+        jobs = self._memory.get_pending_shadow_jobs(self.project_path)
+        return [job for item in jobs if (job := self._decode_job_record(item)) is not None]
 
     def get_recent_jobs(self, limit: int = 10) -> list[dict]:
         """Return the most recent jobs for this project."""
-        return self._memory.list_shadow_jobs(project_path=self.project_path, limit=limit)
+        jobs = self._memory.list_shadow_jobs(project_path=self.project_path, limit=limit)
+        return [job for item in jobs if (job := self._decode_job_record(item)) is not None]
 
     def remove_job(self, job_id: str) -> bool:
         """Delete a job. Returns False if not found."""
@@ -180,8 +197,6 @@ class ShadowBroker:
 
     def get_changed_files(self, job_id: str) -> list[str] | None:
         """Return the changed files list for a job, or None."""
-        import json
-
         job = self._memory.get_shadow_job(job_id)
         if not job:
             return None
@@ -209,3 +224,42 @@ class ShadowBroker:
         if not job:
             return None
         return job.get("token_budget")
+
+    def update_job_metadata(
+        self,
+        job_id: str,
+        execution_mode: str | None = None,
+        workflow_name: str | None = None,
+        worktree_path: str | None = None,
+        base_branch: str | None = None,
+        artifact_dir: str | None = None,
+        scope_json: str | None = None,
+    ) -> bool:
+        """Update shadow job metadata fields without changing status."""
+        job = self._memory.get_shadow_job(job_id)
+        if not job:
+            return False
+        return self._memory.update_shadow_job_status(
+            job_id=job_id,
+            status=job.get("status", "pending"),
+            execution_mode=execution_mode,
+            workflow_name=workflow_name,
+            worktree_path=worktree_path,
+            base_branch=base_branch,
+            artifact_dir=artifact_dir,
+            scope_json=scope_json,
+        )
+
+    @staticmethod
+    def _decode_job_record(job: dict | None) -> dict | None:
+        """Hydrate JSON-serialized fields that callers expect as structured data."""
+        if job is None:
+            return None
+
+        result = job.get("result")
+        if isinstance(result, str):
+            try:
+                job["result"] = json.loads(result)
+            except json.JSONDecodeError:
+                job["result"] = result
+        return job

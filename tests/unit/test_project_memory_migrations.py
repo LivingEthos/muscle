@@ -19,7 +19,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.muscle.migrations import MigrationRunner
+from tools.muscle.migrations import CURRENT_SCHEMA_VERSION, MigrationRunner, _load_migrations
+
+
+EXPECTED_VERSIONS = [version for version, _, _ in _load_migrations()]
 
 
 def _load_migration_module(filename: str):
@@ -76,21 +79,13 @@ class TestMigrationRunner:
         runner = MigrationRunner(str(project_path), str(temp_db_path))
         applied = runner.run()
 
-        assert "1.0.0" in applied
-        assert "1.1.0" in applied
-        assert "1.3.0" in applied
-        assert "1.3.1" in applied
-        assert "1.4.0" in applied
-        assert "1.5.0" in applied
+        for version in EXPECTED_VERSIONS:
+            assert version in applied
 
         # Verify schema_version table has both versions
         versions = runner.get_applied_versions()
-        assert "1.0.0" in versions
-        assert "1.1.0" in versions
-        assert "1.3.0" in versions
-        assert "1.3.1" in versions
-        assert "1.4.0" in versions
-        assert "1.5.0" in versions
+        for version in EXPECTED_VERSIONS:
+            assert version in versions
 
         conn = sqlite3.connect(str(temp_db_path))
         cursor = conn.cursor()
@@ -150,15 +145,11 @@ class TestMigrationRunner:
 
         status = runner.get_migration_status()
 
-        assert status["current_version"] == "1.5.0"
-        assert "1.0.0" in status["applied_versions"]
-        assert "1.1.0" in status["applied_versions"]
-        assert "1.3.0" in status["applied_versions"]
-        assert "1.3.1" in status["applied_versions"]
-        assert "1.4.0" in status["applied_versions"]
-        assert "1.5.0" in status["applied_versions"]
+        assert status["current_version"] == CURRENT_SCHEMA_VERSION
+        for version in EXPECTED_VERSIONS:
+            assert version in status["applied_versions"]
         assert len(status["pending_versions"]) == 0
-        assert len(status["migrations"]) == 6
+        assert len(status["migrations"]) == len(EXPECTED_VERSIONS)
 
         for m in status["migrations"]:
             assert m["status"] == "applied"
@@ -189,9 +180,7 @@ class TestMigrationV1:
 
         # Verify all expected tables exist
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        )
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         tables = [row[0] for row in cursor.fetchall()]
 
         expected_tables = [
@@ -381,9 +370,7 @@ class TestMigrationRollback:
         rollback_v1(conn)
 
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = [row[0] for row in cursor.fetchall()]
 
         # All project memory tables should be gone
@@ -477,7 +464,7 @@ class TestMigrationIntegration:
 
         # Verify schema version is recorded
         version = pm.get_schema_version()
-        assert version == "1.5.0"
+        assert version == CURRENT_SCHEMA_VERSION
 
     def test_project_memory_creates_all_tables(self, temp_project):
         """ProjectMemory creates all tables via migrations."""
@@ -489,9 +476,7 @@ class TestMigrationIntegration:
         conn = sqlite3.connect(str(db_path))
         cursor = conn.cursor()
 
-        cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        )
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         tables = [row[0] for row in cursor.fetchall()]
         conn.close()
 

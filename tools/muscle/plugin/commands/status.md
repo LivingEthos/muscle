@@ -1,12 +1,24 @@
 ---
-description: Show the current nightly review schedule status (alias for muscle nightly status)
+description: Show MUSCLE status including recent long evaluation reports
 args: []
 ---
 
-Show the current nightly review schedule status. Execute:
+Show MUSCLE status. Execute:
 
 ```bash
-muscle nightly status
+muscle status
 ```
 
-Displays whether nightly review is enabled, the scheduled run time, and the target path. This is an alias for `muscle nightly status`.
+Displays whether MUSCLE is enabled and the current project configuration.
+
+To see recent long evaluation reports:
+
+```bash
+muscle long-eval reports
+```
+
+To compare the legacy reviewer against workflow-driven review strategies:
+
+```bash
+muscle long-eval benchmark
+```

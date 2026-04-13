@@ -11,6 +11,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from tools.muscle.code_review.code_reviewer import CodeReviewer
 from tools.muscle.code_review.fix_generator import FixGenerator, FixResult
 from tools.muscle.code_review.handoff_generator import HandoffGenerator
@@ -88,6 +90,19 @@ class TestReviewControllerInitialization:
 
 
 class TestReviewModes:
+    def test_worktree_mode_fails_closed_outside_git_repo(self, tmp_path):
+        config = ReviewConfig(
+            target_path=str(tmp_path),
+            mode=ReviewMode.AUTO_FIX,
+            execution_mode="worktree",
+        )
+        mock_client = MockM27Client()
+        controller = ReviewController(config=config, m27_client=mock_client, use_kb=False)
+
+        with patch.object(controller.static_analyzer, "analyze", return_value=[]):
+            with pytest.raises(RuntimeError, match="git repository"):
+                controller.run()
+
     def test_run_review_mode(self):
         config = ReviewConfig(target_path="/tmp/test", mode=ReviewMode.REVIEW)
         mock_client = MockM27Client()

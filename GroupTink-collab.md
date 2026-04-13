@@ -1,4 +1,4 @@
-# MUSCLE Consensus Supervision and Nightly Escalation
+# MUSCLE Consensus Supervision and Long Evaluation Escalation
 
 ## Summary
 
@@ -14,7 +14,7 @@ Default behavior:
 
 The product shape is:
 
-- MUSCLE remains the local operator, fixer, learner, and nightly runner
+- MUSCLE remains the local operator, fixer, learner, and long evaluation runner
 - Consensus Engine is the remote supervisor/consensus backend accessed through MUSCLE
 - Agents in Claude Code get explicit instructions on when to request a supervisor pass, when to request full consensus, which method to choose, and which models fit the task
 
@@ -91,14 +91,14 @@ Publishing rules:
 
 - Root `CLAUDE.md`: only repeated or high-severity lessons, concise and deduped
 - `.muscle/MEMORY.md` or DB short-term notes: issue summaries, review heuristics, current hotspots
-- `.muscle/reports/`: raw consensus summaries, nightly escalations, cost/confidence metadata
+- `.muscle/reports/`: raw consensus summaries, long-eval escalations, cost/confidence metadata
 - No automatic raw dump of full external reviews into `CLAUDE.md`
 
 Add project-note helpers for:
 
 - "supervisor note"
 - "consensus lesson"
-- "nightly escalation summary"
+- "long-eval escalation summary"
 
 ### 4. Automatic escalation policy
 
@@ -115,7 +115,7 @@ Implement decision-complete default rules:
   - issue is critical or cross-cutting
   - there are multiple competing diagnoses
   - architecture, security, concurrency, rollback, or scope-drift risk is high
-  - nightly review finds unresolved critical/high findings
+  - long evaluation finds unresolved critical/high findings
   - gate mode is requested
 - Fall back gracefully:
   - if external auth, credits, or network fail, preserve local result and surface a warning
@@ -200,7 +200,7 @@ Initial default guidance:
   - adversarial challenge: O3 or O4 Mini
   - broad code review synthesis: Claude Sonnet/Opus or GPT-5.4
   - large-context repo slices: GPT-5.4, Claude Sonnet/Opus, Gemini 2.5 Pro/Flash
-  - cheap nightly triage: Gemini Flash, Haiku, DeepSeek
+  - cheap long-eval triage: Gemini Flash, Haiku, DeepSeek
 
 ### 3. Agent instructions
 
@@ -215,11 +215,11 @@ Update MUSCLE's Claude/plugin skill docs so agents know:
 
 Add a dedicated "Consensus Playbook" document plus plugin skill updates in `tools/muscle/plugin/skills/code-review/SKILL.md` and the new consensus command docs.
 
-## Nightly Review Upgrade
+## Long Evaluation Upgrade
 
-Upgrade nightly review from a simple local JSON summary into a multi-stage escalation pipeline.
+Upgrade long evaluation from a simple local JSON summary into a multi-stage escalation pipeline.
 
-Nightly flow:
+Long evaluation flow:
 
 1. Run standard MUSCLE local review over configured targets
 2. Cluster findings by severity, subsystem, and recurrence
@@ -227,19 +227,19 @@ Nightly flow:
    - run supervisor pass if a second opinion is needed
    - run full consensus if findings are complex, cross-file, security-sensitive, architectural, or still unresolved
 4. Generate:
-   - nightly raw report
+   - long evaluation raw report
    - escalation report
    - distilled lessons for memory intake
 5. Feed results into the learning pipeline with provenance and retention rules
 
-Nightly defaults:
+Long evaluation defaults:
 
 - low/medium findings: local only
 - high findings: supervisor unless confidence already high
 - critical or complex multi-file findings: consensus
-- cap external nightly spend by profile; skip lower-priority escalations when budget is exhausted
+- cap external long-eval spend by profile; skip lower-priority escalations when budget is exhausted
 
-Nightly report sections:
+Long evaluation report sections:
 
 - local findings summary
 - escalated findings summary
@@ -280,10 +280,10 @@ Persist these fields alongside review runs/findings so later pattern detection a
   - critical repeated lessons publish to root `CLAUDE.md`
   - low-signal findings stay in internal memory only
   - raw consensus payloads stay in reports/DB, not root memory
-- Nightly tests:
-  - nightly local pass works unchanged when external consensus is disabled
+- Long evaluation tests:
+  - long-eval local pass works unchanged when external consensus is disabled
   - high/critical findings trigger supervisor/consensus escalation
-  - timeout/auth/credit failures degrade cleanly without breaking nightly reporting
+  - timeout/auth/credit failures degrade cleanly without breaking long-eval reporting
 - Skill/docs tests:
   - plugin instructions mention the new command and decision rules consistently
   - generated model guide matches catalog entries and does not drift silently

@@ -1,0 +1,40 @@
+name: review-fix-verify
+description: |
+  Smart review with fix and validation stages.
+  Classify scope, run the committee, synthesize findings, apply safe fixes,
+  validate the result, and emit structured artifacts.
+nodes:
+  - id: classify
+    type: classify
+  - id: correctness-security
+    type: review_agent
+    agent: correctness_security
+    depends_on: [classify]
+    when: agent_enabled:correctness_security
+  - id: error-handling
+    type: review_agent
+    agent: error_handling_concurrency
+    depends_on: [classify]
+    when: agent_enabled:error_handling_concurrency
+  - id: test-impact
+    type: review_agent
+    agent: test_impact_coverage
+    depends_on: [classify]
+    when: agent_enabled:test_impact_coverage
+  - id: docs-impact
+    type: review_agent
+    agent: docs_api_impact
+    depends_on: [classify]
+    when: agent_enabled:docs_api_impact
+  - id: synthesize
+    type: synthesize
+    depends_on: [correctness-security, error-handling, test-impact, docs-impact]
+  - id: fix
+    type: fix
+    depends_on: [synthesize]
+  - id: validate
+    type: validate
+    depends_on: [fix]
+  - id: gate
+    type: gate
+    depends_on: [validate]

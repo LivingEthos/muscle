@@ -2,16 +2,16 @@
 Unit tests for code_review/shadow_worker.py (W3-A).
 """
 
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock
 
 import pytest
 
 from tools.muscle.code_review.shadow_worker import (
+    WORKER_DEFAULT_TIMEOUT_SECONDS,
     JobTask,
     ShadowWorker,
     WorkerConfig,
     WorkerManager,
-    WORKER_DEFAULT_TIMEOUT_SECONDS,
 )
 
 
@@ -34,6 +34,7 @@ class TestJobTask:
             intensity=Mock(),
         )
         assert task.job_id == "test-1"
+        assert task.execution_mode == "local"
         assert task.retry_count == 0
         assert task.last_error is None
         assert task.timeout_seconds == WORKER_DEFAULT_TIMEOUT_SECONDS
@@ -250,6 +251,23 @@ class TestWorkerManager:
         assert job is not None
         assert job["timeout_seconds"] == 600
         assert job["token_budget"] == 50000
+
+    def test_submit_shadow_job_persists_execution_mode(self, tmp_project):
+        from tools.muscle.code_review.types import Intensity, ReviewMode
+
+        mgr = WorkerManager(project_path=str(tmp_project))
+        worker = mgr.get_worker()
+        worker.config.poll_interval = 0.1
+
+        job_id = mgr.submit_shadow_job(
+            "/src",
+            ReviewMode.AUTO_FIX,
+            Intensity.MODERATE,
+            execution_mode="worktree",
+        )
+        job = mgr.get_broker().get_job(job_id)
+        assert job is not None
+        assert job["execution_mode"] == "worktree"
 
     def test_project_path_property(self, tmp_project):
         mgr = WorkerManager(project_path=str(tmp_project))

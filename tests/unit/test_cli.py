@@ -6,7 +6,7 @@ Covers:
   _serialize_json, _session_report_to_dict
 - _event_handler via LoopEvent emission
 - Commands: init, tui, history, resume, abort, check, kb, cost, improve,
-  nightly, probe, diagnosis, lifeline (review already covered in test_cli_review.py)
+  long-eval, probe, diagnosis, lifeline (review already covered in test_cli_review.py)
 """
 
 from __future__ import annotations
@@ -46,10 +46,11 @@ from tools.muscle.cli import (
     memory_group,
     memory_history,
     memory_status,
-    nightly_group,
+    long_eval_group,
     probe,
     resume,
     run,
+    settings_group,
     skills_group,
     skills_list,
     status,
@@ -407,14 +408,18 @@ class TestInitCommand:
     def runner(self):
         return CliRunner()
 
-    def test_init_non_interactive(self, runner):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = runner.invoke(
-                init,
-                ["--non-interactive"],
-                catch_exceptions=False,
-            )
-            assert result.exit_code == 0
+    def test_init_non_interactive(self, runner, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(
+            init,
+            ["--non-interactive"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        config_path = tmp_path / ".muscle" / "config.yaml"
+        assert config_path.exists()
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        assert config["project"]["review_execution"] == "local"
 
     def test_init_interactive_detects_no_project(self, runner):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -811,52 +816,95 @@ class TestImproveGroup:
         assert result.exit_code == 0
 
 
-class TestNightlyGroup:
-    """Integration tests for nightly subcommands."""
+class TestLongEvalGroup:
+    """Integration tests for long-eval subcommands."""
 
     @pytest.fixture
     def runner(self):
         return CliRunner()
 
-    def test_nightly_enable(self, runner):
+    def test_long_eval_run(self, runner, tmp_path):
         result = runner.invoke(
-            nightly_group,
-            ["enable", "--time", "02:00"],
-            catch_exceptions=False,
-        )
-        assert result.exit_code == 0
-
-    def test_nightly_disable(self, runner):
-        result = runner.invoke(nightly_group, ["disable"], catch_exceptions=False)
-        assert result.exit_code == 0
-
-    def test_nightly_status(self, runner):
-        result = runner.invoke(nightly_group, ["status"], catch_exceptions=False)
-        assert result.exit_code == 0
-
-    def test_nightly_reports(self, runner):
-        result = runner.invoke(nightly_group, ["reports", "--limit", "10"], catch_exceptions=False)
-        assert result.exit_code == 0
-
-    def test_nightly_cleanup_without_force(self, runner):
-        result = runner.invoke(nightly_group, ["cleanup", "--days", "7"], catch_exceptions=True)
-        assert result.exit_code != 0
-
-    def test_nightly_cleanup_with_force(self, runner):
-        result = runner.invoke(
-            nightly_group,
-            ["cleanup", "--days", "7", "--force"],
-            catch_exceptions=False,
-        )
-        assert result.exit_code == 0
-
-    def test_nightly_run(self, runner, tmp_path):
-        result = runner.invoke(
-            nightly_group,
+            long_eval_group,
             ["run", "--target", str(tmp_path)],
             catch_exceptions=False,
         )
         assert result is not None
+
+    def test_long_eval_reports(self, runner):
+        result = runner.invoke(
+            long_eval_group, ["reports", "--limit", "10"], catch_exceptions=False
+        )
+        assert result.exit_code == 0
+
+    def test_long_eval_cleanup_without_force(self, runner):
+        result = runner.invoke(long_eval_group, ["cleanup", "--days", "7"], catch_exceptions=True)
+        assert result.exit_code != 0
+
+    def test_long_eval_cleanup_with_force(self, runner):
+        result = runner.invoke(
+            long_eval_group,
+            ["cleanup", "--days", "7", "--force"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        assert result is not None
+
+    def test_long_eval_benchmark(self, runner):
+        with patch("tools.muscle.code_review.review_benchmark.ReviewBenchmarkRunner") as mock_cls:
+            mock_runner = MagicMock()
+            mock_runner.run_benchmark.return_value = {
+                "aggregate": {
+                    "baseline": {
+                        "high_critical_recall": 0.4,
+                        "false_positive_rate": 0.1,
+                        "tokens_used": 100,
+                    },
+                    "candidate": {
+                        "high_critical_recall": 0.6,
+                        "false_positive_rate": 0.08,
+                        "tokens_used": 90,
+                    },
+                },
+                "thresholds": {
+                    "high_critical_recall_up_20pct": True,
+                    "false_positive_rate_not_worse": True,
+                    "token_cost_down_30pct": False,
+                },
+                "report_paths": {"json": "/tmp/benchmark.json"},
+            }
+            mock_cls.return_value = mock_runner
+            result = runner.invoke(long_eval_group, ["benchmark"], catch_exceptions=False)
+            assert result.exit_code == 0
+
+
+class TestSettingsGroup:
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_settings_show_includes_review_execution(self, runner, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(init, ["--non-interactive"], catch_exceptions=False)
+
+        result = runner.invoke(settings_group, ["show"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "Review Execution" in result.output
+        assert "local" in result.output
+
+    def test_settings_review_updates_execution_mode(self, runner, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(init, ["--non-interactive"], catch_exceptions=False)
+
+        result = runner.invoke(
+            settings_group,
+            ["review", "--execution", "worktree"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        config = json.loads((tmp_path / ".muscle" / "config.yaml").read_text(encoding="utf-8"))
+        assert config["project"]["review_execution"] == "worktree"
+        assert config["project"]["review_gate"] == "block+fix"
 
 
 class TestBackupsGroup:
@@ -878,32 +926,24 @@ class TestBackupsGroup:
 
     def test_backups_list_invalid_type(self, runner):
         """List command handles invalid backup type (with or without DB)."""
-        result = runner.invoke(
-            backups_group, ["list", "--type", "invalid"], catch_exceptions=True
-        )
+        result = runner.invoke(backups_group, ["list", "--type", "invalid"], catch_exceptions=True)
         # Either gracefully handles it (exit 0 with error message) or fails on DB env
         assert result.exit_code == 0 or "Invalid backup type" in result.output
 
     def test_backups_list_valid_types(self, runner):
         """List command accepts each valid backup type."""
         for btype in ("full", "claude_md", "config", "memory"):
-            result = runner.invoke(
-                backups_group, ["list", "--type", btype], catch_exceptions=False
-            )
+            result = runner.invoke(backups_group, ["list", "--type", btype], catch_exceptions=False)
             assert result.exit_code == 0
 
     def test_backups_show_nonexistent(self, runner):
         """Show command handles nonexistent backup ID."""
-        result = runner.invoke(
-            backups_group, ["show", "99999"], catch_exceptions=False
-        )
+        result = runner.invoke(backups_group, ["show", "99999"], catch_exceptions=False)
         assert result.exit_code == 0  # gracefully handles not found
 
     def test_backups_restore_nonexistent(self, runner):
         """Restore command handles nonexistent backup ID."""
-        result = runner.invoke(
-            backups_group, ["restore", "99999"], catch_exceptions=False
-        )
+        result = runner.invoke(backups_group, ["restore", "99999"], catch_exceptions=False)
         assert result.exit_code == 0  # gracefully handles not found
 
     def test_backups_restore_dry_run(self, runner):
@@ -937,7 +977,8 @@ class TestDiagnosisCommand:
     def runner(self):
         return CliRunner()
 
-    def test_diagnosis_no_job_id(self, runner):
+    def test_diagnosis_no_job_id(self, runner, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
         result = runner.invoke(diagnosis, [], catch_exceptions=False)
         assert result.exit_code == 1
 
@@ -1181,9 +1222,7 @@ class TestSkillsGroup:
         with tempfile.TemporaryDirectory() as tmpdir:
             skills_dir = Path(tmpdir) / ".muscle" / "skills"
             skills_dir.mkdir(parents=True)
-            result = runner.invoke(
-                skills_list, ["--path", str(skills_dir)], catch_exceptions=False
-            )
+            result = runner.invoke(skills_list, ["--path", str(skills_dir)], catch_exceptions=False)
             assert result.exit_code == 0
             assert "no skills" in result.output.lower()
 
@@ -1195,9 +1234,7 @@ class TestSkillsGroup:
             (skills_dir / "test_skill.md").write_text("# Test Skill")
             (skills_dir / "another.md").write_text("# Another")
 
-            result = runner.invoke(
-                skills_list, ["--path", str(skills_dir)], catch_exceptions=False
-            )
+            result = runner.invoke(skills_list, ["--path", str(skills_dir)], catch_exceptions=False)
             assert result.exit_code == 0
             assert "test_skill" in result.output
             assert "another" in result.output
@@ -1210,8 +1247,9 @@ class TestAgentsGroup:
     def runner(self):
         return CliRunner()
 
-    def test_agents_list_no_dir(self, runner):
+    def test_agents_list_no_dir(self, runner, tmp_path, monkeypatch):
         """agents list handles missing agents directory gracefully."""
+        monkeypatch.chdir(tmp_path)
         result = runner.invoke(agents_list, [], catch_exceptions=False)
         assert result.exit_code == 0
         assert "not found" in result.output.lower() or "no agents" in result.output.lower()
@@ -1221,9 +1259,7 @@ class TestAgentsGroup:
         with tempfile.TemporaryDirectory() as tmpdir:
             agents_dir = Path(tmpdir) / ".muscle" / "agents"
             agents_dir.mkdir(parents=True)
-            result = runner.invoke(
-                agents_list, ["--path", str(agents_dir)], catch_exceptions=False
-            )
+            result = runner.invoke(agents_list, ["--path", str(agents_dir)], catch_exceptions=False)
             assert result.exit_code == 0
             assert "no agents" in result.output.lower()
 
@@ -1235,9 +1271,7 @@ class TestAgentsGroup:
             (agents_dir / "coder.md").write_text("# Coder Agent")
             (agents_dir / "reviewer.md").write_text("# Reviewer Agent")
 
-            result = runner.invoke(
-                agents_list, ["--path", str(agents_dir)], catch_exceptions=False
-            )
+            result = runner.invoke(agents_list, ["--path", str(agents_dir)], catch_exceptions=False)
             assert result.exit_code == 0
             assert "coder" in result.output
             assert "reviewer" in result.output

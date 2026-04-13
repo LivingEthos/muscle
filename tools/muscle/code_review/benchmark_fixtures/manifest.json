@@ -1,0 +1,70 @@
+{
+  "scenarios": [
+    {
+      "name": "python_security_basics",
+      "target_path": "python/bad_code.py",
+      "false_positive_severity": "medium",
+      "expected_findings": [
+        {
+          "file_path": "bad_code.py",
+          "minimum_severity": "critical",
+          "matchers": ["eval", "unsafe"]
+        },
+        {
+          "file_path": "bad_code.py",
+          "minimum_severity": "high",
+          "matchers": ["sql injection", "parameterized", "query"]
+        },
+        {
+          "file_path": "bad_code.py",
+          "minimum_severity": "high",
+          "matchers": ["hardcoded", "password", "secret", "api key"]
+        }
+      ]
+    },
+    {
+      "name": "javascript_server_risks",
+      "target_path": "javascript/buggy_server.js",
+      "false_positive_severity": "medium",
+      "expected_findings": [
+        {
+          "file_path": "buggy_server.js",
+          "minimum_severity": "high",
+          "matchers": ["xss", "unsanitized", "response"]
+        },
+        {
+          "file_path": "buggy_server.js",
+          "minimum_severity": "high",
+          "matchers": ["sql injection", "query", "string concatenation"]
+        },
+        {
+          "file_path": "buggy_server.js",
+          "minimum_severity": "medium",
+          "matchers": ["error handling", "readfilesync", "file"]
+        }
+      ]
+    },
+    {
+      "name": "typescript_auth_issues",
+      "target_path": "typescript/auth_service.ts",
+      "false_positive_severity": "medium",
+      "expected_findings": [
+        {
+          "file_path": "auth_service.ts",
+          "minimum_severity": "high",
+          "matchers": ["plaintext password", "password", "createuser"]
+        },
+        {
+          "file_path": "auth_service.ts",
+          "minimum_severity": "high",
+          "matchers": ["authorization", "idor", "getuserdata"]
+        },
+        {
+          "file_path": "auth_service.ts",
+          "minimum_severity": "medium",
+          "matchers": ["unhandled", "promise", "deleteuser"]
+        }
+      ]
+    }
+  ]
+}

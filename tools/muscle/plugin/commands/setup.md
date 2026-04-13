@@ -13,6 +13,12 @@ If action is "init" or no MUSCLE installation exists (no `.muscle/` directory), 
 muscle init --non-interactive
 ```
 
+To switch fix execution between the local checkout and isolated worktrees:
+```bash
+muscle settings review --execution local
+muscle settings review --execution worktree
+```
+
 To enable MUSCLE after initialization:
 ```bash
 muscle enable

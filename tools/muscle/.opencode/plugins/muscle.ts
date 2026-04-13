@@ -7,6 +7,7 @@ import { join } from "path"
 interface MuscleConfig {
   hooks_enabled: boolean
   review_gate: string
+  review_execution: "local" | "worktree"
   automation_level: string
   api_key_source: "env" | "opencode" | "ask"
   platform: "opencode" | "claude-code" | "auto"
@@ -17,6 +18,7 @@ function loadMuscleConfig(worktree: string): MuscleConfig {
   const defaultConfig: MuscleConfig = {
     hooks_enabled: true,
     review_gate: "block+fix",
+    review_execution: "local",
     automation_level: "auto-fix",
     api_key_source: "env",
     platform: "auto",
@@ -32,6 +34,7 @@ function loadMuscleConfig(worktree: string): MuscleConfig {
     return {
       hooks_enabled: parsed.project?.hooks_enabled ?? true,
       review_gate: parsed.project?.review_gate ?? "block+fix",
+      review_execution: parsed.project?.review_execution ?? "local",
       automation_level: parsed.project?.automation_level ?? "auto-fix",
       api_key_source: parsed.project?.api_key_source ?? "env",
       platform: parsed.project?.platform ?? "auto",
@@ -88,7 +91,11 @@ export const MusclePlugin: Plugin = async ({ client, directory, worktree }) => {
       })
 
       try {
-        const result = await $`muscle review --target ${targetPath} --mode ${mode} --severity low --format text`.text()
+        const cmd = ["review", "--target", targetPath, "--mode", mode, "--severity", "low", "--format", "text"]
+        if (config.review_execution === "worktree") {
+          cmd.push("--execution", "worktree")
+        }
+        const result = await runMuscle(cmd)
         if (result.includes("Critical:") || result.includes("High:")) {
           await client.tui.showToast({
             body: { message: "MUSCLE: Issues found! Review recommended.", variant: "warning" },
@@ -116,10 +123,12 @@ export const MusclePlugin: Plugin = async ({ client, directory, worktree }) => {
 
     tool: {
       muscle_review: tool({
-        description: "MUSCLE code review - find issues, auto-fix, generate plans. Modes: review (standard), pressure (adversarial), auto-fix, plan (generate plan), hybrid (fix + plan).",
+        description: "MUSCLE code review - find issues, auto-fix, generate plans, and run workflow-driven review committees. Modes: review (standard), pressure (adversarial), auto-fix, plan (generate plan), hybrid (fix + plan).",
         args: {
           target: tool.schema.string().describe("Target path to review (file or directory)"),
           mode: tool.schema.string().optional().describe("Review mode: review, pressure, auto-fix, plan, hybrid"),
+          workflow: tool.schema.string().optional().describe("Workflow profile: review-smart, review-comprehensive, review-fix-verify, pressure-review"),
+          execution: tool.schema.string().optional().describe("Fix execution mode: local or worktree"),
           severity: tool.schema.string().optional().describe("Minimum severity: critical, high, medium, low"),
           language: tool.schema.string().optional().describe("Programming language (auto-detected if not specified)"),
           format: tool.schema.string().optional().describe("Output format: text, json"),
@@ -133,6 +142,8 @@ export const MusclePlugin: Plugin = async ({ client, directory, worktree }) => {
         async execute(args) {
           const cmd = ["review", "--target", args.target]
           if (args.mode) cmd.push("--mode", args.mode)
+          if (args.workflow) cmd.push("--workflow", args.workflow)
+          if (args.execution) cmd.push("--execution", args.execution)
           if (args.severity) cmd.push("--severity", args.severity)
           if (args.language) cmd.push("--language", args.language)
           if (args.format) cmd.push("--format", args.format)
@@ -326,7 +337,7 @@ export const MusclePlugin: Plugin = async ({ client, directory, worktree }) => {
       }),
 
       muscle_settings_show: tool({
-        description: "MUSCLE settings - show current configuration including project, platform, API key source, hooks, CLI path, review gate mode, and automation level.",
+        description: "MUSCLE settings - show current configuration including project, platform, API key source, hooks, CLI path, review gate mode, review execution mode, and automation level.",
         args: {},
         async execute() {
           return await runMuscle(["settings", "show"])
@@ -361,6 +372,18 @@ export const MusclePlugin: Plugin = async ({ client, directory, worktree }) => {
         },
       }),
 
+      muscle_settings_review: tool({
+        description: "MUSCLE settings - configure review execution behavior including local versus worktree fix isolation.",
+        args: {
+          execution: tool.schema.string().optional().describe("Review execution mode: local or worktree"),
+        },
+        async execute(args) {
+          const cmd = ["settings", "review"]
+          if (args.execution) cmd.push("--execution", args.execution)
+          return await runMuscle(cmd)
+        },
+      }),
+
       muscle_settings_platform: tool({
         description: "MUSCLE settings - configure platform and CLI settings.",
         args: {
@@ -380,12 +403,14 @@ export const MusclePlugin: Plugin = async ({ client, directory, worktree }) => {
         args: {
           platform: tool.schema.string().optional().describe("Target platform: auto, opencode, claude-code"),
           hooks: tool.schema.boolean().optional().describe("Enable (true) or disable (false) post-task review hooks"),
+          review_execution: tool.schema.string().optional().describe("Default fix execution mode: local or worktree"),
           non_interactive: tool.schema.boolean().optional().describe("Skip interactive prompts (use defaults)"),
         },
         async execute(args) {
           const cmd = ["init"]
           if (args.platform) cmd.push("--platform", args.platform)
           if (args.hooks === false) cmd.push("--no-hooks")
+          if (args.review_execution) cmd.push("--review-execution", args.review_execution)
           if (args.non_interactive) cmd.push("--non-interactive")
           return await runMuscle(cmd)
         },
@@ -408,6 +433,23 @@ export const MusclePlugin: Plugin = async ({ client, directory, worktree }) => {
           if (args.limit) cmd.push("--limit", String(args.limit))
           if (args.days) cmd.push("--days", String(args.days))
           if (args.force) cmd.push("--force")
+          return await runMuscle(cmd)
+        },
+      }),
+
+      muscle_long_eval_benchmark: tool({
+        description: "MUSCLE benchmark runner - compare legacy and workflow review pipelines against fixtures and optional history replay.",
+        args: {
+          baseline: tool.schema.string().optional().describe("Baseline pipeline: legacy, review-smart, review-comprehensive"),
+          candidate: tool.schema.string().optional().describe("Candidate pipeline: review-smart, review-comprehensive, review-fix-verify"),
+          history: tool.schema.boolean().optional().describe("Include review history replay for cost and trend metrics"),
+        },
+        async execute(args) {
+          const cmd = ["long-eval", "benchmark"]
+          if (args.baseline) cmd.push("--baseline", args.baseline)
+          if (args.candidate) cmd.push("--candidate", args.candidate)
+          if (args.history === true) cmd.push("--history")
+          if (args.history === false) cmd.push("--no-history")
           return await runMuscle(cmd)
         },
       }),

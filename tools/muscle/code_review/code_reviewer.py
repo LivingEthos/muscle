@@ -186,6 +186,7 @@ class CodeReviewer:
             "medium": 0,
             "low": 0,
             "info": 0,
+            "token_usage": 0,
         }
 
         if issues_by_file:
@@ -249,6 +250,7 @@ class CodeReviewer:
                     summary["medium"] += file_summary["medium"]
                     summary["low"] += file_summary["low"]
                     summary["info"] += file_summary["info"]
+                    summary["token_usage"] += file_summary.get("token_usage", 0)
                 except Exception as e:
                     logger.warning(f"File review failed for {file_path}: {e}")
 
@@ -327,6 +329,7 @@ Provide your review in JSON format."""
                 "medium": 0,
                 "low": 0,
                 "info": 0,
+                "token_usage": usage.total if usage else 0,
             }
 
         try:
@@ -366,6 +369,7 @@ Provide your review in JSON format."""
                 )
 
             summary = data.get("summary", {})
+            summary["token_usage"] = usage.total if usage else 0
             return reviews, summary
 
         except json.JSONDecodeError as e:
@@ -380,6 +384,7 @@ Provide your review in JSON format."""
                 "medium": 0,
                 "low": 0,
                 "info": 0,
+                "token_usage": usage.total if usage else 0,
             }
 
     @staticmethod
@@ -495,7 +500,10 @@ Your goal is to expose weaknesses, hidden risks, and assumptions. Think like an 
 
         if not response_text or not response_text.strip():
             logger.warning("All attempts returned empty response for pressure review")
-            return {"findings": [], "summary": {"total": 0, "critical": 0, "high": 0}}
+            return {
+                "findings": [],
+                "summary": {"total": 0, "critical": 0, "high": 0, "token_usage": 0},
+            }
 
         try:
             json_text = response_text.strip()
@@ -509,6 +517,9 @@ Your goal is to expose weaknesses, hidden risks, and assumptions. Think like an 
                 json_text = "\n".join(json_lines).strip()
             data = json.loads(json_text)
             assert isinstance(data, dict)
+            data.setdefault("summary", {})
+            if isinstance(data["summary"], dict):
+                data["summary"]["token_usage"] = usage.total if usage else 0
             return data
         except json.JSONDecodeError as e:
             logger.warning(f"Initial JSON parse failed: {e}, attempting to extract valid JSON")

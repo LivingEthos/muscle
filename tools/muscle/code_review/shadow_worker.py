@@ -20,6 +20,7 @@ Architecture:
 from __future__ import annotations
 
 import atexit
+import json
 import logging
 import queue
 import signal
@@ -27,6 +28,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -59,6 +61,7 @@ class JobTask:
     target_path: str
     mode: ReviewMode
     intensity: Intensity
+    execution_mode: str = "local"
     project_path: str | None = None
     retry_count: int = 0
     last_error: str | None = None
@@ -66,6 +69,11 @@ class JobTask:
     timeout_seconds: int = WORKER_DEFAULT_TIMEOUT_SECONDS
     token_budget: int | None = None
     changed_files: list[str] | None = None
+    workflow_name: str | None = None
+    worktree_path: str | None = None
+    base_branch: str | None = None
+    artifact_dir: str | None = None
+    scope_json: str | None = None
 
 
 class ShadowWorker:
@@ -149,10 +157,12 @@ class ShadowWorker:
         target_path: str,
         mode: ReviewMode,
         intensity: Intensity,
+        execution_mode: str = "local",
         project_path: str | None = None,
         timeout_seconds: int = WORKER_DEFAULT_TIMEOUT_SECONDS,
         token_budget: int | None = None,
         changed_files: list[str] | None = None,
+        workflow_name: str | None = None,
     ) -> None:
         """
         Enqueue a job for background processing.
@@ -182,10 +192,12 @@ class ShadowWorker:
             target_path=target_path,
             mode=mode,
             intensity=intensity,
+            execution_mode=execution_mode,
             project_path=project_path,
             timeout_seconds=timeout_seconds,
             token_budget=token_budget,
             changed_files=changed_files,
+            workflow_name=workflow_name,
         )
         self._job_queue.put(task)
         self._last_job_time = time.time()
@@ -241,8 +253,6 @@ class ShadowWorker:
                             continue
                         self._in_progress_jobs.add(job_id)
 
-                    import json
-
                     changed_files = None
                     changed_json = job.get("changed_files_json")
                     if changed_json:
@@ -256,10 +266,16 @@ class ShadowWorker:
                         target_path=job.get("target_path", ""),
                         mode=self._parse_review_mode(job.get("mode", "review")),
                         intensity=self._parse_intensity(job.get("intensity", "moderate")),
+                        execution_mode=job.get("execution_mode", "local"),
                         project_path=job.get("project_path"),
                         timeout_seconds=job.get("timeout_seconds", WORKER_DEFAULT_TIMEOUT_SECONDS),
                         token_budget=job.get("token_budget"),
                         changed_files=changed_files,
+                        workflow_name=job.get("workflow_name"),
+                        worktree_path=job.get("worktree_path"),
+                        base_branch=job.get("base_branch"),
+                        artifact_dir=job.get("artifact_dir"),
+                        scope_json=job.get("scope_json"),
                     )
                     self._job_queue.put(task)
                     self.broker.start_job(job_id)
@@ -351,17 +367,50 @@ class ShadowWorker:
                 logger.debug(f"Job {task.job_id} budget: {task.token_budget} tokens")
 
             m27 = M27Client()
+            effective_target = task.target_path
+            resolved_target = Path(task.target_path).resolve()
+            project_root = task.project_path or str(
+                resolved_target.parent if resolved_target.is_file() else resolved_target
+            )
+            workflow_name = task.workflow_name
+            requested_execution_mode = task.execution_mode or "local"
+            effective_execution_mode = (
+                "worktree"
+                if requested_execution_mode == "worktree"
+                and task.mode.value in {"auto_fix", "hybrid"}
+                else "local"
+            )
+
             config = ReviewConfig(
-                target_path=task.target_path,
+                target_path=effective_target,
                 mode=task.mode,
                 intensity=task.intensity,
+                workflow_name=workflow_name,
+                execution_mode=effective_execution_mode,
+                worktree_enabled=effective_execution_mode == "worktree",
             )
             controller = ReviewController(
                 config=config,
                 m27_client=m27,
                 use_kb=False,
+                project_path=project_root,
             )
             result = controller.run()
+            review_result = controller.get_review_result()
+            if review_result:
+                self.broker.update_job_metadata(
+                    task.job_id,
+                    execution_mode=effective_execution_mode,
+                    workflow_name=review_result.workflow_name,
+                    worktree_path=review_result.worktree_path,
+                    base_branch=review_result.base_branch,
+                    artifact_dir=review_result.artifact_dir,
+                    scope_json=(
+                        json.dumps(review_result.scope_summary)
+                        if review_result.scope_summary is not None
+                        else None
+                    ),
+                )
 
             # Record token usage if budget tracking was enabled
             if budget_manager is not None:
@@ -382,6 +431,15 @@ class ShadowWorker:
                     "info": sum(1 for i in result.issues if i.severity.value == 1),
                 },
                 "changed_files": task.changed_files,
+                "workflow_name": workflow_name,
+                "execution_mode": effective_execution_mode,
+                "artifact_dir": review_result.artifact_dir if review_result else None,
+                "scope": review_result.scope_summary if review_result else None,
+                "worktree_path": review_result.worktree_path if review_result else None,
+                "base_branch": review_result.base_branch if review_result else None,
+                "sync_summary": review_result.sync_summary if review_result else None,
+                "applied_back_files": review_result.applied_back_files if review_result else [],
+                "cleanup_status": getattr(result, "cleanup_status", None),
             }
         except Exception as e:
             logger.error(f"Default job processor failed: {e}")
@@ -455,9 +513,11 @@ class WorkerManager:
         target_path: str,
         mode: ReviewMode,
         intensity: Intensity,
+        execution_mode: str = "local",
         timeout_seconds: int = WORKER_DEFAULT_TIMEOUT_SECONDS,
         token_budget: int | None = None,
         changed_files: list[str] | None = None,
+        workflow_name: str | None = None,
     ) -> str:
         """
         Create and submit a shadow job for background processing.
@@ -482,19 +542,23 @@ class WorkerManager:
             target_path=target_path,
             mode=mode,
             intensity=intensity,
+            execution_mode=execution_mode,
             changed_files=changed_files,
             timeout_seconds=timeout_seconds,
             token_budget=token_budget,
+            workflow_name=workflow_name,
         )
         self.get_worker().submit_job(
             job_id=actual_job_id,
             target_path=target_path,
             mode=mode,
             intensity=intensity,
+            execution_mode=execution_mode,
             project_path=self._project_path,
             timeout_seconds=timeout_seconds,
             token_budget=token_budget,
             changed_files=changed_files,
+            workflow_name=workflow_name,
         )
         return actual_job_id
 

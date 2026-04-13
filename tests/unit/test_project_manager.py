@@ -22,6 +22,7 @@ class TestProjectConfig:
         assert config.name == "test-project"
         assert config.automation_level == "auto-fix"
         assert config.github_enabled is False
+        assert config.review_execution == "local"
 
 
 class TestProjectManager:
@@ -47,6 +48,9 @@ class TestProjectManager:
         assert (tmp_path / ".muscle" / "skills").exists()
         assert (tmp_path / ".muscle" / "logs").exists()
         assert (tmp_path / ".muscle" / "config.yaml").exists()
+        loaded = manager.load_config(tmp_path)
+        assert loaded is not None
+        assert loaded.review_execution == "local"
 
     def test_create_memory_files(self, manager, tmp_path):
         muscle_dir = tmp_path / ".muscle"
@@ -80,6 +84,20 @@ class TestProjectManager:
             with patch.object(Path, "exists", return_value=False):
                 projects = manager.find_all_projects()
         assert isinstance(projects, list)
+
+    def test_load_nearest_config(self, manager, tmp_path):
+        config = ProjectConfig(
+            name="test-project",
+            path=tmp_path,
+            languages=["python"],
+        )
+        assert manager.init_project(config) is True
+
+        nested = tmp_path / "src" / "package"
+        nested.mkdir(parents=True)
+        loaded = manager.load_nearest_config(nested)
+        assert loaded is not None
+        assert loaded.path == tmp_path
 
     def test_language_detection_python(self, manager, tmp_path):
         (tmp_path / "pyproject.toml").write_text("[project]\nname = 'test'")

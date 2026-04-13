@@ -37,7 +37,7 @@ CLI_GROUPS = {
     "kb",
     "cost",
     "improve",
-    "nightly",
+    "long-eval",
     "settings",
 }
 
@@ -46,8 +46,8 @@ CLI_SUBCOMMANDS = {
     "kb": {"stats", "export", "import", "clear", "knowledge-add"},
     "cost": {"stats", "clear"},
     "improve": {"report", "export", "import", "clear", "prompt"},
-    "nightly": {"enable", "disable", "status"},
-    "settings": {"show", "api-key", "hooks", "platform", "reset"},
+    "long-eval": {"run", "reports", "cleanup", "benchmark"},
+    "settings": {"show", "api-key", "hooks", "platform", "reset", "review"},
 }
 
 # Commands documented but known NOT to exist in CLI

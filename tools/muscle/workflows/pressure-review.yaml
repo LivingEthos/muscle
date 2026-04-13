@@ -1,0 +1,18 @@
+name: pressure-review
+description: |
+  Pressure review workflow.
+  Challenge the implementation for failure modes and design weaknesses,
+  then synthesize the pressure findings into structured artifacts.
+nodes:
+  - id: classify
+    type: classify
+  - id: pressure
+    type: review_agent
+    agent: pressure
+    depends_on: [classify]
+  - id: synthesize
+    type: synthesize
+    depends_on: [pressure]
+  - id: gate
+    type: gate
+    depends_on: [synthesize]

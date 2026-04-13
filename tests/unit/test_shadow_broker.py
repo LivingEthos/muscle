@@ -5,8 +5,6 @@ Unit tests for shadow_broker.py (project-local, W3-A).
 from __future__ import annotations
 
 import json
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -61,7 +59,7 @@ class TestCreateJob:
         assert len(ids) == 5
 
     def test_job_stored_in_project_memory_db(self, broker, tmp_project):
-        job_id = broker.create_job("/target", ReviewMode.REVIEW, Intensity.INTENSIVE)
+        broker.create_job("/target", ReviewMode.REVIEW, Intensity.INTENSIVE)
         db_path = tmp_project / ".muscle" / "project_memory.db"
         assert db_path.exists()
 
@@ -88,6 +86,17 @@ class TestCreateJob:
         job = broker.get_job(job_id)
         assert job["timeout_seconds"] == 600
         assert job["token_budget"] == 50000
+
+    def test_create_job_with_execution_mode(self, broker):
+        job_id = broker.create_job(
+            "/target",
+            ReviewMode.AUTO_FIX,
+            Intensity.MODERATE,
+            execution_mode="worktree",
+        )
+        job = broker.get_job(job_id)
+        assert job is not None
+        assert job["execution_mode"] == "worktree"
 
 
 class TestProjectIsolation:
@@ -262,7 +271,7 @@ class TestGetPendingJobs:
 
 class TestGetRecentJobs:
     def test_returns_jobs_sorted_by_created_at(self, broker):
-        jid1 = broker.create_job("/target1", ReviewMode.REVIEW, Intensity.MINIMAL)
+        broker.create_job("/target1", ReviewMode.REVIEW, Intensity.MINIMAL)
         jid2 = broker.create_job("/target2", ReviewMode.REVIEW, Intensity.MINIMAL)
 
         recent = broker.get_recent_jobs(limit=1)
@@ -314,7 +323,7 @@ class TestClearCompleted:
         assert broker.get_all_jobs() == []
 
     def test_returns_zero_when_nothing_to_clear(self, broker):
-        jid = broker.create_job("/target", ReviewMode.REVIEW, Intensity.MINIMAL)
+        broker.create_job("/target", ReviewMode.REVIEW, Intensity.MINIMAL)
 
         cleared = broker.clear_completed()
         assert cleared == 0

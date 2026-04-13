@@ -15,7 +15,7 @@ manager.
 - Only for foreground `review`, `plan`, `auto-fix`, and `hybrid` modes
 - No custom lockfile parser
 - No custom cache format
-- No shadow/nightly/pressure support
+- No shadow/long-eval/pressure support
 
 ---
 
@@ -48,7 +48,7 @@ If any of those become desirable later, they should be handled in a separate fol
 ### Out of scope for v1
 
 - `shadow` mode
-- `nightly` mode
+- `long-eval` mode
 - `pressure` mode
 - PyPI, crates, or GitHub repo fetching
 - Persistent MUSCLE-managed source storage beyond what `opensrc` already provides
@@ -364,7 +364,7 @@ Do not invoke this builder in:
 
 - pressure mode
 - shadow worker
-- nightly runner
+- long evaluation runner
 
 Failure handling rule:
 
@@ -394,7 +394,7 @@ Expected implementation touch points:
 Files that should not change in v1:
 
 - `tools/muscle/code_review/shadow_worker.py`
-- `tools/muscle/code_review/nightly_runner.py`
+- `tools/muscle/code_review/long_eval_runner.py`
 - `tools/muscle/code_review/fix_generator.py`
 - `tools/muscle/code_review/verification_loop.py`
 - MUSCLE database schema or migrations
@@ -515,6 +515,6 @@ Stretch acceptance, if convenient but not required:
 After v1 proves useful, consider:
 
 - support for `pressure` mode
-- support for shadow and nightly flows
+- support for shadow and long-eval flows
 - support for PyPI and crates via `opensrc`
 - smarter snippet selection based on imported symbol usage
