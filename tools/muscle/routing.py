@@ -126,12 +126,38 @@ class TaskRouter:
         return hashlib.sha256(json.dumps(pairs).encode()).hexdigest()
 
     def _cache_get(self, key: str) -> dict[str, Any] | None:
-        """No-op until B.3 (response cache) ships. Returns None always."""
-        return None
+        """Look up a cached route decision by key. Returns None on miss."""
+        from .response_cache import ResponseCache
+
+        cache = ResponseCache(self._cache_db)
+        raw_key = key.removeprefix("route:")
+        cached = cache.get(raw_key)
+        if cached is None:
+            return None
+        return {
+            "tier": TaskTier(cached["tier"]),
+            "recommended": Recommendation(cached["recommended"]),
+            "confidence": cached["confidence"],
+            "rationale": cached["rationale"],
+        }
 
     def _cache_put(self, key: str, decision: RouteDecision) -> None:
-        """No-op until B.3 (response cache) ships."""
-        pass
+        """Store a route decision in the response cache with 24h TTL."""
+        from .response_cache import ResponseCache
+
+        cache = ResponseCache(self._cache_db)
+        raw_key = key.removeprefix("route:")
+        cache.put(
+            key=raw_key,
+            model_id="task_router",
+            response={
+                "tier": decision.tier.value,
+                "recommended": decision.recommended.value,
+                "confidence": decision.confidence,
+                "rationale": decision.rationale,
+            },
+            ttl_seconds=24 * 60 * 60,
+        )
 
 
 def _parse_json_response(text: str) -> dict[str, Any]:

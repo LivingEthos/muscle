@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..escalation import EscalationPolicy, EscalationRecord, EscalationRecorder
 from ..m27_client import M27Client
 from .types import ReviewIssue
 
@@ -70,6 +71,31 @@ class VerificationLoop:
             "complexity": complexity,
             "target_type": target_type,
         }
+
+    def _check_escalation(self, result: VerificationResult) -> None:
+        """Emit escalation if verification failures exceed the policy threshold."""
+        project_path = self._runtime_context.get("project_path")
+        session_id = self._runtime_context.get("session_id")
+        if not project_path or not session_id:
+            return
+
+        policy = EscalationPolicy()
+        attempt_count = len(self._failed_fixes)
+        recorder = EscalationRecorder(project_path, policy)
+        if recorder.should_escalate("verification_failure", attempt_count):
+            recorder.emit(
+                EscalationRecord(
+                    session_id=session_id,
+                    reason="verification_failure",
+                    source_module="verification_loop",
+                    issue_summary=(
+                        f"Fix verification failed for {result.issue.file_path}:"
+                        f"{result.issue.line_number} — {result.issue.title}."
+                        f" {attempt_count} cumulative failure(s)."
+                    ),
+                    attempt_count=attempt_count,
+                )
+            )
 
     def verify_fix(self, issue: ReviewIssue, fixed_content: str) -> VerificationResult:
         """Verify a fix is valid before learning from it."""
@@ -135,6 +161,7 @@ class VerificationLoop:
             self._verified_fixes.append(result)
         else:
             self._failed_fixes.append(result)
+            self._check_escalation(result)
 
         return result
 

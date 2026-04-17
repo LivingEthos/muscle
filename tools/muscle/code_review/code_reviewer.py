@@ -19,6 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..escalation import EscalationRecord, EscalationRecorder
 from ..m27_client import M27Client
 from ..optimization.prompt_context import build_telemetry_context, compose_prompt_envelope
 from .types import IssueCategory, PressureFocus, ReviewIssue, Severity
@@ -168,6 +169,25 @@ class CodeReviewer:
         self.context_budgeter = context_budgeter
         self.project_path = project_path or str(Path.cwd())
         self.lesson_resolver = lesson_resolver
+
+    def _emit_schema_escalation(
+        self, file_path: str, attempt_count: int, telemetry_session_id: str | None = None
+    ) -> None:
+        """Emit an escalation when M2.7 exhausts all retries without producing valid JSON."""
+        session_id = telemetry_session_id or "unknown"
+        recorder = EscalationRecorder(self.project_path)
+        recorder.emit(
+            EscalationRecord(
+                session_id=session_id,
+                reason="schema_failure",
+                source_module="code_reviewer",
+                issue_summary=(
+                    f"M2.7 failed to produce valid JSON for {file_path} "
+                    f"after {attempt_count} attempt(s)."
+                ),
+                attempt_count=attempt_count,
+            )
+        )
 
     def review(
         self,
@@ -515,6 +535,11 @@ Provide your review in JSON format."""
                             retry_context.call_id,
                             parse_success=False,
                         )
+                    self._emit_schema_escalation(
+                        file_path=file_path,
+                        attempt_count=attempt + 2,
+                        telemetry_session_id=telemetry_session_id,
+                    )
             return [], {
                 "total_reviewed": len(issues),
                 "valid_issues": 0,

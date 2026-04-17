@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -883,6 +884,16 @@ def status() -> None:
     except Exception:
         table.add_row("Reviews", "N/A")
 
+    # Escalation summary
+    try:
+        from .escalation import EscalationRecorder
+
+        unresolved = EscalationRecorder.list_unresolved(project_path)
+        if unresolved:
+            table.add_row("Unresolved Escalations", str(len(unresolved)))
+    except Exception:
+        pass
+
     console.print(table)
 
 
@@ -1703,10 +1714,8 @@ def cost_clear(path: str | None, force: bool) -> None:
     console.print(f"[green]Cleared {count} cached items[/green]")
 
 
-def _parse_since(since_str: str):
+def _parse_since(since_str: str) -> timedelta:
     """Parse a human-friendly duration like '7d', '14d', '30d'."""
-    from datetime import timedelta
-
     unit = since_str[-1].lower()
     value = int(since_str[:-1])
     if unit == "d":
@@ -2004,7 +2013,7 @@ def _session_report_to_dict(report: SessionReport) -> dict:
 
 def _serialize_json(data: dict) -> str:
     if _HAS_ORJSON:
-        return orjson.dumps(data, option=orjson.OPT_INDENT_2).decode()
+        return str(orjson.dumps(data, option=orjson.OPT_INDENT_2).decode())
     return json.dumps(data, indent=2)
 
 
@@ -4744,6 +4753,26 @@ def uninstall(force: bool, keep_data: bool, keep_config: bool) -> None:
     )
 
 
+@cli.group(name="cache")
+def cache_group() -> None:
+    """Manage MUSCLE response cache."""
+    pass
+
+
+@cache_group.command(name="clear")
+@click.option(
+    "--older-than", default=None, help="Only clear entries older than this (e.g. '7d', '30d')"
+)
+def cache_clear_cmd(older_than: str | None) -> None:
+    """Clear cached M2.7 responses."""
+    from .response_cache import ResponseCache
+
+    cache = ResponseCache()
+    td = _parse_since(older_than) if older_than else None
+    count = cache.clear(older_than=td)
+    click.echo(f"Cleared {count} cached entries")
+
+
 @cli.command(name="route")
 @click.option("--task", required=True, help="Task description to classify.")
 @click.option("--scope", type=click.Path(exists=True, path_type=Path), default=None)
@@ -4772,6 +4801,55 @@ def route_cmd(task: str, scope: Path | None, as_json: bool) -> None:
         click.echo(f"Recommended: {decision.recommended.value}")
         click.echo(f"Confidence:  {decision.confidence:.2f}")
         click.echo(f"Rationale:   {decision.rationale}")
+
+
+@cli.group(name="escalation")
+def escalation_group() -> None:
+    """Manage MUSCLE escalation records."""
+    pass
+
+
+@escalation_group.command(name="list")
+def escalation_list_cmd() -> None:
+    """List unresolved escalation records."""
+    from .escalation import EscalationRecorder
+
+    unresolved = EscalationRecorder.list_unresolved(Path.cwd())
+    if not unresolved:
+        click.echo("No unresolved escalations.")
+        return
+
+    table = Table(title="Unresolved Escalations")
+    table.add_column("ID", style="cyan")
+    table.add_column("Session", style="green")
+    table.add_column("Reason", style="yellow")
+    table.add_column("Source", style="magenta")
+    table.add_column("Attempts", justify="right")
+    table.add_column("Created", style="dim")
+
+    for row in unresolved:
+        table.add_row(
+            str(row["id"]),
+            row["session_id"],
+            row["reason"],
+            row["source_module"],
+            str(row["attempt_count"]),
+            row["created_at"],
+        )
+    console.print(table)
+
+
+@escalation_group.command(name="resolve")
+@click.argument("escalation_id", type=int)
+def escalation_resolve_cmd(escalation_id: int) -> None:
+    """Mark an escalation as resolved."""
+    from .escalation import EscalationRecorder
+
+    resolved = EscalationRecorder.resolve(Path.cwd(), escalation_id)
+    if resolved:
+        click.echo(f"Escalation {escalation_id} resolved.")
+    else:
+        click.echo(f"Escalation {escalation_id} not found.", err=True)
 
 
 def main() -> None:

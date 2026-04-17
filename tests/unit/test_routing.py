@@ -132,10 +132,10 @@ class TestTaskRouter:
         assert mock_client.chat.call_count == 1
 
         second = router.route("identical task description")
-        # Cache is a no-op until B.3 ships — so second call also hits M2.7.
-        # After B.3 integration, this assertion should change to from_cache=True
-        # and call_count should remain 1.
-        assert mock_client.chat.call_count == 2
+        assert second.from_cache is True
+        assert second.tier == first.tier
+        assert second.recommended == first.recommended
+        assert mock_client.chat.call_count == 1
 
     def test_scope_hint_included_in_prompt(
         self, router: TaskRouter, mock_client: MagicMock, tmp_path: Path

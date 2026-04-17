@@ -18,6 +18,7 @@ import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import requests
@@ -203,6 +204,9 @@ class M27Client:
             raise RuntimeError("M27Client session failed to initialize")
         return session
 
+    # Default TTL for response cache entries (14 days in seconds).
+    DEFAULT_CACHE_TTL = 14 * 24 * 60 * 60
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -212,6 +216,7 @@ class M27Client:
         max_retries: int = MAX_RETRIES,
         rate_limit: float | None = None,
         max_concurrent: int | None = None,
+        cache_db_path: Path | None = None,
     ):
         self.api_key = (
             api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("MINIMAX_API_KEY")
@@ -235,6 +240,7 @@ class M27Client:
         self._last_request_time: float | None = None
         self._telemetry_sink: Any | None = None
         self._model_identity: dict[str, Any] = {}
+        self._cache_db_path: Path | None = cache_db_path
 
     def _configure_limiters(self, rate_limit: float | None, max_concurrent: int | None) -> None:
         with M27Client._init_lock:
@@ -682,10 +688,28 @@ class M27Client:
         """
         from pydantic import ValidationError
 
+        from .response_cache import ResponseCache
+
         schema_hint = (
             f"Reply ONLY with valid JSON matching this schema:\n{schema.model_json_schema()}"
         )
         system_with_schema = f"{system}\n\n{schema_hint}" if system else schema_hint
+
+        # --- Cache lookup ---
+        user_content = "||".join(m.get("content", "") for m in messages if m.get("role") == "user")
+        cache: ResponseCache | None = None
+        cache_key: str | None = None
+        if self._cache_db_path is not None:
+            cache = ResponseCache(self._cache_db_path)
+            cache_key = ResponseCache.build_key(
+                model_id=self.model,
+                system_prompt=system_with_schema,
+                user_prompt=user_content,
+            )
+            cached = cache.get(cache_key)
+            if cached is not None:
+                logger.debug("ResponseCache hit for chat_structured key=%s", cache_key[:12])
+                return schema.model_validate(cached)
 
         last_error: Exception | None = None
         working_messages = list(messages)
@@ -700,7 +724,16 @@ class M27Client:
             parsed_text = _strip_json_fences(response_text)
             try:
                 data = json.loads(parsed_text)
-                return schema.model_validate(data)
+                validated = schema.model_validate(data)
+                # --- Cache store on success ---
+                if cache is not None and cache_key is not None:
+                    cache.put(
+                        key=cache_key,
+                        model_id=self.model,
+                        response=data,
+                        ttl_seconds=M27Client.DEFAULT_CACHE_TTL,
+                    )
+                return validated
             except (json.JSONDecodeError, ValidationError) as e:
                 last_error = e
                 if attempt < retries:
