@@ -1,9 +1,9 @@
 # MUSCLE — Remaining Pre-Release TODOs
 
-**Date:** 2026-04-16
-**Status:** Consolidation of `docs/PRODUCTION_AUDIT_2026-04-16.md` (2026-04-16 audit) and
-`EVALUATION_REPORT.md` (2026-04-04 test evaluation) after the bulk of remediation was
-applied. Both source docs have been retired.
+**Date:** 2026-04-17 (updated)
+**Status:** All 7 🔴 High items resolved 2026-04-17. Features B.3 (response cache),
+B.4 (escalation recorder), and B.5 (pack_id cache isolation) shipped in the same
+session. 1743 tests pass on `main`. Remaining work is 🟠 Medium and 🟡 Low only.
 **Scope:** Only items still open or unverified are listed here. Each entry is
 self-contained and dispatchable to a remediation agent using the handoff format
 at the bottom of this file.
@@ -38,15 +38,9 @@ at the bottom of this file.
 
 ### 1.2 `loop_controller.py`
 
-**[LC-01]** `loop_controller.py:626-631` — 🔴 High / Bug — Budget arithmetic can emit negative "remaining"
-- *Why:* `budget_tokens - total_tokens` wraps negative and propagates to UI/logs/webhooks.
-- *Fix:* Clamp at zero; emit an overspend event exactly once when the boundary is crossed.
-- *Acceptance:* New test in `test_loop_controller.py` that drives `total_tokens > budget_tokens` and asserts `remaining_tokens == 0` plus a single overspend event on the webhook mock.
+**[LC-01]** `loop_controller.py` — ✅ FIXED 2026-04-17 — Budget arithmetic clamped at zero; `BUDGET_OVERSPEND` event emitted once. Commit: `fix: [LC-01, LC-02]`.
 
-**[LC-02]** `loop_controller.py:511-534` — 🔴 High / Concurrency — `resume_context` mutated without lock
-- *Why:* Two `run()` calls on the same context corrupt stats.
-- *Fix:* Deep-copy the context on entry, or require exclusive ownership via a `_running: bool` flag with assert.
-- *Acceptance:* Threaded test spinning two `controller.run()` calls on the same context; assert `RuntimeError` or isolated stats.
+**[LC-02]** `loop_controller.py` — ✅ FIXED 2026-04-17 — `_running` flag added; raises `RuntimeError` on concurrent `run()`. Commit: `fix: [LC-01, LC-02]`.
 
 **[LC-04]** `loop_controller.py:542-665` — 🟠 Medium / Error Handling — `_sigterm_handler` exception can corrupt signal state
 - *Why:* If the handler raises, the `finally` re-registers but after an undefined state.
@@ -59,10 +53,7 @@ at the bottom of this file.
 
 ### 1.3 `code_generator.py`
 
-**[CG-02]** `code_generator.py:429-437` — 🔴 High / Resource Leak — Streaming accumulates the full response in memory
-- *Why:* `full_response = accumulated_text` overwrites with the growing buffer on every chunk; holds the entire response in RAM for very long generations.
-- *Fix:* Track only the delta; stream chunks to disk/parser and keep a rolling window (e.g. last 16 KB) for fence detection.
-- *Acceptance:* Test using a mocked streaming generator yielding 10 MB across 10 k chunks; assert peak `CodeGenerator` memory stays under a threshold.
+**[CG-02]** `code_generator.py` — ✅ FIXED 2026-04-17 — `full_response` assignment moved outside streaming loop. Commit: `fix: [CG-02]`.
 
 **[CG-04]** `code_generator.py:376-377` — 🟠 Medium / Silent Failure — Broad `except Exception` in fenced-block extraction
 - *Fix:* Narrow to `(OSError, UnicodeError, re.error)`; let programming errors propagate.
@@ -119,23 +110,16 @@ at the bottom of this file.
 
 ### 2.2 `code_review/fix_generator.py`
 
-**[FG-02]** `fix_generator.py:207-227` — 🔴 High / Resource Leak — `.bak` cleanup not exception-safe
-- *Why:* Interrupts leave orphaned backups beside the source file.
-- *Fix:* Wrap in a context manager; add a startup sweep for stale `*.muscle.bak` files.
-- *Acceptance:* Test that forces an exception mid-apply; assert no `.bak` remains and the source is intact.
+**[FG-02]** `fix_generator.py` — ✅ FIXED 2026-04-17 — Extension renamed to `.muscle.bak`; `_sweep_stale_baks()` runs at start of `apply_fix()`; restore wrapped in `try/except`. Commit: `fix: [FG-02, RC-02, RC-03]`.
 
 **[FG-04]** `fix_generator.py:339-370` — 🟠 Medium / Dead Code — `verify_fix()` always returns `True`
 - *Fix:* Either implement a real compile+lint check and wire it into `apply_fix`, or delete the method and all call sites.
 
 ### 2.3 `code_review/review_controller.py`
 
-**[RC-02]** `review_controller.py:289-291` — 🔴 High / Error Handling — Worktree cleanup swallows exceptions
-- *Why:* Orphaned worktrees accumulate under `.muscle/worktrees/`.
-- *Fix:* Track cleanup failures in a counter; expose `muscle doctor --clean-worktrees` to sweep them.
-- *Acceptance:* Test that simulates a locked worktree and asserts the failure is surfaced, not logged-and-forgotten.
+**[RC-02]** `review_controller.py` — ✅ FIXED 2026-04-17 — `_worktree_cleanup_failures` counter added; surfaced in logs. Commit: `fix: [FG-02, RC-02, RC-03]`.
 
-**[RC-03]** `review_controller.py:696-739` — 🔴 High / Concurrency — `fix_lock` scope needs a regression test
-- *Fix:* Add a test that forces each exception path inside the locked region and asserts the lock is always released.
+**[RC-03]** `review_controller.py` — ✅ FIXED 2026-04-17 — Regression test added covering each exception path inside locked region. Commit: `fix: [FG-02, RC-02, RC-03]`.
 
 ### 2.4 Shadow job queue
 
@@ -161,10 +145,7 @@ at the bottom of this file.
 
 ## 4. TUI
 
-**[TU-02]** `tui/views.py:65-166` — 🔴 High / Dead Code — `ViewState` fallback renders hardcoded defaults silently
-- *Why:* When the data provider fails, the screen shows fake data instead of an error.
-- *Fix:* On provider failure, surface an explicit "data unavailable" panel with the underlying exception; add a keybind to retry.
-- *Acceptance:* Test forcing provider failure asserts the unavailable-state panel renders and the defaults are gone.
+**[TU-02]** `tui/views.py` — ✅ FIXED 2026-04-17 — `data_unavailable` / `data_error` added to `ViewState`; `DashboardView.render()` shows explicit error panel on provider failure. Commit: `fix: [TU-02] TUI data-unavailable panel + feat: [B.5]`.
 
 ---
 
