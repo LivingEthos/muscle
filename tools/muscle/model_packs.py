@@ -634,6 +634,56 @@ class ModelPackManager:
             ),
         }
 
+    def get_active_pack_id(self, canonical_model_key: str | None = None) -> str | None:
+        """Return the content hash of the currently-active model pack.
+
+        Used by M27Client.chat_structured to include the pack content-hash in
+        the response-cache key so that pack updates invalidate stale entries.
+        Fix: B.5.
+
+        Args:
+            canonical_model_key: If provided, look up this specific pack.
+                Otherwise, return the hash of the first installed pack found.
+
+        Returns:
+            SHA-256 hex digest of the serialised pack content, or ``None``
+            if no pack is installed / accessible.
+        """
+        try:
+            packs = self.system_db.list_model_packs()
+        except Exception:
+            logger.debug("get_active_pack_id: failed to list model packs", exc_info=True)
+            return None
+
+        if not packs:
+            return None
+
+        if canonical_model_key:
+            pack_rows = [p for p in packs if p.get("canonical_model_key") == canonical_model_key]
+        else:
+            pack_rows = list(packs)
+
+        if not pack_rows:
+            return None
+
+        pack_row = pack_rows[0]
+        pack_path_str = pack_row.get("pack_path")
+        if pack_path_str:
+            bundle_dir = Path(str(pack_path_str))
+            try:
+                manifest_text = (bundle_dir / "pack.json").read_text(encoding="utf-8")
+                lessons_text = (bundle_dir / "lessons.json").read_text(encoding="utf-8")
+                combined = manifest_text + "||" + lessons_text
+                return hashlib.sha256(combined.encode("utf-8")).hexdigest()
+            except Exception:
+                logger.debug(
+                    "get_active_pack_id: failed to hash bundle at %s", pack_path_str, exc_info=True
+                )
+
+        # Fallback: hash the DB row itself (version + canonical_model_key + metadata)
+        row_repr = json.dumps(pack_row, sort_keys=True, default=str)
+        return hashlib.sha256(row_repr.encode("utf-8")).hexdigest()
+
     def scaffold_repository_standard(self, output_dir: str | Path) -> RepositoryScaffoldResult:
         """Write the public model-pack repository scaffold to a target directory."""
         root_dir = Path(output_dir)

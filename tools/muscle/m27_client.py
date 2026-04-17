@@ -18,6 +18,7 @@ import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import requests
@@ -52,6 +53,24 @@ TEMP_PRECISE = 0.2  # Fix generation, exact JSON output
 TEMP_FOCUSED = 0.3  # Code review analysis, structured output
 TEMP_BALANCED = 0.4  # Code generation with some creativity
 TEMP_CREATIVE = 0.5  # Strategy evolution, creative solutions
+
+
+class M27StructuredError(Exception):
+    """Raised when chat_structured fails to produce valid JSON after retries."""
+
+    pass
+
+
+def _strip_json_fences(text: str) -> str:
+    """Extract JSON body if wrapped in ```json or ``` fences."""
+    text = text.strip()
+    if text.startswith("```json"):
+        text = text[len("```json") :].lstrip("\n")
+    elif text.startswith("```"):
+        text = text[len("```") :].lstrip("\n")
+    if text.endswith("```"):
+        text = text[: -len("```")].rstrip("\n")
+    return text.strip()
 
 
 @dataclass
@@ -185,6 +204,9 @@ class M27Client:
             raise RuntimeError("M27Client session failed to initialize")
         return session
 
+    # Default TTL for response cache entries (14 days in seconds).
+    DEFAULT_CACHE_TTL = 14 * 24 * 60 * 60
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -194,6 +216,8 @@ class M27Client:
         max_retries: int = MAX_RETRIES,
         rate_limit: float | None = None,
         max_concurrent: int | None = None,
+        cache_db_path: Path | None = None,
+        cache_pack_id: str | None = None,
     ):
         self.api_key = (
             api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("MINIMAX_API_KEY")
@@ -217,6 +241,9 @@ class M27Client:
         self._last_request_time: float | None = None
         self._telemetry_sink: Any | None = None
         self._model_identity: dict[str, Any] = {}
+        # Response cache configuration. Fix: B.5.
+        self._cache_db_path: Path | None = cache_db_path
+        self._cache_pack_id: str | None = cache_pack_id
 
     def _configure_limiters(self, rate_limit: float | None, max_concurrent: int | None) -> None:
         with M27Client._init_lock:
@@ -838,3 +865,88 @@ class M27Client:
 
     def reset_rate_limits(self) -> None:
         self._rate_limit_errors = 0
+
+    def chat_structured(
+        self,
+        schema: type[Any],
+        messages: list[dict],
+        system: str = "",
+        max_tokens: int = 4096,
+        retries: int = 2,
+    ) -> Any:
+        """Call M2.7, parse response as JSON, validate against Pydantic schema.
+
+        Retries on ValidationError with a schema-corrective follow-up.
+        Raises M27StructuredError after retries + 1 total attempts.
+
+        Fix: B.5. If self._cache_pack_id is set, it is included in the cache
+        key so that pack updates invalidate stale cache entries.
+        """
+        from pydantic import ValidationError
+
+        from .response_cache import ResponseCache
+
+        schema_hint = (
+            f"Reply ONLY with valid JSON matching this schema:\n{schema.model_json_schema()}"
+        )
+        system_with_schema = f"{system}\n\n{schema_hint}" if system else schema_hint
+
+        # --- Cache lookup ---
+        user_content = "||".join(m.get("content", "") for m in messages if m.get("role") == "user")
+        cache: ResponseCache | None = None
+        cache_key: str | None = None
+        if self._cache_db_path is not None:
+            cache = ResponseCache(self._cache_db_path)
+            cache_key = ResponseCache.build_key(
+                model_id=self.model,
+                system_prompt=system_with_schema,
+                user_prompt=user_content,
+                pack_id=self._cache_pack_id,  # Fix: B.5 wire pack content-hash
+            )
+            cached = cache.get(cache_key)
+            if cached is not None:
+                logger.debug("ResponseCache hit for chat_structured key=%s", cache_key[:12])
+                return schema.model_validate(cached)
+
+        last_error: Exception | None = None
+        working_messages = list(messages)
+
+        for attempt in range(retries + 1):
+            response_text, _ = self.chat(
+                messages=working_messages,
+                system=system_with_schema,
+                max_tokens=max_tokens,
+                temperature=0.1,
+            )
+            parsed_text = _strip_json_fences(response_text)
+            try:
+                data = json.loads(parsed_text)
+                validated = schema.model_validate(data)
+                # --- Cache store on success ---
+                if cache is not None and cache_key is not None:
+                    cache.put(
+                        key=cache_key,
+                        model_id=self.model,
+                        response=data,
+                        ttl_seconds=M27Client.DEFAULT_CACHE_TTL,
+                    )
+                return validated
+            except (json.JSONDecodeError, ValidationError) as e:
+                last_error = e
+                if attempt < retries:
+                    working_messages.append({"role": "assistant", "content": response_text})
+                    working_messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Your last response did not match the schema: {e}. "
+                                "Reply ONLY with valid JSON matching the schema."
+                            ),
+                        }
+                    )
+                else:
+                    raise M27StructuredError(
+                        f"Failed to produce schema-valid response after {retries + 1} "
+                        f"attempts. Last error: {e}"
+                    ) from e
+        raise M27StructuredError(f"Unreachable: {last_error}")

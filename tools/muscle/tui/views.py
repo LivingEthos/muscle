@@ -59,10 +59,26 @@ class ViewState:
     recent_issues: list[dict] = field(default_factory=list)
     # Live data from TUIDataProvider (populated by TUI class)
     data: TUIData | None = field(default=None, repr=False)
+    # Data-unavailable state (set when provider raises). Fix: TU-02.
+    data_unavailable: bool = False
+    data_error: str = ""
 
 
 class DashboardView:
     def render(self, state: ViewState) -> Panel:
+        # Fix: TU-02. Show explicit error panel instead of hardcoded defaults.
+        if state.data_unavailable:
+            error_text = Text()
+            error_text.append("Data unavailable", style="bold red")
+            if state.data_error:
+                error_text.append(f"\n\nReason: {state.data_error}", style="yellow")
+            error_text.append("\n\nPress [r] to retry.", style="dim")
+            return Panel(
+                error_text,
+                title=f"[bold]MUSCLE Dashboard[/bold] - {state.current_project}",
+                border_style="red",
+            )
+
         data: TUIData | None = state.data
 
         if data is not None:
@@ -808,13 +824,25 @@ class TUI:
         ]
 
     def _refresh_data(self) -> None:
-        """Refresh live data from DB/filesystem into state."""
-        data = self.provider.get_data()
-        self.state.data = data
-        self.state.current_project = data.project_path.split("/")[-1]
-        self.state.review_count = data.review_count
-        self.state.pattern_count = data.pattern_count
-        self.state.last_review = data.last_review
+        """Refresh live data from DB/filesystem into state.
+
+        Fix: TU-02. Sets data_unavailable=True and captures the error string
+        when the provider raises, so views render an explicit error panel
+        instead of silently falling back to hardcoded defaults.
+        """
+        try:
+            data = self.provider.get_data()
+            self.state.data = data
+            self.state.data_unavailable = False
+            self.state.data_error = ""
+            self.state.current_project = data.project_path.split("/")[-1]
+            self.state.review_count = data.review_count
+            self.state.pattern_count = data.pattern_count
+            self.state.last_review = data.last_review
+        except Exception as exc:
+            self.state.data_unavailable = True
+            self.state.data_error = str(exc)
+            self.state.data = None
 
     def refresh(self) -> None:
         """Public method to refresh data and re-render."""
@@ -854,7 +882,11 @@ class TUI:
         if key == "q":
             return False
         elif key == "r":
-            self.state.current_view = View.REVIEWS
+            if self.state.data_unavailable:
+                # Fix: TU-02. Retry data load when provider previously failed.
+                self._refresh_data()
+            else:
+                self.state.current_view = View.REVIEWS
         elif key == "p":
             self.state.current_view = View.REVIEWS
         elif key == "s":

@@ -35,6 +35,92 @@ def _render(panel) -> str:
     return s.getvalue()
 
 
+class TestViewStateDataUnavailable:
+    """TU-02: data_unavailable flag and data_error field."""
+
+    def test_defaults_unavailable_false(self):
+        state = ViewState()
+        assert state.data_unavailable is False
+        assert state.data_error == ""
+
+    def test_fields_settable(self):
+        state = ViewState(data_unavailable=True, data_error="DB connection failed")
+        assert state.data_unavailable is True
+        assert state.data_error == "DB connection failed"
+
+
+class TestDashboardViewDataUnavailable:
+    """TU-02: DashboardView renders explicit error panel on data_unavailable."""
+
+    def test_render_shows_data_unavailable_when_flag_set(self):
+        view = DashboardView()
+        state = ViewState(data_unavailable=True, data_error="ProjectMemory exploded")
+        panel = view.render(state)
+        rendered = _render(panel)
+        assert "Data unavailable" in rendered
+        assert "ProjectMemory exploded" in rendered
+
+    def test_render_data_unavailable_does_not_show_hardcoded_defaults(self):
+        """When data_unavailable, fake counts like '0 reviews' must NOT appear."""
+        view = DashboardView()
+        state = ViewState(
+            data_unavailable=True,
+            data_error="cannot connect",
+            review_count=99,  # hardcoded default that should NOT appear
+            pattern_count=77,
+        )
+        panel = view.render(state)
+        rendered = _render(panel)
+        # Error message IS present
+        assert "Data unavailable" in rendered
+        # The fallback hardcoded-default rows are NOT rendered
+        assert "Total Reviews" not in rendered
+        assert "Patterns Learned" not in rendered
+
+    def test_render_normal_shows_no_unavailable_message(self):
+        view = DashboardView()
+        state = ViewState(data_unavailable=False, data_error="")
+        panel = view.render(state)
+        rendered = _render(panel)
+        assert "Data unavailable" not in rendered
+
+
+class TestTUIRefreshDataUnavailable:
+    """TU-02: TUI._refresh_data sets data_unavailable when provider raises."""
+
+    def test_provider_raise_sets_data_unavailable(self):
+        from unittest.mock import patch
+
+        from tools.muscle.tui.views import TUI
+
+        tui = TUI()
+        with patch.object(tui.provider, "get_data", side_effect=RuntimeError("DB locked")):
+            tui._refresh_data()
+        assert tui.state.data_unavailable is True
+        assert "DB locked" in tui.state.data_error
+        assert tui.state.data is None
+
+    def test_provider_success_clears_unavailable(self):
+        from unittest.mock import patch
+
+        from tools.muscle.tui.data_provider import TUIData
+        from tools.muscle.tui.views import TUI
+
+        tui = TUI()
+        # First simulate a failure
+        with patch.object(tui.provider, "get_data", side_effect=RuntimeError("fail")):
+            tui._refresh_data()
+        assert tui.state.data_unavailable is True
+
+        # Then simulate recovery
+        fake_data = TUIData(project_path="/fake")
+        with patch.object(tui.provider, "get_data", return_value=fake_data):
+            tui._refresh_data()
+        assert tui.state.data_unavailable is False
+        assert tui.state.data_error == ""
+        assert tui.state.data is fake_data
+
+
 class TestViewState:
     def test_defaults(self):
         state = ViewState(
