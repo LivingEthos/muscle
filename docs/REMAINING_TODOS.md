@@ -1,9 +1,9 @@
 # MUSCLE — Remaining Pre-Release TODOs
 
 **Date:** 2026-04-17 (updated)
-**Status:** All 7 🔴 High items resolved 2026-04-17. Features B.3 (response cache),
-B.4 (escalation recorder), and B.5 (pack_id cache isolation) shipped in the same
-session. 1743 tests pass on `main`. Remaining work is 🟠 Medium and 🟡 Low only.
+**Status:** All 7 🔴 High items resolved 2026-04-17. All 20 🟠 Medium items resolved 2026-04-17
+(commit 58b9710). Features B.3/B.4/B.5 shipped same session. 2004 tests pass on `main`.
+Remaining work is 🟡 Low only.
 **Scope:** Only items still open or unverified are listed here. Each entry is
 self-contained and dispatchable to a remediation agent using the handoff format
 at the bottom of this file.
@@ -31,7 +31,7 @@ at the bottom of this file.
 
 ### 1.1 `m27_client.py`
 
-**[M27-05]** `m27_client.py` — 🟠 Medium / Code Quality — Bare `except Exception: break` inside retry loop
+**[M27-05]** `m27_client.py` — ✅ FIXED 2026-04-17 — 🟠 Medium / Code Quality — Bare `except Exception: break` inside retry loop
 - *Why:* Swallows transient network errors and aborts retry prematurely.
 - *Fix:* Narrow to `(requests.RequestException, json.JSONDecodeError, ValueError)`; continue retry on transient.
 - *Acceptance:* Extend `tests/unit/test_m27_client.py` with a mock that raises `ConnectionResetError` mid-retry and asserts the loop continues, plus a `ValueError` that breaks.
@@ -42,12 +42,12 @@ at the bottom of this file.
 
 **[LC-02]** `loop_controller.py` — ✅ FIXED 2026-04-17 — `_running` flag added; raises `RuntimeError` on concurrent `run()`. Commit: `fix: [LC-01, LC-02]`.
 
-**[LC-04]** `loop_controller.py:542-665` — 🟠 Medium / Error Handling — `_sigterm_handler` exception can corrupt signal state
+**[LC-04]** `loop_controller.py:542-665` — ✅ FIXED 2026-04-17 — 🟠 Medium / Error Handling — `_sigterm_handler` exception can corrupt signal state
 - *Why:* If the handler raises, the `finally` re-registers but after an undefined state.
 - *Fix:* Wrap handler body in `try/except`, always set the shutdown flag before re-raising.
 - *Acceptance:* Unit test that forces the handler to raise; assert shutdown flag is set.
 
-**[LC-05]** `loop_controller.py:78` — 🟠 Medium / Bug — Verify `LoopStats.start_time` uses `default_factory=time.time` (callable, not a call)
+**[LC-05]** `loop_controller.py:78` — ✅ FIXED 2026-04-17 — 🟠 Medium / Bug — Verify `LoopStats.start_time` uses `default_factory=time.time` (callable, not a call)
 - *Why:* Written as `default_factory=time.time()` would cache one timestamp across all instances.
 - *Fix:* Audit declaration; add regression test creating two `LoopStats` instances ≥1 s apart and asserting their `start_time` differs.
 
@@ -55,47 +55,47 @@ at the bottom of this file.
 
 **[CG-02]** `code_generator.py` — ✅ FIXED 2026-04-17 — `full_response` assignment moved outside streaming loop. Commit: `fix: [CG-02]`.
 
-**[CG-04]** `code_generator.py:376-377` — 🟠 Medium / Silent Failure — Broad `except Exception` in fenced-block extraction
+**[CG-04]** `code_generator.py:376-377` — ✅ FIXED 2026-04-17 — 🟠 Medium / Silent Failure — Broad `except Exception` in fenced-block extraction
 - *Fix:* Narrow to `(OSError, UnicodeError, re.error)`; let programming errors propagate.
 
-**[CG-05]** `code_generator.py:621-699` — 🟠 Medium / Code Quality — No UTF-8 validation on the plain-code fallback path
+**[CG-05]** `code_generator.py:621-699` — ✅ FIXED 2026-04-17 — 🟠 Medium / Code Quality — No UTF-8 validation on the plain-code fallback path
 - *Fix:* Round-trip via `text.encode("utf-8", "replace").decode("utf-8")` before emit; log if replacement happened.
 
 ### 1.4 `session_manager.py`
 
-**[SM-03]** `session_manager.py:53-57` — 🟠 Medium / Security — Unicode bypasses the session-id sanitizer
+**[SM-03]** `session_manager.py:53-57` — ✅ FIXED 2026-04-17 — 🟠 Medium / Security — Unicode bypasses the session-id sanitizer
 - *Why:* `isalnum()` accepts non-ASCII alphanumerics → paths become host-FS dependent.
 - *Fix:* Restrict to `string.ascii_letters + string.digits + "_-"` explicitly.
 - *Acceptance:* Parametrized test with inputs like `"résumé"`, `"ＡＢＣ"`, emoji; assert only safe ASCII survives.
 
 ### 1.5 `budget_manager.py`
 
-**[BM-02]** `budget_manager.py:69-90` — 🟠 Medium / Missing Validation — Budget file accepts negative / non-int values
+**[BM-02]** `budget_manager.py:69-90` — ✅ FIXED 2026-04-17 — 🟠 Medium / Missing Validation — Budget file accepts negative / non-int values
 - *Why:* Corrupted JSON → unlimited spend.
 - *Fix:* `max(0, int(data.get("remaining_tokens", 0)))` with explicit type check; log and reset on bad values.
 
 ### 1.6 `evaluator_registry.py` / evaluators
 
-**[ER-01]** `evaluator_registry.py:98-172` — 🟠 Medium / Error Handling — Failed evaluator imports retried on every call
+**[ER-01]** `evaluator_registry.py:98-172` — ✅ FIXED 2026-04-17 — 🟠 Medium / Error Handling — Failed evaluator imports retried on every call
 - *Fix:* Cache import outcome (success/fail) per class; log once.
 
-**[EV-T1]** `evaluators/compiler.py:75` — 🟠 Medium / Resource Leak — `stderr` not bounded
+**[EV-T1]** `evaluators/compiler.py:75` — ✅ FIXED 2026-04-17 — 🟠 Medium / Resource Leak — `stderr` not bounded
 - *Fix:* Slice `stderr` to 5 KB before appending to the result; log total length if truncated.
 
 ### 1.7 `cli.py`
 
-**[CLI-02]** `cli.py:70-71` — 🟠 Medium / Missing Validation — `MAX_TASK_LENGTH` / `MAX_TIMEOUT_SECONDS` enforced only at one boundary
+**[CLI-02]** `cli.py:70-71` — ✅ FIXED 2026-04-17 — 🟠 Medium / Missing Validation — `MAX_TASK_LENGTH` / `MAX_TIMEOUT_SECONDS` enforced only at one boundary
 - *Why:* Env-var and config-file entry points bypass the check.
 - *Fix:* Move assertions into `RunConfig.__post_init__` (see TY-01).
 
-**[CLI-03]** `cli.py` → `webhook_notifier.py:44-46` — 🟠 Medium / Security — Webhook URL not required to be HTTPS
+**[CLI-03]** `cli.py` → `webhook_notifier.py:44-46` — ✅ FIXED 2026-04-17 — 🟠 Medium / Security — Webhook URL not required to be HTTPS
 - *Why:* SSRF / data-exfiltration vector; currently any scheme passes.
 - *Fix:* In `WebhookNotifier.__init__`, require `url.startswith("https://")` (or be in an explicit allowlist); reject with a clear error.
 - *Acceptance:* Test that `WebhookNotifier("http://evil.example/")` raises or disables itself with a warning; `https://…` passes.
 
 ### 1.8 `types.py`
 
-**[TY-01]** `types.py:41-56` — 🟠 Medium / Missing Validation — `RunConfig` frozen dataclass has no `__post_init__` checks
+**[TY-01]** `types.py:41-56` — ✅ FIXED 2026-04-17 — 🟠 Medium / Missing Validation — `RunConfig` frozen dataclass has no `__post_init__` checks
 - *Why:* Negative `max_iterations`, zero `timeout_seconds` accepted.
 - *Fix:* Add `__post_init__` asserting bounds; incorporate CLI-02 limits.
 
@@ -105,14 +105,14 @@ at the bottom of this file.
 
 ### 2.1 `code_review/code_reviewer.py`
 
-**[CR-05]** `code_reviewer.py:161, 239-240` — 🟠 Medium / Code Quality — `max_issues_per_batch = 20` hardcoded as constructor default
+**[CR-05]** `code_reviewer.py:161, 239-240` — ✅ FIXED 2026-04-17 — 🟠 Medium / Code Quality — `max_issues_per_batch = 20` hardcoded as constructor default
 - *Fix:* Thread through `ReviewConfig` (or equivalent) so it is documented and overridable.
 
 ### 2.2 `code_review/fix_generator.py`
 
 **[FG-02]** `fix_generator.py` — ✅ FIXED 2026-04-17 — Extension renamed to `.muscle.bak`; `_sweep_stale_baks()` runs at start of `apply_fix()`; restore wrapped in `try/except`. Commit: `fix: [FG-02, RC-02, RC-03]`.
 
-**[FG-04]** `fix_generator.py:339-370` — 🟠 Medium / Dead Code — `verify_fix()` always returns `True`
+**[FG-04]** `fix_generator.py:339-370` — ✅ FIXED 2026-04-17 — 🟠 Medium / Dead Code — `verify_fix()` always returns `True`
 - *Fix:* Either implement a real compile+lint check and wire it into `apply_fix`, or delete the method and all call sites.
 
 ### 2.3 `code_review/review_controller.py`
@@ -123,12 +123,12 @@ at the bottom of this file.
 
 ### 2.4 Shadow job queue
 
-**[SH-04]** `shadow_worker.py:184-189, 247-254` — 🟠 Medium / Concurrency — `_in_progress_jobs` lock contract needs assertion + test
+**[SH-04]** `shadow_worker.py:184-189, 247-254` — ✅ FIXED 2026-04-17 — 🟠 Medium / Concurrency — `_in_progress_jobs` lock contract needs assertion + test
 - *Fix:* Add `assert self._lock.locked()` at the protected mutation sites; add a concurrent-start test to cover the invariant.
 
 ### 2.5 Other review modules
 
-**[TY-CR]** `code_review/types.py:93-106` — 🟠 Medium / Code Quality — Mixed use of `.name` vs `.value` on enums
+**[TY-CR]** `code_review/types.py:93-106` — ✅ FIXED 2026-04-17 — 🟠 Medium / Code Quality — Mixed use of `.name` vs `.value` on enums
 - *Fix:* Audit call sites, standardize on `.value` for persistence / JSON and `.name` for logs; add a project-wide lint rule (`grep`-based CI check is fine) to prevent regression.
 
 ---
@@ -153,7 +153,7 @@ at the bottom of this file.
 
 All adapter timeout + rate-limit hygiene is already in `http_utils.py`; what remains is narrower:
 
-**[AD-token-tests]** — 🟠 Medium / Test Gap — No unit tests asserting `redact_secrets` catches the tokens actually present in this repo's adapter codepaths
+**[AD-token-tests]** — ✅ FIXED 2026-04-17 — 🟠 Medium / Test Gap — No unit tests asserting `redact_secrets` catches the tokens actually present in this repo's adapter codepaths
 - *Fix:* New `tests/unit/test_http_utils.py` with table-driven cases for Bearer tokens, `ghp_*`, `glpat_*`, `Authorization:` lines, and `token=…` query strings.
 
 ---
