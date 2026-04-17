@@ -53,8 +53,13 @@ Current stop point:
 ## Active Plan Files
 
 - `MUSCLE_PLAN.md`
+- `docs/project-first-growth-model-pack-roadmap.md`
 - `Forsight-plan.md`
 - `GroupTink-collab.md`
+
+`docs/project-first-growth-model-pack-roadmap.md` is the detailed living
+execution plan for the project-first growth, related-project transfer,
+model-identity, and model-pack initiative.
 
 These are now the only active planning documents.
 

@@ -2,7 +2,9 @@
 Unit tests for code_review/shadow_worker.py (W3-A).
 """
 
-from unittest.mock import Mock
+import subprocess
+import time
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -88,6 +90,17 @@ class TestShadowWorker:
         assert stopped is True
         assert worker.is_running() is False
 
+    def test_worker_idles_out_and_can_restart(self, mock_broker):
+        worker = ShadowWorker(broker=mock_broker)
+        worker.config.poll_interval = 0.05
+        worker.config.idle_timeout = 0.1
+        worker.start()
+        time.sleep(0.3)
+        assert worker.is_running() is False
+        worker.start()
+        assert worker.is_running() is True
+        worker.stop()
+
     def test_start_twice(self, mock_broker):
         worker = ShadowWorker(broker=mock_broker)
         worker.config.poll_interval = 0.1
@@ -145,9 +158,19 @@ class TestShadowWorker:
         assert ShadowWorker._parse_intensity("intensive") == Intensity.INTENSIVE
         assert ShadowWorker._parse_intensity("unknown") == Intensity.MODERATE
 
-    def test_should_idle_out_always_false(self, mock_broker):
+    def test_should_idle_out_after_idle_timeout(self, mock_broker):
         worker = ShadowWorker(broker=mock_broker)
-        assert worker._should_idle_out() is False
+        worker.config.idle_timeout = 0.1
+        worker._last_job_time = 0.0
+        assert worker._should_idle_out() is True
+
+    def test_worker_reaps_stale_jobs_when_started(self, mock_broker):
+        worker = ShadowWorker(broker=mock_broker)
+        worker.config.poll_interval = 0.1
+        worker.start()
+        time.sleep(0.05)
+        worker.stop()
+        mock_broker.reap_stale_jobs.assert_called()
 
     def test_worker_config_custom(self):
         config = WorkerConfig(poll_interval=0.5, max_retries=5)
@@ -268,6 +291,28 @@ class TestWorkerManager:
         job = mgr.get_broker().get_job(job_id)
         assert job is not None
         assert job["execution_mode"] == "worktree"
+
+    def test_submit_shadow_job_detached_spawns_process(self, tmp_project):
+        from tools.muscle.code_review.types import Intensity, ReviewMode
+
+        mgr = WorkerManager(project_path=str(tmp_project))
+
+        with patch("tools.muscle.code_review.shadow_worker.subprocess.Popen") as mock_popen:
+            job_id = mgr.submit_shadow_job(
+                "/src",
+                ReviewMode.REVIEW,
+                Intensity.MODERATE,
+                detached=True,
+            )
+
+        assert job_id is not None
+        job = mgr.get_broker().get_job(job_id)
+        assert job is not None
+        assert mock_popen.called is True
+        command = mock_popen.call_args.args[0]
+        assert "--job-id" in command
+        assert job_id in command
+        assert mock_popen.call_args.kwargs["stdin"] is subprocess.DEVNULL
 
     def test_project_path_property(self, tmp_project):
         mgr = WorkerManager(project_path=str(tmp_project))

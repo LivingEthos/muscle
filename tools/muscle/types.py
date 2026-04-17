@@ -54,6 +54,18 @@ class RunConfig:
     max_cost_per_iteration: int | None = None
     early_exit_on: str | None = None
 
+    def __post_init__(self) -> None:
+        if not self.task or not self.task.strip():
+            raise ValueError("Task cannot be empty")
+        if not 1 <= self.max_iterations <= 100:
+            raise ValueError("max_iterations must be between 1 and 100")
+        if not 1 <= self.timeout_seconds <= 86400:
+            raise ValueError("timeout_seconds must be between 1 and 86400")
+        if self.budget_tokens < 0:
+            raise ValueError("budget_tokens must be non-negative")
+        if self.max_cost_per_iteration is not None and self.max_cost_per_iteration < 0:
+            raise ValueError("max_cost_per_iteration must be non-negative")
+
 
 @dataclass
 class IterationResult:
@@ -128,7 +140,7 @@ class BudgetInfo:
     def percentage(self) -> float:
         if self.limit == 0:
             return 0.0
-        return (self.spent / self.limit) * 100
+        return max(0.0, min(100.0, (self.spent / self.limit) * 100))
 
 
 @dataclass

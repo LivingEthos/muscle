@@ -79,6 +79,15 @@ class TestGitHubAdapter:
             content = adapter.get_file_content("src/main.py")
         assert content == "import os"
 
+    def test_get_file_metadata(self, adapter, mock_requests):
+        mock_requests.get.return_value = Mock(
+            status_code=200,
+            json=lambda: {"sha": "abc123", "path": "src/main.py"},
+        )
+        with patch.object(mock_requests, "get", mock_requests.get):
+            metadata = adapter.get_file_metadata("src/main.py")
+        assert metadata == {"sha": "abc123", "path": "src/main.py"}
+
     def test_create_issue(self, adapter, mock_requests):
         mock_requests.post.return_value = Mock(
             status_code=201,
@@ -99,3 +108,54 @@ class TestGitHubAdapter:
         with patch.object(mock_requests, "get", mock_requests.get):
             data = adapter.download_artifact(123)
         assert data == b"artifact bytes"
+
+    def test_create_branch_success(self, adapter, mock_requests):
+        mock_requests.get.return_value = Mock(
+            status_code=200,
+            json=lambda: {"object": {"sha": "abc123"}},
+            text="",
+        )
+        mock_requests.post.return_value = Mock(
+            status_code=201,
+            json=lambda: {"ref": "refs/heads/feature", "object": {"sha": "abc123"}},
+            text="",
+        )
+        with patch.object(mock_requests, "get", mock_requests.get):
+            with patch.object(mock_requests, "post", mock_requests.post):
+                result = adapter.create_branch("feature", from_branch="main")
+        assert result is not None
+        assert result["ref"] == "refs/heads/feature"
+
+    def test_create_pull_request_draft_flag(self, adapter, mock_requests):
+        mock_requests.post.return_value = Mock(
+            status_code=201,
+            json=lambda: {"number": 42, "draft": True},
+            text="",
+        )
+        with patch.object(mock_requests, "post", mock_requests.post):
+            result = adapter.create_pull_request("title", "body", "feature", draft=True)
+        assert result is not None
+
+    def test_create_commit_updates_existing_file_when_sha_required(self, adapter, mock_requests):
+        responses = [
+            Mock(status_code=422, json=lambda: {}, text="sha required"),
+            Mock(status_code=200, json=lambda: {"content": {"path": "foo.txt"}}, text=""),
+        ]
+        with patch("tools.muscle.adapters.github.requests.put", side_effect=responses) as mock_put:
+            with patch.object(
+                adapter,
+                "get_file_metadata",
+                return_value={"sha": "existing-sha", "path": "foo.txt"},
+            ):
+                result = adapter.create_commit("foo.txt", "msg", "content", branch="feature")
+        assert result is not None
+        assert mock_put.call_count == 2
+
+    def test_add_labels_success(self, adapter, mock_requests):
+        mock_requests.post.return_value = Mock(
+            status_code=200,
+            json=lambda: [{"name": "model-pack"}],
+        )
+        with patch.object(mock_requests, "post", mock_requests.post):
+            result = adapter.add_labels(42, ["model-pack"])
+        assert result == [{"name": "model-pack"}]

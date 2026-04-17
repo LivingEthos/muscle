@@ -12,14 +12,22 @@ Architecture Decision Record (ADR):
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
+import subprocess
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..m27_client import M27Client
+from ..optimization.prompt_context import build_telemetry_context, compose_prompt_envelope
 from .types import ReviewIssue
+
+if TYPE_CHECKING:
+    from ..optimization.context_budgeter import ContextBudgeter
 
 logger = logging.getLogger(__name__)
 
@@ -55,18 +63,65 @@ class FixResult:
     error: str | None = None
 
 
+@dataclass
+class GeneratedFix:
+    ok: bool
+    file_path: str
+    code: str
+    error: str | None = None
+
+    def __iter__(self) -> Iterator[str]:
+        """Allow tuple-style unpacking for legacy call sites."""
+        yield "" if not self.ok and not self.code else self.file_path
+        yield self.code
+
+
 class FixGenerator:
     def __init__(
         self,
         m27_client: M27Client,
         verify_compile: bool = True,
+        context_budgeter: ContextBudgeter | None = None,
+        project_path: str | None = None,
+        lesson_resolver: object | None = None,
     ):
         self.m27_client = m27_client
         self.verify_compile = verify_compile
+        self.context_budgeter = context_budgeter
+        self.project_path = project_path or str(Path.cwd())
+        self.lesson_resolver = lesson_resolver
 
-    def generate_fix(self, issue: ReviewIssue) -> tuple[str, str]:
+    def generate_fix(
+        self,
+        issue: ReviewIssue,
+        session_id: str | None = None,
+        workflow_name: str | None = None,
+        review_mode: str | None = None,
+        language: str | None = None,
+        complexity: str | None = None,
+        target_type: str | None = None,
+    ) -> GeneratedFix:
         if not issue.suggested_fix:
-            return "", ""
+            return GeneratedFix(
+                ok=False,
+                file_path=issue.file_path,
+                code="",
+                error="No suggested fix available",
+            )
+
+        file_content = ""
+        file_path = Path(issue.file_path)
+        if file_path.exists():
+            try:
+                file_content = file_path.read_text(encoding="utf-8")
+            except OSError:
+                file_content = ""
+
+        fix_budget = (
+            self.context_budgeter.build_fix_budget(issue.line_number, file_content)
+            if self.context_budgeter and file_content
+            else None
+        )
 
         user_prompt = f"""Generate a fix for this code issue:
 
@@ -83,23 +138,80 @@ Original code snippet:
 Suggested fix approach:
 {issue.suggested_fix}
 
+File context:
+```
+{fix_budget.content if fix_budget else file_content[:4000]}
+```
+
 Provide the JSON output with the fixed code."""
+        prompt_envelope = compose_prompt_envelope(
+            base_prompt=user_prompt,
+            lesson_resolver=self.lesson_resolver,
+            query_text=f"{issue.title}\n{issue.description}\n{issue.suggested_fix or ''}",
+            stage="fix_generation",
+            base_context_strategy=fix_budget.strategy if fix_budget else "full_file_patch_context",
+            session_id=session_id,
+            language=language,
+        )
+        user_prompt = prompt_envelope.prompt
+
+        telemetry_context = build_telemetry_context(
+            project_path=self.project_path,
+            session_id=session_id,
+            stage="fix_generation",
+            prompt_envelope=prompt_envelope,
+            workflow_name=workflow_name,
+            review_mode=review_mode,
+            language=language,
+            complexity=complexity,
+            target_type=target_type,
+            metadata={
+                "file_path": issue.file_path,
+                "line_number": issue.line_number,
+            },
+        )
 
         response_text, _ = self.m27_client.chat(
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
+            telemetry_context=telemetry_context,
         )
 
-        import json
-
         try:
-            data = json.loads(response_text)
-            return data.get("file_path", issue.file_path), data.get("fixed_code", "")
+            data = self._load_json_response(response_text)
+            if telemetry_context:
+                self.m27_client.update_telemetry_call(
+                    telemetry_context.call_id,
+                    parse_success=True,
+                )
+            fixed_code = data.get("fixed_code", "")
+            if not isinstance(fixed_code, str) or not fixed_code.strip():
+                return GeneratedFix(
+                    ok=False,
+                    file_path=str(data.get("file_path") or issue.file_path),
+                    code="",
+                    error="Fix response did not include fixed_code",
+                )
+            return GeneratedFix(
+                ok=True,
+                file_path=str(data.get("file_path") or issue.file_path),
+                code=fixed_code,
+            )
         except json.JSONDecodeError:
             logger.error("Failed to parse fix response")
-            return issue.file_path, ""
+            if telemetry_context:
+                self.m27_client.update_telemetry_call(
+                    telemetry_context.call_id,
+                    parse_success=False,
+                )
+            return GeneratedFix(
+                ok=False,
+                file_path=issue.file_path,
+                code="",
+                error="Failed to parse fix response",
+            )
 
     def apply_fix(self, issue: ReviewIssue, fixed_code: str) -> FixResult:
         file_path = Path(issue.file_path)
@@ -127,38 +239,7 @@ Provide the JSON output with the fixed code."""
                 verified=False,
                 error=f"Cannot read file: {e}",
             )
-
-        backup_path = file_path.with_suffix(file_path.suffix + ".bak")
-        shutil.copy2(file_path, backup_path)
-
-        try:
-            file_path.write_text(fixed_code, encoding="utf-8")
-            applied = True
-            error = None
-        except Exception as e:
-            shutil.move(backup_path, file_path)
-            return FixResult(
-                success=False,
-                file_path=str(file_path),
-                original_content=original_content,
-                fixed_content=fixed_code,
-                applied=False,
-                verified=False,
-                error=f"Cannot write file: {e}",
-            )
-
-        if os.path.exists(backup_path):
-            os.remove(backup_path)
-
-        return FixResult(
-            success=True,
-            file_path=str(file_path),
-            original_content=original_content,
-            fixed_content=fixed_code,
-            applied=applied,
-            verified=False,
-            error=error,
-        )
+        return self._commit_fix(file_path, original_content, fixed_code)
 
     def apply_fix_from_suggestion(self, issue: ReviewIssue) -> FixResult:
         if not issue.suggested_fix:
@@ -225,38 +306,7 @@ Provide the JSON output with the fixed code."""
                 lines[line_idx] = "\n".join(fixed_lines)
 
         fixed_content = "\n".join(lines)
-
-        backup_path = file_path.with_suffix(file_path.suffix + ".bak")
-        shutil.copy2(file_path, backup_path)
-
-        try:
-            file_path.write_text(fixed_content, encoding="utf-8")
-            applied = True
-            error = None
-        except Exception as e:
-            shutil.move(backup_path, file_path)
-            return FixResult(
-                success=False,
-                file_path=str(file_path),
-                original_content=original_content,
-                fixed_content=fixed_content,
-                applied=False,
-                verified=False,
-                error=f"Cannot write file: {e}",
-            )
-
-        if os.path.exists(backup_path):
-            os.remove(backup_path)
-
-        return FixResult(
-            success=True,
-            file_path=str(file_path),
-            original_content=original_content,
-            fixed_content=fixed_content,
-            applied=applied,
-            verified=False,
-            error=error,
-        )
+        return self._commit_fix(file_path, original_content, fixed_content)
 
     def rollback_fix(self, fix_result: FixResult) -> bool:
         if not fix_result.original_content:
@@ -289,5 +339,134 @@ Provide the JSON output with the fixed code."""
     def verify_fix(self, file_path: str, language: str | None) -> bool:
         if not self.verify_compile:
             return True
+        path = Path(file_path)
+        if not path.exists():
+            return False
+        return self._validate_staged_file(path, language=language) is None
 
-        return True
+    @staticmethod
+    def _load_json_response(response_text: str) -> dict:
+        payload = response_text.strip()
+        if payload.startswith("```"):
+            lines = payload.splitlines()
+            payload = "\n".join(
+                line for line in lines if not line.strip().startswith("```")
+            ).strip()
+        data = json.loads(payload)
+        if not isinstance(data, dict):
+            raise json.JSONDecodeError("Response is not a JSON object", payload, 0)
+        return data
+
+    def _commit_fix(
+        self,
+        file_path: Path,
+        original_content: str,
+        fixed_content: str,
+    ) -> FixResult:
+        backup_path = file_path.with_suffix(file_path.suffix + ".bak")
+        staged_path = file_path.with_suffix(file_path.suffix + ".muscle.tmp")
+        safe_content = fixed_content.encode("utf-8", errors="replace").decode("utf-8")
+        backup_created = False
+
+        try:
+            staged_path.write_text(safe_content, encoding="utf-8")
+            validation_error = self._validate_staged_file(
+                staged_path,
+                language=self._detect_language(file_path),
+            )
+            if validation_error is not None:
+                return FixResult(
+                    success=False,
+                    file_path=str(file_path),
+                    original_content=original_content,
+                    fixed_content=safe_content,
+                    applied=False,
+                    verified=False,
+                    error=validation_error,
+                )
+
+            shutil.copy2(file_path, backup_path)
+            backup_created = True
+            os.replace(staged_path, file_path)
+            return FixResult(
+                success=True,
+                file_path=str(file_path),
+                original_content=original_content,
+                fixed_content=safe_content,
+                applied=True,
+                verified=False,
+            )
+        except Exception as e:
+            if backup_created and backup_path.exists():
+                shutil.move(backup_path, file_path)
+            return FixResult(
+                success=False,
+                file_path=str(file_path),
+                original_content=original_content,
+                fixed_content=safe_content,
+                applied=False,
+                verified=False,
+                error=f"Cannot write file: {e}",
+            )
+        finally:
+            if staged_path.exists():
+                staged_path.unlink(missing_ok=True)
+            if backup_path.exists():
+                backup_path.unlink(missing_ok=True)
+
+    def _validate_staged_file(self, staged_path: Path, language: str | None = None) -> str | None:
+        if not self.verify_compile:
+            return None
+
+        detected_language = language or self._detect_language(staged_path)
+        if detected_language == "python":
+            try:
+                compile(staged_path.read_text(encoding="utf-8"), str(staged_path), "exec")
+            except SyntaxError as exc:
+                return f"Python syntax validation failed: {exc}"
+            return None
+
+        if detected_language == "json":
+            try:
+                json.loads(staged_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                return f"JSON validation failed: {exc}"
+            return None
+
+        cmd_map = {
+            "javascript": ["node", "--check", str(staged_path)],
+            "typescript": ["npx", "tsc", "--noEmit", "--pretty", "false", str(staged_path)],
+        }
+        cmd = cmd_map.get(detected_language or "")
+        if cmd is None:
+            return f"No local validator available for {staged_path.suffix or 'file'}"
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except FileNotFoundError as exc:
+            return f"Required validator command not found: {exc}"
+        except Exception as exc:
+            return f"Validation failed to run: {exc}"
+
+        if result.returncode != 0:
+            stderr = result.stderr.strip() or result.stdout.strip() or "unknown validator error"
+            return f"Validation failed: {stderr[:500]}"
+        return None
+
+    @staticmethod
+    def _detect_language(file_path: Path) -> str | None:
+        ext = file_path.suffix.lower()
+        lang_map = {
+            ".py": "python",
+            ".js": "javascript",
+            ".mjs": "javascript",
+            ".cjs": "javascript",
+            ".ts": "typescript",
+            ".json": "json",
+        }
+        return lang_map.get(ext)

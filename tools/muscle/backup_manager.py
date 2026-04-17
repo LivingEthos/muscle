@@ -17,6 +17,7 @@ import logging
 import os
 import shutil
 import tarfile
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -27,6 +28,19 @@ from .project_memory import ProjectMemory
 logger = logging.getLogger(__name__)
 
 BackupType = Literal["full", "claude_md", "config", "memory"]
+
+# Fix: BK-03. Runtime-checkable allowlist for ``BackupType`` so invalid values
+# supplied by older callers or tests are rejected at the boundary rather than
+# silently persisted.
+VALID_BACKUP_TYPES: frozenset[str] = frozenset({"full", "claude_md", "config", "memory"})
+
+
+def _assert_backup_type(backup_type: str) -> None:
+    if backup_type not in VALID_BACKUP_TYPES:
+        raise ValueError(
+            f"Unknown backup_type {backup_type!r}; expected one of {sorted(VALID_BACKUP_TYPES)}"
+        )
+
 
 DEFAULT_RETENTION_DAYS = 30
 
@@ -90,39 +104,52 @@ class BackupManager:
             ValueError: If backup_type is not recognized.
             FileNotFoundError: If the target path to back up does not exist.
         """
+        _assert_backup_type(backup_type)  # Fix: BK-03
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        subdir = self._backups_dir / backup_type / timestamp
-        subdir.mkdir(parents=True, exist_ok=True)
-
+        created_at = datetime.now().isoformat()
         source_paths, archive_path = self._resolve_backup_sources(backup_type, timestamp)
         for src in source_paths:
             if not src.exists():
                 raise FileNotFoundError(f"Backup source not found: {src}")
 
+        temp_parent = self._backups_dir / backup_type
+        temp_parent.mkdir(parents=True, exist_ok=True)
+        temp_dir = Path(tempfile.mkdtemp(prefix=f"{backup_type}-{timestamp}-", dir=temp_parent))
+        temp_archive_path = temp_dir / archive_path.name
+
         checksum = self._create_archive(
-            archive_path=archive_path,
+            archive_path=temp_archive_path,
             source_paths=source_paths,
             project_root=self._project_path,
         )
-        size_bytes = archive_path.stat().st_size
+        size_bytes = temp_archive_path.stat().st_size
 
-        backup_record = self._pm.insert_backup(
-            project_path=str(self._project_path),
-            created_at=datetime.now().isoformat(),
-            backup_type=backup_type,
-            file_path=str(archive_path),
-            checksum=checksum,
-            size_bytes=size_bytes,
-            retention_days=self._retention_days,
-        )
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(temp_archive_path, archive_path)
 
-        self._pm.insert_action_log(
-            project_path=str(self._project_path),
-            action_type="backup",
-            entity_type="backup",
-            entity_id=backup_record,
-            details_json=f'{{"backup_type": "{backup_type}", "size_bytes": {size_bytes}}}',
-        )
+        try:
+            backup_record = self._pm.insert_backup_with_action(
+                project_path=str(self._project_path),
+                created_at=created_at,
+                backup_type=backup_type,
+                file_path=str(archive_path),
+                checksum=checksum,
+                size_bytes=size_bytes,
+                retention_days=self._retention_days,
+                action_details_json=(
+                    f'{{"backup_type": "{backup_type}", "size_bytes": {size_bytes}}}'
+                ),
+            )
+        except Exception:
+            archive_path.unlink(missing_ok=True)
+            if archive_path.parent.exists():
+                try:
+                    archive_path.parent.rmdir()
+                except OSError:
+                    pass
+            raise
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
         return BackupInfo(
             id=backup_record,
@@ -130,7 +157,7 @@ class BackupManager:
             file_path=str(archive_path),
             checksum=checksum,
             size_bytes=size_bytes,
-            created_at=datetime.now().isoformat(),
+            created_at=created_at,
             retention_days=self._retention_days,
         )
 
@@ -213,12 +240,20 @@ class BackupManager:
         """
         Remove backups older than retention_days (default 30).
 
+        Also runs a lightweight integrity sweep (Fix: BK-02) that reconciles
+        DB rows with archives on disk: DB rows without an archive are dropped,
+        and ``.tar.gz`` files in the backups directory that do not appear in
+        the DB are logged so an operator can clean them up manually.
+
         Args:
             backup_type: Optional filter to only prune this type.
 
         Returns:
             Number of backups pruned.
         """
+        orphan_rows_dropped = self._drop_orphan_rows(backup_type)
+        self._log_orphan_archives(backup_type)
+
         cutoff = datetime.now() - timedelta(days=self._retention_days)
         cutoff_iso = cutoff.isoformat()
 
@@ -240,8 +275,58 @@ class BackupManager:
                 self._pm.delete_backup(row["id"])
                 count += 1
 
-        logger.info(f"Pruned {count} backup(s) older than {self._retention_days} days")
+        logger.info(
+            "Pruned %d backup(s) older than %d days (plus %d orphan DB rows)",
+            count,
+            self._retention_days,
+            orphan_rows_dropped,
+        )
         return count
+
+    def _drop_orphan_rows(self, backup_type: BackupType | None) -> int:
+        """Remove DB rows whose archive no longer exists on disk."""
+        rows = self._pm.list_backups(
+            project_path=str(self._project_path),
+            backup_type=backup_type,
+            limit=1000,
+        )
+        dropped = 0
+        for row in rows:
+            archive_path = Path(row["file_path"])
+            if not archive_path.exists():
+                logger.warning(
+                    "Dropping orphan backup row id=%s (archive missing: %s)",
+                    row["id"],
+                    archive_path,
+                )
+                try:
+                    self._pm.delete_backup(row["id"])
+                    dropped += 1
+                except Exception as exc:
+                    logger.error("Failed to delete orphan backup row %s: %s", row["id"], exc)
+        return dropped
+
+    def _log_orphan_archives(self, backup_type: BackupType | None) -> None:
+        """Warn about archive files on disk that have no matching DB row."""
+        if not self._backups_dir.exists():
+            return
+        known = {
+            Path(row["file_path"]).resolve()
+            for row in self._pm.list_backups(
+                project_path=str(self._project_path),
+                backup_type=backup_type,
+                limit=10_000,
+            )
+        }
+        roots = (
+            [self._backups_dir / backup_type] if backup_type else list(self._backups_dir.iterdir())
+        )
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for archive in root.rglob("*.tar*"):
+                if archive.resolve() not in known:
+                    logger.warning("Orphan backup archive on disk (no DB row): %s", archive)
 
     def restore_backup(
         self,
@@ -299,30 +384,7 @@ class BackupManager:
                     "message": f"[dry-run] Would restore {len(extracted)} file(s) from backup #{backup_id}",
                 }
 
-            restored_count = 0
-            with tarfile.open(archive_path, "r:*") as tf:
-                for ti, dst in restorable_members:
-                    if ti.isdir():
-                        dst.mkdir(parents=True, exist_ok=True)
-                        continue
-
-                    if not ti.isfile():
-                        logger.warning(
-                            f"Skipping unsupported archive entry during restore: {ti.name}"
-                        )
-                        continue
-
-                    extracted_file = tf.extractfile(ti)
-                    if extracted_file is None:
-                        raise ValueError(f"Could not extract archive member: {ti.name}")
-
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    with extracted_file, open(dst, "wb") as out_file:
-                        shutil.copyfileobj(extracted_file, out_file)
-
-                    os.chmod(dst, ti.mode)
-                    os.utime(dst, (ti.mtime, ti.mtime))
-                    restored_count += 1
+            restored_count = self._restore_members_atomically(archive_path, restorable_members)
 
             self._pm.insert_action_log(
                 project_path=str(self._project_path),
@@ -350,6 +412,45 @@ class BackupManager:
                 "files": [],
                 "dry_run": dry_run,
             }
+
+    def describe_backup_scope(
+        self, global_system_db_path: str | Path | None = None
+    ) -> dict[str, object]:
+        """Describe which MUSCLE storage surfaces are covered by project backups."""
+        system_db_path = (
+            Path(global_system_db_path).expanduser() if global_system_db_path is not None else None
+        )
+        included_paths = [
+            str(self._muscle_dir),
+            str(self._muscle_dir / "project_memory.db"),
+            str(self._project_path / "CLAUDE.md"),
+        ]
+        excluded_paths: list[dict[str, str]] = []
+        if system_db_path is not None:
+            excluded_paths.append(
+                {
+                    "path": str(system_db_path),
+                    "reason": (
+                        "Global MUSCLE system database is shared across projects and is not "
+                        "included in project-local backups."
+                    ),
+                }
+            )
+        return {
+            "project_root": str(self._project_path),
+            "backups_dir": str(self._backups_dir),
+            "included_paths": included_paths,
+            "excluded_paths": excluded_paths,
+            "restore_guidance": [
+                "Restore the project backup first to recover project-local .muscle state.",
+                (
+                    f"Back up and restore {system_db_path} separately if you need global "
+                    "cross-project, model-pack, or submission metadata."
+                    if system_db_path is not None
+                    else "Back up and restore the global MUSCLE system database separately if needed."
+                ),
+            ],
+        }
 
     # -------------------------------------------------------------------------
     # Internal helpers
@@ -418,3 +519,100 @@ class BackupManager:
             )
 
         return destination
+
+    def _restore_members_atomically(
+        self,
+        archive_path: Path,
+        restorable_members: list[tuple[tarfile.TarInfo, Path]],
+    ) -> int:
+        """Stage archive members first, then apply them with rollback on failure."""
+        project_root = self._project_path.resolve()
+
+        with tempfile.TemporaryDirectory(
+            dir=str(self._muscle_dir),
+            prefix="restore-staging-",
+        ) as staging_dir:
+            staging_root = Path(staging_dir)
+            staged_members: list[tuple[tarfile.TarInfo, Path, Path]] = []
+
+            with tarfile.open(archive_path, "r:*") as tf:
+                for ti, dst in restorable_members:
+                    relative_destination = dst.resolve().relative_to(project_root)
+                    staged_path = staging_root / relative_destination
+
+                    if ti.isdir():
+                        staged_path.mkdir(parents=True, exist_ok=True)
+                        staged_members.append((ti, dst, staged_path))
+                        continue
+
+                    if not ti.isfile():
+                        logger.warning(
+                            f"Skipping unsupported archive entry during restore: {ti.name}"
+                        )
+                        continue
+
+                    extracted_file = tf.extractfile(ti)
+                    if extracted_file is None:
+                        raise ValueError(f"Could not extract archive member: {ti.name}")
+
+                    staged_path.parent.mkdir(parents=True, exist_ok=True)
+                    with extracted_file, open(staged_path, "wb") as out_file:
+                        shutil.copyfileobj(extracted_file, out_file)
+
+                    os.chmod(staged_path, ti.mode)
+                    os.utime(staged_path, (ti.mtime, ti.mtime))
+                    staged_members.append((ti, dst, staged_path))
+
+            with tempfile.TemporaryDirectory(
+                dir=str(self._muscle_dir),
+                prefix="restore-rollback-",
+            ) as rollback_dir:
+                rollback_root = Path(rollback_dir)
+                backed_up_files: dict[Path, Path] = {}
+                created_files: list[Path] = []
+                applied_files: list[Path] = []
+                restored_count = 0
+
+                try:
+                    for ti, dst, staged_path in staged_members:
+                        if ti.isdir():
+                            dst.mkdir(parents=True, exist_ok=True)
+                            continue
+
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+
+                        if dst.exists():
+                            rollback_path = rollback_root / dst.relative_to(project_root)
+                            rollback_path.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(dst, rollback_path)
+                            backed_up_files[dst] = rollback_path
+                        else:
+                            created_files.append(dst)
+
+                        os.replace(staged_path, dst)
+                        applied_files.append(dst)
+                        os.chmod(dst, ti.mode)
+                        os.utime(dst, (ti.mtime, ti.mtime))
+                        restored_count += 1
+                except Exception:
+                    self._rollback_restore(backed_up_files, created_files, applied_files)
+                    raise
+
+        return restored_count
+
+    @staticmethod
+    def _rollback_restore(
+        backed_up_files: dict[Path, Path],
+        created_files: list[Path],
+        applied_files: list[Path],
+    ) -> None:
+        """Restore pre-restore file contents after a failed apply step."""
+        for dst in reversed(applied_files):
+            rollback_path = backed_up_files.get(dst)
+            if rollback_path is not None and rollback_path.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(rollback_path, dst)
+                continue
+
+            if dst in created_files and dst.exists():
+                dst.unlink()

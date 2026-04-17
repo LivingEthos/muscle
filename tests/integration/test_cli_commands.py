@@ -374,8 +374,60 @@ class TestLongEvalCLI:
             }
             mock_cls.return_value = mock_runner
 
-            result = runner.invoke(cli, ["long-eval", "benchmark"])
+            result = runner.invoke(cli, ["long-eval", "benchmark", "--suite", "related-project"])
             assert result.exit_code == 0
+            mock_runner.run_benchmark.assert_called_once_with(
+                baseline="legacy",
+                candidate="review-smart",
+                include_history=True,
+                suite="related-project",
+            )
+
+    def test_long_eval_benchmark_enforce_gates_failure(self, runner: CliRunner):
+        """long-eval benchmark --enforce-gates should fail when release gates fail."""
+        with patch("tools.muscle.code_review.review_benchmark.ReviewBenchmarkRunner") as mock_cls:
+            mock_runner = MagicMock()
+            mock_runner.run_benchmark.return_value = {
+                "aggregate": {
+                    "baseline": {
+                        "high_critical_recall": 0.5,
+                        "false_positive_rate": 0.2,
+                        "tokens_used": 100,
+                    },
+                    "candidate": {
+                        "high_critical_recall": 0.5,
+                        "false_positive_rate": 0.2,
+                        "tokens_used": 100,
+                    },
+                },
+                "thresholds": {
+                    "high_critical_recall_up_20pct": False,
+                    "false_positive_rate_not_worse": True,
+                    "token_cost_down_30pct": False,
+                },
+                "benchmark_gates": {"overall_passed": False, "gates": {}},
+                "report_paths": {"json": "/tmp/report.json"},
+            }
+            mock_runner.build_release_evidence.return_value = {
+                "release_gates": {
+                    "overall_passed": False,
+                    "gates": {
+                        "related_project_measurable_win": {"passed": False},
+                        "model_pack_measurable_win": {"passed": False},
+                    },
+                }
+            }
+            mock_runner.write_release_evidence.return_value = {"json": "/tmp/release.json"}
+            mock_cls.return_value = mock_runner
+
+            with patch(
+                "tools.muscle.cli._run_benchmark_release_invariants",
+                return_value={"checked": True, "passed": True, "summary": "ok", "details": {}},
+            ):
+                result = runner.invoke(cli, ["long-eval", "benchmark", "--enforce-gates"])
+
+            assert result.exit_code != 0
+            assert "Release gates failed" in result.output
 
 
 # ---------------------------------------------------------------------------

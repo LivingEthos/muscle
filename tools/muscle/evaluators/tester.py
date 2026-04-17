@@ -44,6 +44,10 @@ class PytestRunner(BaseEvaluator):
         for line in output.split("\n"):
             if "FAILED" in line or "ERROR" in line:
                 errors.append(line.strip())
+        # Fix: EV-T2. Warn when failure count is truncated so downstream
+        # evolver decisions account for a partial picture.
+        if len(errors) > 20:
+            logger.warning("pytest failure list truncated from %d to 20 entries", len(errors))
         return errors[:20]
 
 
@@ -75,6 +79,8 @@ class JestRunner(BaseEvaluator):
         for line in output.split("\n"):
             if "FAIL" in line or "● " in line:
                 errors.append(line.strip())
+        if len(errors) > 20:
+            logger.warning("jest failure list truncated from %d to 20 entries", len(errors))
         return errors[:20]
 
 

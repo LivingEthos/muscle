@@ -14,6 +14,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .io_safety import atomic_write_json
 from .types import BudgetMode
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ class BudgetInfo:
     def usage_percent(self) -> float:
         if self.total_tokens == 0:
             return 0.0
-        return (self.used_tokens / self.total_tokens) * 100
+        return max(0.0, min(100.0, (self.used_tokens / self.total_tokens) * 100))
 
 
 class BudgetManager:
@@ -72,22 +73,28 @@ class BudgetManager:
             if path.exists():
                 try:
                     data = json.loads(path.read_text())
-                    self.fixed_limit = data.get("remaining_tokens", 0)
+                    remaining = data.get("remaining_tokens", 0)
+                    self.fixed_limit = max(0, int(remaining or 0))
                     logger.info(f"Loaded auto budget from {path}: {self.fixed_limit} tokens")
                     return
                 except json.JSONDecodeError:
                     logger.warning(f"Invalid budget JSON at {path}")
+                except (TypeError, ValueError):
+                    logger.warning(f"Invalid budget value at {path}")
 
         for path_str in DEFAULT_BUDGET_PATHS:
             path = Path(path_str).expanduser()
             if path.exists():
                 try:
                     data = json.loads(path.read_text())
-                    self.fixed_limit = data.get("remaining_tokens", 0)
+                    remaining = data.get("remaining_tokens", 0)
+                    self.fixed_limit = max(0, int(remaining or 0))
                     logger.info(f"Loaded auto budget from {path}: {self.fixed_limit} tokens")
                     return
                 except json.JSONDecodeError:
                     logger.warning(f"Invalid budget JSON at {path}")
+                except (TypeError, ValueError):
+                    logger.warning(f"Invalid budget value at {path}")
 
         api_key = os.environ.get("MINIMAX_API_KEY")
         if api_key:
@@ -132,7 +139,7 @@ class BudgetManager:
             used_tokens=self._original_limit - self.fixed_limit
             if self.mode != BudgetMode.UNLIMITED
             else 0,
-            remaining_tokens=self.fixed_limit if self.mode != BudgetMode.UNLIMITED else 0,
+            remaining_tokens=max(0, self.fixed_limit) if self.mode != BudgetMode.UNLIMITED else 0,
             mode=self.mode,
         )
 
@@ -143,6 +150,6 @@ class BudgetManager:
         save_path = Path(path) if path else Path(".muscle/budget.json")
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
-        data = {"remaining_tokens": self.fixed_limit}
-        save_path.write_text(json.dumps(data, indent=2))
+        data = {"remaining_tokens": max(0, self.fixed_limit)}
+        atomic_write_json(save_path, data, indent=2)
         logger.info(f"Saved budget state to {save_path}")

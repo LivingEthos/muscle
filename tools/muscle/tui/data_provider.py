@@ -7,13 +7,17 @@ and the filesystem without direct DB imports in view classes.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from ..backup_manager import BackupInfo, BackupManager
+from ..optimization import WorkflowOptimizer
 from ..project_memory import ProjectMemory
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -49,6 +53,17 @@ class TUIData:
     skill_generation: bool = True
     # Audit log
     action_logs: list[dict] = field(default_factory=list)
+    # Transferred lesson recommendations
+    transferred_lessons: list[dict] = field(default_factory=list)
+    # Debuggability
+    latest_model_identity: dict[str, Any] = field(default_factory=dict)
+    model_identity_history: list[dict] = field(default_factory=list)
+    lesson_usage_events: list[dict] = field(default_factory=list)
+    # Optimization
+    optimization_hotspots: list[dict] = field(default_factory=list)
+    optimization_recommendations: list[dict] = field(default_factory=list)
+    token_savings_summary: dict[str, Any] = field(default_factory=dict)
+    optimization_settings: dict[str, str] = field(default_factory=dict)
 
 
 class TUIDataProvider:
@@ -94,18 +109,40 @@ class TUIDataProvider:
         return self._backup_mgr
 
     def _load_config(self) -> dict[str, Any]:
-        """Load project config from .muscle/config.yaml."""
-        try:
-            import json
+        """Load project config from ``.muscle/config.yaml``.
 
-            config_path = Path(self.project_path) / ".muscle" / "config.yaml"
-            if config_path.exists():
-                with open(config_path) as f:
-                    data: dict[str, Any] = json.load(f).get("project", {})
-                    return data
-        except Exception:
-            pass
-        return {}
+        Note: the file is currently written as JSON by ``ProjectManager``
+        despite the ``.yaml`` extension. Fix: TU-01. Try JSON first, fall back
+        to YAML if available, and log on parse failure so this ambiguity is
+        diagnosable rather than silently returning defaults.
+        """
+        import json
+
+        config_path = Path(self.project_path) / ".muscle" / "config.yaml"
+        if not config_path.exists():
+            return {}
+        try:
+            text = config_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.warning("Failed to read %s: %s", config_path, exc)
+            return {}
+        try:
+            loaded = json.loads(text)
+        except json.JSONDecodeError:
+            try:
+                import yaml
+
+                loaded = yaml.safe_load(text)
+            except ImportError:
+                logger.warning("Config at %s is not JSON and PyYAML is not installed", config_path)
+                return {}
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("Failed to parse %s as YAML: %s", config_path, exc)
+                return {}
+        if not isinstance(loaded, dict):
+            return {}
+        project = loaded.get("project", {})
+        return project if isinstance(project, dict) else {}
 
     # -------------------------------------------------------------------------
     # Public API
@@ -194,6 +231,45 @@ class TUIDataProvider:
                 except Exception:
                     last_review = created[:16]
 
+        optimization_hotspots: list[dict] = []
+        optimization_recommendations: list[dict] = []
+        token_savings_summary: dict[str, Any] = {}
+        optimization_settings: dict[str, str] = {}
+        transferred_lessons: list[dict] = []
+        latest_model_identity: dict[str, Any] = {}
+        model_identity_history: list[dict] = []
+        lesson_usage_events: list[dict] = []
+        if pm:
+            try:
+                optimizer = WorkflowOptimizer(pm, self.project_path)
+                optimization_status = optimizer.get_status()
+                optimization_hotspots = list(optimization_status.get("hotspots", []))
+                optimization_recommendations = list(optimization_status.get("recommendations", []))
+                token_savings_summary = dict(optimization_status.get("savings", {}))
+                optimization_settings = dict(optimization_status.get("settings", {}))
+            except Exception:
+                pass
+            try:
+                transferred_lessons = pm.list_transferred_lesson_recommendations(
+                    project_path=self.project_path,
+                    include_inactive=True,
+                    limit=10,
+                )
+            except Exception:
+                pass
+            try:
+                latest_model_identity = pm.get_latest_model_identity(self.project_path) or {}
+                model_identity_history = pm.list_model_identity_history(
+                    project_path=self.project_path,
+                    limit=8,
+                )
+                lesson_usage_events = pm.list_lesson_usage_events(
+                    project_path=self.project_path,
+                    limit=8,
+                )
+            except Exception:
+                pass
+
         return TUIData(
             project_path=self.project_path,
             review_count=stats.get("total_reviews", 0),
@@ -215,6 +291,14 @@ class TUIDataProvider:
             memory_location=config.get("memory_location", ".muscle"),
             skill_generation=config.get("skill_generation", True),
             action_logs=self.get_action_logs(limit=30),
+            transferred_lessons=transferred_lessons,
+            latest_model_identity=latest_model_identity,
+            model_identity_history=model_identity_history,
+            lesson_usage_events=lesson_usage_events,
+            optimization_hotspots=optimization_hotspots,
+            optimization_recommendations=optimization_recommendations,
+            token_savings_summary=token_savings_summary,
+            optimization_settings=optimization_settings,
         )
 
     def get_review_runs(self, limit: int = 20) -> list[dict]:

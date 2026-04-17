@@ -30,6 +30,8 @@ SOURCE_EXTENSIONS = {
 }
 DOC_EXTENSIONS = {".md", ".rst", ".txt"}
 CONFIG_EXTENSIONS = {".json", ".yaml", ".yml", ".toml", ".ini"}
+MUSCLE_INTERNAL_DIR = ".muscle"
+MUSCLE_INTERNAL_SUFFIXES = (".muscle.tmp", ".muscle.bak")
 PUBLIC_SURFACE_MARKERS = (
     "cli.py",
     "__init__.py",
@@ -64,19 +66,26 @@ class ReviewScopeClassifier:
     """Classify review scope and route smart workflow agents."""
 
     def classify(self, inputs: ScopeInputs) -> ReviewScope:
-        target = Path(inputs.target_path)
-        discovered = self._discover_files(target, inputs.changed_files)
+        target = Path(inputs.target_path).resolve()
+        explicit_changed_files = self._normalize_changed_files(target, inputs.changed_files)
+        discovered = (
+            explicit_changed_files
+            if inputs.changed_files is not None
+            else self._discover_files(target)
+        )
         changed_files = [str(path) for path in discovered]
 
-        source_files = [str(path) for path in discovered if path.suffix.lower() in SOURCE_EXTENSIONS]
-        doc_files = [str(path) for path in discovered if path.suffix.lower() in DOC_EXTENSIONS]
-        test_files = [
-            str(path)
-            for path in discovered
-            if self._is_test_path(path)
+        source_files = [
+            str(path) for path in discovered if path.suffix.lower() in SOURCE_EXTENSIONS
         ]
+        doc_files = [str(path) for path in discovered if path.suffix.lower() in DOC_EXTENSIONS]
+        test_files = [str(path) for path in discovered if self._is_test_path(path)]
         touched_languages = sorted(
-            {SOURCE_EXTENSIONS[path.suffix.lower()] for path in discovered if path.suffix.lower() in SOURCE_EXTENSIONS}
+            {
+                SOURCE_EXTENSIONS[path.suffix.lower()]
+                for path in discovered
+                if path.suffix.lower() in SOURCE_EXTENSIONS
+            }
         )
         line_count = sum(self._safe_line_count(path) for path in discovered)
         docs_only = bool(discovered) and len(doc_files) == len(discovered)
@@ -92,10 +101,16 @@ class ReviewScopeClassifier:
             docs_only=docs_only,
             tests_only=tests_only,
             public_api_changed=public_api_changed,
-            has_changed_files=bool(inputs.changed_files),
+            has_changed_files=bool(explicit_changed_files),
         )
         review_intensity = self._intensity_for_complexity(complexity, inputs.mode)
-        test_scope = self._test_scope(source_files, test_files, docs_only, tests_only, inputs.changed_files)
+        test_scope = self._test_scope(
+            source_files,
+            test_files,
+            docs_only,
+            tests_only,
+            [str(path) for path in explicit_changed_files] if explicit_changed_files else None,
+        )
         auto_fix_cap = self._auto_fix_cap(complexity)
         reasoning = self._build_reasoning(
             complexity=complexity,
@@ -103,7 +118,7 @@ class ReviewScopeClassifier:
             tests_only=tests_only,
             public_api_changed=public_api_changed,
             review_agents=review_agents,
-            has_changed_files=bool(inputs.changed_files),
+            has_changed_files=bool(explicit_changed_files),
         )
 
         return ReviewScope(
@@ -124,11 +139,10 @@ class ReviewScopeClassifier:
             reasoning=reasoning,
         )
 
-    def _discover_files(self, target: Path, changed_files: list[str] | None) -> list[Path]:
-        if changed_files:
-            return [Path(path).resolve() for path in changed_files]
+    def _discover_files(self, target: Path) -> list[Path]:
         if target.is_file():
-            return [target.resolve()]
+            resolved = target.resolve()
+            return [resolved] if self._should_include_path(target, resolved) else []
         if not target.exists():
             return []
 
@@ -138,13 +152,48 @@ class ReviewScopeClassifier:
                 continue
             if any(part in EXCLUDED_DIRS for part in path.parts):
                 continue
+            resolved = path.resolve()
+            if not self._should_include_path(target, resolved):
+                continue
             if (
                 path.suffix.lower() in SOURCE_EXTENSIONS
                 or path.suffix.lower() in DOC_EXTENSIONS
                 or path.suffix.lower() in CONFIG_EXTENSIONS
             ):
-                files.append(path.resolve())
+                files.append(resolved)
         return files
+
+    def _normalize_changed_files(
+        self,
+        target: Path,
+        changed_files: list[str] | None,
+    ) -> list[Path]:
+        if not changed_files:
+            return []
+
+        normalized: list[Path] = []
+        seen: set[Path] = set()
+        for changed in changed_files:
+            path = Path(changed).resolve()
+            if not self._should_include_path(target, path):
+                continue
+            if path in seen:
+                continue
+            seen.add(path)
+            normalized.append(path)
+        return normalized
+
+    def _should_include_path(self, target: Path, path: Path) -> bool:
+        if self._targets_internal_muscle_state(target):
+            return True
+        if MUSCLE_INTERNAL_DIR in path.parts:
+            return False
+        normalized = str(path).replace("\\", "/").lower()
+        return not any(normalized.endswith(suffix) for suffix in MUSCLE_INTERNAL_SUFFIXES)
+
+    @staticmethod
+    def _targets_internal_muscle_state(target: Path) -> bool:
+        return MUSCLE_INTERNAL_DIR in target.parts
 
     def _classify_complexity(self, source_count: int, file_count: int, line_count: int) -> str:
         if file_count <= 1 and line_count <= 80:
@@ -268,7 +317,11 @@ class ReviewScopeClassifier:
     @staticmethod
     def _is_test_path(path: Path) -> bool:
         normalized = str(path).lower()
-        return "/tests/" in normalized or normalized.endswith("_test.py") or "test_" in path.name.lower()
+        return (
+            "/tests/" in normalized
+            or normalized.endswith("_test.py")
+            or "test_" in path.name.lower()
+        )
 
     @staticmethod
     def _is_public_surface(path: Path) -> bool:

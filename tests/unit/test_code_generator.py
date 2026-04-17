@@ -48,11 +48,12 @@ class TestCodeGenerator:
             )
         assert "Generated" in result
 
-    def test_sanitize_filename(self, generator):
-        assert generator._sanitize_filename("normal.py") == "normal.py"
-        assert generator._sanitize_filename("../etc/passwd") == "file_/etc/passwd"
-        assert generator._sanitize_filename("file with spaces.py") == "filewithspaces.py"
-        assert generator._sanitize_filename("" + "a" * 300 + ".py") == ("a" * 255)
+    def test_normalize_output_relative_path(self, generator):
+        assert generator._normalize_output_relative_path("normal.py", "generated.py") == "normal.py"
+        with pytest.raises(ValueError, match="Traversal"):
+            generator._normalize_output_relative_path("../etc/passwd", "generated.py")
+        with pytest.raises(ValueError, match="Backslash"):
+            generator._normalize_output_relative_path("src\\app.py", "generated.py")
 
     def test_sanitize_content(self, generator):
         content = "normal text\x00null byte\x1fcontrol"
@@ -109,6 +110,26 @@ class TestCodeGenerator:
         )
         assert len(chunks) >= 2
 
+    def test_generate_streaming_ignores_terminal_empty_chunk(self, generator, mock_client, tmp_path):
+        mock_client.chat_streaming.return_value = iter(
+            [
+                ("```python\nprint('hi')\n", None),
+                ("```python\nprint('hi')\n```", TokenUsage(10, 5)),
+                ("", TokenUsage(10, 5)),
+            ]
+        )
+
+        chunks = list(
+            generator.generate_streaming(
+                task="test",
+                evolved_strategy=None,
+                output_dir=str(tmp_path),
+            )
+        )
+
+        assert chunks[-1][0] == "Generated 1 files"
+        assert (tmp_path / "main.py").exists()
+
 
 class TestGenerateRetryLogic:
     """Tests for generate() retry logic."""
@@ -160,6 +181,7 @@ class TestGenerateRetryLogic:
         cost_opt.get_from_cache.return_value = {"files": ["cached.py"]}
         generator.cost_optimizer = cost_opt
         generator.max_retries = 1
+        (tmp_path / "cached.py").write_text("print('cached')", encoding="utf-8")
 
         result, usage = generator.generate(
             task="say hello",
@@ -192,6 +214,52 @@ class TestGenerateRetryLogic:
 
         assert mock_client.chat.called
 
+    def test_cost_optimizer_cache_ignores_stale_files(self, gen_with_retry, tmp_path):
+        """Test generate regenerates when cached files are missing from the output directory."""
+        from tools.muscle.cost_optimizer import CostOptimizer
+
+        generator, mock_client = gen_with_retry
+        cost_opt = Mock(spec=CostOptimizer)
+        cost_opt.get_from_cache.return_value = {"files": ["cached.py"]}
+        cost_opt.estimate_tier.return_value = "medium"
+        cost_opt.get_max_tokens.return_value = 4096
+        generator.cost_optimizer = cost_opt
+        generator.max_retries = 1
+        mock_client.chat.return_value = ("```python\ndef foo(): pass\n```", TokenUsage(10, 5))
+
+        with patch.object(Path, "write_text"):
+            generator.generate(
+                task="say hello",
+                evolved_strategy=None,
+                output_dir=str(tmp_path),
+            )
+
+        assert mock_client.chat.called
+
+    def test_cost_optimizer_cache_includes_evolved_strategy(self, gen_with_retry, tmp_path):
+        """Test generate does not reuse base-task cache when the strategy changes."""
+        from tools.muscle.cost_optimizer import CostOptimizer
+
+        generator, mock_client = gen_with_retry
+        cost_opt = Mock(spec=CostOptimizer)
+        cost_opt.get_from_cache.side_effect = (
+            lambda cache_key: {"files": ["cached.py"]} if cache_key == "say hello" else None
+        )
+        cost_opt.estimate_tier.return_value = "medium"
+        cost_opt.get_max_tokens.return_value = 4096
+        generator.cost_optimizer = cost_opt
+        generator.max_retries = 1
+        mock_client.chat.return_value = ("```python\ndef foo(): pass\n```", TokenUsage(10, 5))
+
+        with patch.object(Path, "write_text"):
+            generator.generate(
+                task="say hello",
+                evolved_strategy="use different filenames",
+                output_dir=str(tmp_path),
+            )
+
+        assert mock_client.chat.called
+
 
 class TestParseAndWrite:
     """Tests for _parse_and_write() edge cases."""
@@ -206,6 +274,12 @@ class TestParseAndWrite:
         code_output, files = gen._parse_and_write(response, tmp_path)
         assert len(files) == 1
         assert (tmp_path / files[0]).exists()
+
+    def test_parse_and_write_rejects_traversal_filename(self, gen, tmp_path):
+        response = "```python\n# src/../../escape.py\nprint('oops')\n```"
+        code_output, files = gen._parse_and_write(response, tmp_path)
+        assert files == ["generated_output.txt"]
+        assert not (tmp_path.parent / "escape.py").exists()
 
     def test_parse_and_write_with_plain_code_fallback(self, gen, tmp_path):
         """Test _parse_and_write uses plain code fallback when no blocks found."""
@@ -243,6 +317,26 @@ class TestExtractStrategies:
         text = "# Main Script\ndef hello():\n    print('hello')\n\nMore text."
         blocks = gen._extract_inline_code_blocks(text)
         assert len(blocks) >= 1
+
+    def test_extract_code_blocks_uses_embedded_filename_comments(self, gen):
+        """Test fenced code blocks honor first-line filename comments."""
+        text = (
+            "```python\n# hello.py\ndef add(a, b):\n    return a + b\n```\n"
+            "```python\n# test_hello.py\nfrom hello import add\n```"
+        )
+        blocks = gen._extract_code_blocks(text)
+
+        assert blocks[0][0] == "hello.py"
+        assert "hello.py" not in blocks[0][1]
+        assert blocks[1][0] == "test_hello.py"
+
+    def test_extract_embedded_filename_keeps_non_filename_comments(self, gen):
+        """Test ordinary comments are not stripped as filenames."""
+        content = "# this is a normal comment\ndef add(a, b):\n    return a + b"
+        filename, cleaned = gen._extract_embedded_filename(content)
+
+        assert filename is None
+        assert cleaned == content
 
     def test_looks_like_code_detects_python(self, gen):
         """Test _looks_like_code returns True for Python code."""
@@ -315,7 +409,7 @@ class TestGenerateStreaming:
             )
         )
 
-        assert len(callback_calls) >= 1
+        assert callback_calls == ["# Generated\n", "pass\n"]
 
     def test_generate_streaming_empty_response(self, gen, tmp_path):
         """Test generate_streaming handles empty response."""
@@ -333,7 +427,7 @@ class TestGenerateStreaming:
 
 
 class TestSanitizeFunctions:
-    """Tests for _sanitize_for_prompt and _sanitize_filename."""
+    """Tests for prompt sanitization helpers."""
 
     def test_sanitize_for_prompt_handles_none(self):
         from tools.muscle.code_generator import _sanitize_for_prompt

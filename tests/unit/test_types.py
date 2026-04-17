@@ -2,6 +2,8 @@
 Unit tests for SCLE types.
 """
 
+import pytest
+
 from tools.muscle.types import (
     BudgetMode,
     EvalMode,
@@ -87,6 +89,16 @@ def test_run_config_custom():
     assert config.budget_mode == BudgetMode.FIXED
     assert config.eval_mode == EvalMode.SEQUENTIAL
     assert config.allow_warnings is True
+
+
+def test_run_config_rejects_empty_task():
+    with pytest.raises(ValueError, match="Task cannot be empty"):
+        RunConfig(task="   ")
+
+
+def test_run_config_rejects_negative_budget():
+    with pytest.raises(ValueError, match="budget_tokens"):
+        RunConfig(task="Build a REST API", budget_tokens=-1)
 
 
 def test_iteration_result():

@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+import unicodedata
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,8 +23,10 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .cost_optimizer import CostOptimizer
+    from .optimization.context_budgeter import ContextBudgeter
 
-from .m27_client import M27Client, TokenUsage
+from .m27_client import STREAM_ERROR_PREFIX, M27Client, TokenUsage
+from .optimization.prompt_context import build_telemetry_context, compose_prompt_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -141,11 +144,17 @@ class CodeGenerator:
         max_retries: int = 3,
         retry_delay: float = 2.0,
         cost_optimizer: CostOptimizer | None = None,
+        context_budgeter: ContextBudgeter | None = None,
+        project_path: str | None = None,
+        lesson_resolver: object | None = None,
     ):
         self.client = m27_client
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.cost_optimizer = cost_optimizer
+        self.context_budgeter = context_budgeter
+        self.project_path = project_path or str(Path.cwd())
+        self.lesson_resolver = lesson_resolver
 
     def generate(
         self,
@@ -153,6 +162,7 @@ class CodeGenerator:
         evolved_strategy: str,
         output_dir: str,
         project_structure: str | None = None,
+        session_id: str | None = None,
     ) -> tuple[str, TokenUsage]:
         if not task or not task.strip():
             logger.error("Empty task provided to generate()")
@@ -171,39 +181,83 @@ class CodeGenerator:
             return f"Error: Cannot access output directory: {e}", TokenUsage()
 
         max_tokens = 8192
+        trimmed_strategy = (
+            self.context_budgeter.trim_strategy_text(evolved_strategy)
+            if self.context_budgeter
+            else (evolved_strategy or "")
+        )
+        trimmed_structure = (
+            self.context_budgeter.trim_project_structure(project_structure)
+            if self.context_budgeter
+            else project_structure
+        )
+        cache_lookup_task = self._build_cache_lookup_task(
+            safe_task,
+            trimmed_strategy,
+            trimmed_structure,
+        )
         if self.cost_optimizer:
-            cached = self.cost_optimizer.get_from_cache(safe_task)
-            if cached:
-                logger.info(f"Using cached result for task: {safe_task[:50]}...")
-                files = cached.get("files", [])
-                for filename in files:
+            cached = self.cost_optimizer.get_from_cache(cache_lookup_task)
+            cached_files = cached.get("files", []) if cached else []
+            if cached and self._cached_files_available(cached_files, output_path):
+                logger.info(
+                    "Using cached result for task: %s...",
+                    safe_task[:50],
+                )
+                for filename in cached_files:
                     if not isinstance(filename, str):
                         continue
-                    safe_filename = "".join(c for c in filename if c.isalnum() or c in "._-")
-                    file_path = output_path / safe_filename
-                    if file_path.exists():
-                        logger.info(f"Using cached file: {safe_filename}")
-                return f"Generated {len(files)} files (from cache)", TokenUsage()
+                    logger.info(f"Using cached file: {filename}")
+                return f"Generated {len(cached_files)} files (from cache)", TokenUsage()
+            if cached:
+                logger.info(
+                    "Cache entry for task %s is stale or incomplete, regenerating",
+                    safe_task[:50],
+                )
 
             tier = self.cost_optimizer.estimate_tier(safe_task)
             max_tokens = self.cost_optimizer.get_max_tokens(tier)
 
         user_prompt = _build_user_prompt(
-            safe_task, evolved_strategy or "", str(output_path), None, project_structure
+            safe_task,
+            trimmed_strategy,
+            str(output_path),
+            None,
+            trimmed_structure,
         )
+        base_context_strategy = (
+            "trimmed_generation_prompt" if self.context_budgeter else "default_generation_prompt"
+        )
+        prompt_envelope = compose_prompt_envelope(
+            base_prompt=user_prompt,
+            lesson_resolver=self.lesson_resolver,
+            query_text=safe_task,
+            stage="generate",
+            base_context_strategy=base_context_strategy,
+            session_id=session_id,
+        )
+        user_prompt = prompt_envelope.prompt
 
         logger.info(f"Generating code for task: {safe_task[:50]}...")
 
         response = ""
         usage = TokenUsage()
         last_error = None
+        telemetry_context = None
 
         for attempt in range(self.max_retries):
             try:
+                telemetry_context = build_telemetry_context(
+                    project_path=self.project_path,
+                    session_id=session_id,
+                    stage="generate",
+                    prompt_envelope=prompt_envelope,
+                )
                 response, usage = self.client.chat(
                     messages=[{"role": "user", "content": user_prompt}],
                     system=SYSTEM_PROMPT,
                     max_tokens=max_tokens,
+                    telemetry_context=telemetry_context,
                 )
 
                 if not response or response.strip() == "":
@@ -211,6 +265,13 @@ class CodeGenerator:
                     logger.warning(f"Attempt {attempt + 1}: Empty response, retrying...")
                     time.sleep(self.retry_delay)
                     continue
+
+                parse_success = bool(response and response.strip())
+                if telemetry_context:
+                    self.client.update_telemetry_call(
+                        telemetry_context.call_id,
+                        parse_success=parse_success,
+                    )
 
                 break
 
@@ -233,10 +294,39 @@ class CodeGenerator:
 
         code_output, files_written = self._parse_and_write(response, output_path)
 
+        if telemetry_context:
+            self.client.update_telemetry_call(
+                telemetry_context.call_id,
+                parse_success=bool(files_written),
+                metadata_updates={"files_written": len(files_written)},
+            )
+
         if self.cost_optimizer and files_written:
-            self.cost_optimizer.save_to_cache(task, code_output, files_written)
+            self.cost_optimizer.save_to_cache(cache_lookup_task, code_output, files_written)
 
         return code_output, usage
+
+    @staticmethod
+    def _cached_files_available(files: list[object], output_path: Path) -> bool:
+        """Return True when every cached file still exists in the target output directory."""
+        valid_files = [str(filename) for filename in files if isinstance(filename, str)]
+        if not valid_files:
+            return False
+        return all((output_path / filename).exists() for filename in valid_files)
+
+    @staticmethod
+    def _build_cache_lookup_task(
+        task: str,
+        evolved_strategy: str,
+        project_structure: str | None,
+    ) -> str:
+        """Build a stable cache key payload that includes retry-relevant generation context."""
+        cache_parts = [f"task={task.strip()}"]
+        if evolved_strategy.strip():
+            cache_parts.append(f"strategy={evolved_strategy.strip()}")
+        if project_structure and project_structure.strip():
+            cache_parts.append(f"structure={project_structure.strip()}")
+        return "\n---\n".join(cache_parts)
 
     def _parse_and_write(self, response: str, output_dir: Path) -> tuple[str, list[str]]:
         if not response:
@@ -253,19 +343,17 @@ class CodeGenerator:
 
         if code_blocks:
             for filename, content in code_blocks:
-                safe_filename = self._sanitize_filename(filename)
-                if not safe_filename:
-                    safe_filename = "generated_code.py"
-
                 try:
-                    file_path = output_dir / safe_filename
-                    file_path.parent.mkdir(parents=True, exist_ok=True)
-                    safe_content = self._sanitize_content(content)
-                    file_path.write_text(safe_content, encoding="utf-8")
+                    safe_filename = self._write_output_file(
+                        output_dir,
+                        filename,
+                        content,
+                        default_filename="generated_code.py",
+                    )
                     files_written.append(safe_filename)
-                    logger.info(f"Wrote code block: {safe_filename} ({len(safe_content)} chars)")
-                except OSError as e:
-                    logger.error(f"Cannot write file {safe_filename}: {e}")
+                    logger.info("Wrote code block: %s", safe_filename)
+                except (OSError, ValueError) as e:
+                    logger.error("Cannot write file %s: %s", filename, e)
                     continue
         else:
             logger.warning("No code blocks found. Attempting alternative extraction...")
@@ -277,10 +365,13 @@ class CodeGenerator:
                 else:
                     plain_code = self._extract_plain_code(response)
                     if plain_code:
-                        file_path = output_dir / "generated_code.py"
-                        safe_content = self._sanitize_content(plain_code)
-                        file_path.write_text(safe_content, encoding="utf-8")
-                        files_written.append("generated_code.py")
+                        written_name = self._write_output_file(
+                            output_dir,
+                            "generated_code.py",
+                            plain_code,
+                            default_filename="generated_code.py",
+                        )
+                        files_written.append(written_name)
                         logger.info("Wrote extracted code as generated_code.py")
             except Exception as e:
                 logger.error(f"Error in alternative extraction: {e}")
@@ -288,33 +379,74 @@ class CodeGenerator:
         if not files_written:
             logger.warning("No files parsed. Writing raw response.")
             try:
-                output_file = output_dir / "generated_output.txt"
-                safe_content = self._sanitize_content(response)
-                output_file.write_text(safe_content, encoding="utf-8")
-                files_written.append("generated_output.txt")
-            except OSError as e:
+                written_name = self._write_output_file(
+                    output_dir,
+                    "generated_output.txt",
+                    response,
+                    default_filename="generated_output.txt",
+                )
+                files_written.append(written_name)
+            except (OSError, ValueError) as e:
                 logger.error(f"Cannot write fallback file: {e}")
                 return "Error: Cannot write files", []
 
         logger.info(f"Wrote {len(files_written)} files: {', '.join(files_written)}")
         return f"Generated {len(files_written)} files", files_written
 
-    def _sanitize_filename(self, filename: str) -> str:
-        if not filename:
-            return ""
-        safe = "".join(c for c in filename if c.isalnum() or c in "._-/\\")
-        if len(safe) > 255:
-            safe = safe[:255]
-        if not safe or safe.startswith("."):
-            safe = "file_" + safe.lstrip(".") if safe else "generated"
-        return safe
+    def _write_output_file(
+        self,
+        output_dir: Path,
+        filename: str,
+        content: str,
+        *,
+        default_filename: str,
+    ) -> str:
+        relative_name = self._normalize_output_relative_path(filename, default_filename)
+        file_path = self._resolve_output_path(output_dir, relative_name)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        safe_content = self._sanitize_content(content)
+        file_path.write_text(safe_content, encoding="utf-8")
+        return relative_name
+
+    def _normalize_output_relative_path(self, filename: str, default_filename: str) -> str:
+        normalized = unicodedata.normalize("NFC", filename or default_filename)
+        normalized = normalized.replace("\x00", "").strip()
+        if not normalized:
+            normalized = default_filename
+
+        if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
+            raise ValueError(f"Absolute output paths are not allowed: {filename}")
+        if "\\" in normalized:
+            raise ValueError(f"Backslash-separated output paths are not allowed: {filename}")
+
+        parts = [part for part in normalized.split("/") if part]
+        if not parts:
+            parts = [default_filename]
+        if any(part in {".", ".."} for part in parts):
+            raise ValueError(f"Traversal output paths are not allowed: {filename}")
+
+        relative_path = "/".join(parts)
+        if len(relative_path) > 255:
+            relative_path = relative_path[:255]
+        return relative_path
+
+    @staticmethod
+    def _resolve_output_path(output_dir: Path, relative_name: str) -> Path:
+        root = output_dir.resolve()
+        target = (root / relative_name).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            msg = f"Output path escapes target directory: {relative_name}"
+            raise ValueError(msg) from exc
+        return target
 
     def _sanitize_content(self, content: str) -> str:
         if not content:
             return ""
         content = content.replace("\x00", "")
         content = content.replace("\r\n", "\n")
-        return content
+        return content.encode("utf-8", errors="replace").decode("utf-8")
 
     def generate_streaming(
         self,
@@ -334,35 +466,69 @@ class CodeGenerator:
         logger.info(f"Generating code for task: {task[:50]}... (streaming)")
 
         full_response = ""
+        previous_text = ""
+        final_usage = TokenUsage()
 
-        for accumulated_text, _usage in self.client.chat_streaming(
+        stream_error: str | None = None
+        for accumulated_text, usage in self.client.chat_streaming(
             messages=[{"role": "user", "content": user_prompt}],
             system=SYSTEM_PROMPT,
             max_tokens=8192,
         ):
-            full_response = accumulated_text
-            if progress_callback and accumulated_text:
-                progress_callback(accumulated_text)
-            yield "", TokenUsage()
+            if usage is not None:
+                final_usage = usage
 
-        if full_response:
+            if not accumulated_text:
+                continue
+
+            # Fix: M27-04. Detect streaming-error sentinel emitted by M27Client
+            # when all retries failed, so we surface a real error rather than
+            # silently returning an empty response.
+            if accumulated_text.startswith(STREAM_ERROR_PREFIX):
+                stream_error = accumulated_text[len(STREAM_ERROR_PREFIX) :]
+                logger.error(f"Streaming failed: {stream_error}")
+                break
+
+            full_response = accumulated_text
+            delta = accumulated_text[len(previous_text) :]
+            previous_text = accumulated_text
+            if progress_callback and delta:
+                progress_callback(delta)
+            if delta and not progress_callback:
+                yield delta, final_usage
+
+        if stream_error:
+            yield f"Generation failed: {stream_error}", final_usage
+        elif full_response:
             logger.info(f"Generated {len(full_response)} chars")
             code_output, _ = self._parse_and_write(full_response, output_path)
-            usage = TokenUsage()
-            yield code_output, usage
+            yield code_output, final_usage
         else:
             yield "Generation failed: empty response", TokenUsage()
 
+    # Fix: CG-03. Cap input size before running ``re.DOTALL`` patterns on
+    # untrusted model output to bound regex backtracking cost.
+    _MAX_REGEX_INPUT_BYTES = 1_048_576  # 1 MiB
+
     def _extract_code_blocks(self, text: str) -> list[tuple[str, str]]:
         blocks = []
+
+        if len(text) > self._MAX_REGEX_INPUT_BYTES:
+            logger.warning(
+                "Code block extraction truncated input from %d to %d bytes",
+                len(text),
+                self._MAX_REGEX_INPUT_BYTES,
+            )
+            text = text[: self._MAX_REGEX_INPUT_BYTES]
 
         pattern = r"```(\w+)?\s*(?:\/\/\s*([^\n]+?))?\s*\n(.*?)```"
         matches = re.finditer(pattern, text, re.DOTALL)
 
         for match in matches:
             lang = match.group(1) or ""
-            filename = match.group(2) or self._infer_filename(lang, match.group(3))
             content = match.group(3)
+            embedded_filename, content = self._extract_embedded_filename(content)
+            filename = match.group(2) or embedded_filename or self._infer_filename(lang, content)
 
             if content:
                 blocks.append((filename, content))
@@ -374,13 +540,40 @@ class CodeGenerator:
                 content = match.group(1)
                 if content and len(content) > 20:
                     lang = self._detect_language(content)
-                    filename = self._infer_filename(lang, content)
+                    embedded_filename, content = self._extract_embedded_filename(content)
+                    filename = embedded_filename or self._infer_filename(lang, content)
                     blocks.append((filename, content))
 
         if not blocks:
             blocks = self._extract_inline_code_blocks(text)
 
         return blocks
+
+    @staticmethod
+    def _extract_embedded_filename(content: str) -> tuple[str | None, str]:
+        """Extract a filename from the first meaningful line inside a fenced code block."""
+        lines = content.splitlines()
+        if not lines:
+            return None, content
+
+        filename_patterns = [
+            r"^(?:#|//)\s*([a-zA-Z_][a-zA-Z0-9_./-]*\.(?:py|js|ts|go|java|rs|cpp|c|h|cs))\s*$",
+            r"^/\*\s*([a-zA-Z_][a-zA-Z0-9_./-]*\.(?:py|js|ts|go|java|rs|cpp|c|h|cs))\s*\*/$",
+        ]
+
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            for pattern in filename_patterns:
+                match = re.match(pattern, stripped)
+                if match:
+                    remaining_lines = lines[:index] + lines[index + 1 :]
+                    remaining_content = "\n".join(remaining_lines).lstrip("\n")
+                    return match.group(1), remaining_content
+            break
+
+        return None, content
 
     def _extract_inline_code_blocks(self, text: str) -> list[tuple[str, str]]:
         blocks = []
@@ -444,9 +637,13 @@ class CodeGenerator:
                 if pos != -1:
                     start = text.rfind("\n", 0, pos + 1)
                     section = text[start : start + 2000]
-                    file_path = output_dir / filename
-                    file_path.write_text(section)
-                    files.append(filename)
+                    written_name = self._write_output_file(
+                        output_dir,
+                        filename,
+                        section,
+                        default_filename="generated_code.py",
+                    )
+                    files.append(written_name)
 
         if not files:
             files = self._extract_filelist_alternative(text, output_dir)
@@ -482,9 +679,13 @@ class CodeGenerator:
             if code_section and len(code_section) > 10:
                 lang = self._detect_language(code_section)
                 if lang:
-                    file_path = output_dir / filename
-                    file_path.write_text(code_section)
-                    files.append(filename)
+                    written_name = self._write_output_file(
+                        output_dir,
+                        filename,
+                        code_section,
+                        default_filename="generated_code.py",
+                    )
+                    files.append(written_name)
                     continue
 
             code_start = text.rfind("\n", 0, pos)
@@ -493,9 +694,13 @@ class CodeGenerator:
                 next_section_start = len(text)
             section = text[code_start:next_section_start].strip()
             if section and len(section) > 20:
-                file_path = output_dir / filename
-                file_path.write_text(section)
-                files.append(filename)
+                written_name = self._write_output_file(
+                    output_dir,
+                    filename,
+                    section,
+                    default_filename="generated_code.py",
+                )
+                files.append(written_name)
 
         return files
 

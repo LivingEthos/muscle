@@ -18,6 +18,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from ..audit_presenter import format_action_log_entry
+
 if TYPE_CHECKING:
     from .data_provider import TUIData
 
@@ -43,6 +45,7 @@ class View(Enum):
     BACKUPS = "backups"
     MEMORY = "memory"
     AUDIT = "audit"
+    OPTIMIZE = "optimize"
 
 
 @dataclass
@@ -142,9 +145,8 @@ class DashboardView:
         bottom.add_column("Full", width=90)
         bottom.add_row(patterns_panel)
 
-        # Return a single merged layout
-        from rich.layout import Layout
-
+        # Return a single merged layout (``Layout`` is already imported at
+        # module scope; fix: TU-03).
         layout = Layout()
         layout.split_column(Layout(name="top", size=12), Layout(name="bottom"))
         layout["top"].update(
@@ -208,12 +210,12 @@ class HistoryView:
     def render(self, state: ViewState) -> Panel:
         data: TUIData | None = state.data
 
-        table = Table(title="Review History", show_header=True)
-        table.add_column("Session", style="cyan")
-        table.add_column("Target", style="white")
-        table.add_column("Findings", style="yellow")
-        table.add_column("Tokens", style="magenta")
-        table.add_column("Date", style="dim")
+        review_table = Table(title="Review History", show_header=True)
+        review_table.add_column("Session", style="cyan")
+        review_table.add_column("Target", style="white")
+        review_table.add_column("Findings", style="yellow")
+        review_table.add_column("Tokens", style="magenta")
+        review_table.add_column("Date", style="dim")
 
         if data is not None and data.review_runs:
             for run in data.review_runs:
@@ -224,7 +226,7 @@ class HistoryView:
                 tokens_str = f"{tokens:,}" if tokens else "—"
                 created = run.get("created_at", "")[:10]
                 session = f"run_{run.get('id', '?')}"
-                table.add_row(
+                review_table.add_row(
                     session,
                     target[:35],
                     str(run.get("findings_count", 0)),
@@ -232,7 +234,7 @@ class HistoryView:
                     created,
                 )
         else:
-            table.add_row(
+            review_table.add_row(
                 "—",
                 "No review history yet",
                 "—",
@@ -240,7 +242,59 @@ class HistoryView:
                 "—",
             )
 
-        return Panel(table, title="[bold]History[/bold]")
+        identity_table = Table(title="Model Identity History", show_header=True, box=None)
+        identity_table.add_column("When", style="dim", width=16)
+        identity_table.add_column("Requested", style="cyan")
+        identity_table.add_column("Canonical", style="green")
+        identity_table.add_column("Source", style="magenta")
+        identity_table.add_column("Conf", style="yellow", justify="right")
+        identity_history = getattr(data, "model_identity_history", []) if data else []
+        if identity_history:
+            for row in identity_history[:6]:
+                identity_table.add_row(
+                    str(row.get("created_at", ""))[:16],
+                    str(row.get("requested_label") or "—")[:22],
+                    str(row.get("canonical_model_key") or "Unresolved")[:24],
+                    str(row.get("identity_source") or "unresolved")[:18],
+                    f"{float(row.get('confidence', 0.0) or 0.0):.2f}",
+                )
+        else:
+            identity_table.add_row("—", "No model identity history yet", "—", "—", "—")
+
+        usage_table = Table(title="Lesson Usage Events", show_header=True, box=None)
+        usage_table.add_column("When", style="dim", width=16)
+        usage_table.add_column("Stage", style="cyan")
+        usage_table.add_column("Source", style="magenta")
+        usage_table.add_column("Lesson", style="white")
+        usage_table.add_column("Outcome", style="green")
+        usage_events = getattr(data, "lesson_usage_events", []) if data else []
+        if usage_events:
+            for event in usage_events[:6]:
+                lesson_source = str(event.get("lesson_source") or "unknown")
+                if lesson_source == "related_project":
+                    source_label = (
+                        f"related:{str(event.get('source_project_path') or '').split('/')[-1]}"
+                    )
+                elif lesson_source == "model_pack":
+                    source_label = f"pack:{str(event.get('canonical_model_key') or 'unknown')[:18]}"
+                else:
+                    source_label = lesson_source
+                usage_table.add_row(
+                    str(event.get("created_at", ""))[:16],
+                    str(event.get("stage") or "—")[:18],
+                    source_label[:22],
+                    str(event.get("lesson_key") or "—")[:24],
+                    str(event.get("outcome") or "pending")[:20],
+                )
+        else:
+            usage_table.add_row("—", "No lesson-usage history yet", "—", "—", "—")
+
+        content = Table.grid(expand=True)
+        content.add_row(Panel(review_table, title="[bold]Reviews[/bold]"))
+        content.add_row(Panel(identity_table, title="[bold]Model Identity[/bold]"))
+        content.add_row(Panel(usage_table, title="[bold]Lesson Usage[/bold]"))
+
+        return Panel(content, title="[bold]History[/bold]")
 
 
 class SettingsView:
@@ -274,17 +328,17 @@ class KnowledgeView:
     def render(self, state: ViewState) -> Panel:
         data: TUIData | None = state.data
 
-        table = Table(title="Learned Patterns", show_header=True)
-        table.add_column("Pattern", style="cyan", min_width=24, no_wrap=True)
-        table.add_column("Rule", style="white")
-        table.add_column("Recurrences", style="yellow")
-        table.add_column("Success", style="green")
-        table.add_column("Status", style="dim")
+        local_table = Table(title="Learned Patterns", show_header=True)
+        local_table.add_column("Pattern", style="cyan", min_width=24, no_wrap=True)
+        local_table.add_column("Rule", style="white")
+        local_table.add_column("Recurrences", style="yellow")
+        local_table.add_column("Success", style="green")
+        local_table.add_column("Status", style="dim")
 
         if data is not None and data.learned_rules:
             for rule in data.learned_rules:
                 success = f"{float(rule.get('success_rate', 0) or 0) * 100:.0f}%"
-                table.add_row(
+                local_table.add_row(
                     rule.get("trigger_pattern", "")[:35],
                     rule.get("rule_text", "")[:35],
                     str(rule.get("recurrence_count", 0)),
@@ -292,15 +346,48 @@ class KnowledgeView:
                     rule.get("status", ""),
                 )
         else:
-            table.add_row(
-                "No patterns learned yet",
-                "Patterns appear after validated review fixes",
+            local_table.add_row(
+                "No learned patterns yet",
+                "Patterns appear after validated fixes",
                 "—",
                 "—",
                 "—",
             )
 
-        return Panel(table, title="[bold]Knowledge Base[/bold]")
+        overlay_table = Table(title="External Overlays", show_header=True)
+        overlay_table.add_column("Source", style="blue", min_width=12)
+        overlay_table.add_column("State", style="magenta", min_width=10)
+        overlay_table.add_column("Next", style="green", min_width=10)
+        overlay_table.add_column("Why", style="white", min_width=32)
+
+        transferred_lessons = getattr(data, "transferred_lessons", []) if data else []
+        if transferred_lessons:
+            for lesson in transferred_lessons[:6]:
+                source_path = str(lesson.get("source_project_path", "") or "")
+                source_label = source_path.split("/")[-1] if source_path else "—"
+                overlay_table.add_row(
+                    source_label,
+                    str(lesson.get("validation_status", "")),
+                    str(lesson.get("recommendation", "")),
+                    str(
+                        lesson.get("status_explanation", "")
+                        or lesson.get("recommendation_reason", "")
+                    )[:60],
+                )
+        else:
+            overlay_table.add_row(
+                "—",
+                "No external overlays",
+                "Project-local memory remains primary",
+                "Use related-project import or attach to populate overlays",
+            )
+
+        layout = Table(box=None)
+        layout.add_column("Local", width=50)
+        layout.add_column("External", width=100)
+        layout.add_row(local_table, overlay_table)
+
+        return Panel(layout, title="[bold]Knowledge Base[/bold]")
 
 
 class FixesView:
@@ -580,59 +667,103 @@ class AuditView:
 
         table = Table(title="Audit Log", show_header=True)
         table.add_column("When", style="dim", width=16)
-        table.add_column("Action", style="cyan")
-        table.add_column("Entity", style="yellow")
-        table.add_column("Details", style="white")
+        table.add_column("Action", style="cyan", min_width=24)
+        table.add_column("Entity", style="yellow", min_width=24)
+        table.add_column("Details", style="white", min_width=36)
 
         action_logs = getattr(data, "action_logs", []) if data else []
 
         if not action_logs:
             table.add_row(
-                "—", "No audit entries yet", "Run review/backup to generate entries", "—", "—"
+                "—",
+                "No audit entries yet",
+                "Run review/backup to generate entries",
+                "—",
             )
         else:
             for entry in action_logs[:30]:
-                details = entry.get("details_json", "{}")
-                try:
-                    import json
-
-                    details_obj = json.loads(details)
-                    if entry.get("entity_type") == "backup":
-                        details_str = details_obj.get("backup_type", "")
-                        if entry.get("action_type") == "restore":
-                            details_str += (
-                                f", restored={details_obj.get('restored_count', '?')} files"
-                            )
-                    elif entry.get("entity_type") == "skill":
-                        details_str = (
-                            details_obj.get("skill_name", "")
-                            or details_obj.get("trigger_pattern", "")
-                            or details_obj.get("skill_path", "")
-                        )
-                    elif entry.get("entity_type") == "agent":
-                        details_str = details_obj.get("agent_name", "") or details_obj.get(
-                            "trigger_pattern", ""
-                        )
-                    elif entry.get("entity_type") == "claude_md":
-                        details_str = "CLAUDE.md published"
-                    else:
-                        details_str = str(details_obj)
-                except Exception:
-                    details_str = str(details)[:60]
-
-                entity_str = (
-                    f"{entry.get('entity_type', '')}:{entry.get('entity_id', '')}"
-                    if entry.get("entity_id")
-                    else entry.get("entity_type", "")
-                )
+                formatted = format_action_log_entry(entry)
                 table.add_row(
-                    entry.get("created_at", "")[:16],
-                    entry.get("action_type", ""),
-                    entity_str or "—",
-                    details_str[:60],
+                    formatted["when"],
+                    formatted["action"],
+                    formatted["entity"] or "—",
+                    formatted["details"][:60],
                 )
 
         return Panel(table, title="[bold]Audit Log[/bold]")
+
+
+class OptimizationView:
+    """Display optimization hotspots, savings, and recommendations."""
+
+    def render(self, state: ViewState) -> Panel:
+        data: TUIData | None = state.data
+        savings = data.token_savings_summary if data is not None else {}
+        hotspots = data.optimization_hotspots if data is not None else []
+        recommendations = data.optimization_recommendations if data is not None else []
+        settings = data.optimization_settings if data is not None else {}
+
+        summary = Table(title="Token Savings", show_header=False, box=None)
+        summary.add_column("Metric", style="cyan")
+        summary.add_column("Value", style="white")
+        summary.add_row(
+            "Net Saved",
+            f"{int(savings.get('net_tokens_saved', 0) or 0):,}",
+        )
+        summary.add_row(
+            "Gross Saved",
+            f"{int(savings.get('gross_tokens_saved', 0) or 0):,}",
+        )
+        summary.add_row(
+            "Overspend",
+            f"{int(savings.get('overspend_tokens', 0) or 0):,}",
+        )
+        summary.add_row(
+            "Confidence",
+            f"{float(savings.get('confidence', 0.0) or 0.0):.0%}",
+        )
+        summary.add_row(
+            "Workflow Default",
+            settings.get("optimize.default_workflow", "review-smart"),
+        )
+
+        hotspots_table = Table(title="Top Hotspots", show_header=True, box=None)
+        hotspots_table.add_column("Stage", style="magenta")
+        hotspots_table.add_column("Tokens", style="yellow")
+        hotspots_table.add_column("Calls", style="white")
+        hotspots_table.add_column("Avg Context", style="dim")
+        if hotspots:
+            for hotspot in hotspots[:5]:
+                hotspots_table.add_row(
+                    str(hotspot.get("stage", "unknown")),
+                    f"{int(hotspot.get('total_tokens', 0) or 0):,}",
+                    str(hotspot.get("call_count", 0)),
+                    str(int(float(hotspot.get("avg_context_chars", 0) or 0))),
+                )
+        else:
+            hotspots_table.add_row("No telemetry yet", "0", "0", "0")
+
+        recommendations_table = Table(title="Recommendations", show_header=True, box=None)
+        recommendations_table.add_column("Scope", style="cyan")
+        recommendations_table.add_column("Current", style="white")
+        recommendations_table.add_column("Recommended", style="green")
+        recommendations_table.add_column("Why", style="dim")
+        if recommendations:
+            for recommendation in recommendations[:5]:
+                recommendations_table.add_row(
+                    str(recommendation.get("decision_scope", "unknown")),
+                    str(recommendation.get("current_value", "—")),
+                    str(recommendation.get("recommended_value", "—")),
+                    str(recommendation.get("reason", ""))[:70],
+                )
+        else:
+            recommendations_table.add_row("No recommendations yet", "—", "—", "Run more reviews")
+
+        content = Table.grid(expand=True)
+        content.add_row(Panel(summary, title="[bold]Savings[/bold]"))
+        content.add_row(Panel(hotspots_table, title="[bold]Hotspots[/bold]"))
+        content.add_row(Panel(recommendations_table, title="[bold]Recommendations[/bold]"))
+        return Panel(content, title="[bold]Optimize[/bold]")
 
 
 class TUI:
@@ -657,6 +788,7 @@ class TUI:
             View.BACKUPS: BackupsView(),
             View.MEMORY: MemoryView(),
             View.AUDIT: AuditView(),
+            View.OPTIMIZE: OptimizationView(),
         }
         self.menu_items: list[tuple[str, str, View]] = [
             ("D", "Dashboard", View.DASHBOARD),
@@ -672,6 +804,7 @@ class TUI:
             ("A", "Agents", View.AGENTS),
             ("B", "Backups", View.BACKUPS),
             ("U", "Audit", View.AUDIT),
+            ("O", "Optimize", View.OPTIMIZE),
         ]
 
     def _refresh_data(self) -> None:
@@ -711,7 +844,7 @@ class TUI:
                 menu_text.append(Text(f"[{icon}] {name} ", style="bold white on blue"))
             else:
                 menu_text.append(Text(f"{icon} {name} ", style="dim"))
-        menu_text.append("   [r] Run Review  [p] Pressure  [s] Settings  [q] Quit")
+        menu_text.append("   [r] Run Review  [p] Pressure  [o] Optimize  [s] Settings  [q] Quit")
 
         layout["footer"].update(Panel(menu_text, border_style="dim"))
 
@@ -730,6 +863,8 @@ class TUI:
             self.state.current_view = View.NOTES
         elif key == "u":
             self.state.current_view = View.AUDIT
+        elif key == "o":
+            self.state.current_view = View.OPTIMIZE
         elif key == "up":
             current_idx = next(
                 (i for i, (_, _, v) in enumerate(self.menu_items) if v == self.state.current_view),

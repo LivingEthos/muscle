@@ -130,6 +130,7 @@ class TestSessionManager:
     def test_sanitize_session_id_with_special_chars_sanitized(self, manager):
         assert manager._sanitize_session_id("session/with/slashes") == "sessionwithslashes"
         assert manager._sanitize_session_id("session.with.dots") == "sessionwithdots"
+        assert manager._sanitize_session_id("sessión-ßeta") == "sessin-eta"
 
     def test_sanitize_session_id_empty(self, manager):
         with pytest.raises(ValueError, match="Invalid session ID"):

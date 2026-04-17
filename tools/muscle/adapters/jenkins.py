@@ -13,6 +13,8 @@ from typing import Any
 
 import requests
 
+from .http_utils import DEFAULT_HTTP_TIMEOUT_SECONDS, request_with_retries
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,6 +29,7 @@ class JenkinsAdapter:
         self.username = username or os.environ.get("JENKINS_USER")
         self.token = token or os.environ.get("JENKINS_TOKEN")
         self.session = requests.Session()
+        self.timeout_seconds = DEFAULT_HTTP_TIMEOUT_SECONDS
         self._authenticate()
 
     def _authenticate(self) -> None:
@@ -40,7 +43,12 @@ class JenkinsAdapter:
 
         url = f"{self.url}/job/{job_name}/api/json"
 
-        response = self.session.get(url)
+        response = request_with_retries(
+            self.session,
+            "GET",
+            url,
+            timeout=self.timeout_seconds,
+        )
 
         if response.status_code == 200:
             return response.json()  # type: ignore[no-any-return]
@@ -52,7 +60,12 @@ class JenkinsAdapter:
 
         url = f"{self.url}/job/{job_name}/{build_number}/api/json"
 
-        response = self.session.get(url)
+        response = request_with_retries(
+            self.session,
+            "GET",
+            url,
+            timeout=self.timeout_seconds,
+        )
 
         if response.status_code == 200:
             return response.json()  # type: ignore[no-any-return]
@@ -64,7 +77,12 @@ class JenkinsAdapter:
 
         url = f"{self.url}/job/{job_name}/{build_number}/consoleText"
 
-        response = self.session.get(url)
+        response = request_with_retries(
+            self.session,
+            "GET",
+            url,
+            timeout=self.timeout_seconds,
+        )
 
         if response.status_code == 200:
             return response.text
@@ -89,7 +107,13 @@ class JenkinsAdapter:
         if token:
             url += f"?token={token}"
 
-        response = self.session.post(url, data=data)
+        response = request_with_retries(
+            self.session,
+            "POST",
+            url,
+            data=data,
+            timeout=self.timeout_seconds,
+        )
 
         if response.status_code in [200, 201]:
             queue_url = response.headers.get("Location", "")
@@ -100,7 +124,12 @@ class JenkinsAdapter:
         return None
 
     def _get_build_number_from_queue(self, queue_url: str) -> int | None:
-        response = self.session.get(queue_url + "/api/json")
+        response = request_with_retries(
+            self.session,
+            "GET",
+            queue_url + "/api/json",
+            timeout=self.timeout_seconds,
+        )
         if response.status_code == 200:
             return response.json().get("number")  # type: ignore[no-any-return]
         return None
@@ -147,7 +176,12 @@ class JenkinsAdapter:
                 url = f"{self.url}/job/{job_name}/{build_number}/artifact/" + artifact.get(
                     "relativePath", ""
                 )
-                response = self.session.get(url)
+                response = request_with_retries(
+                    self.session,
+                    "GET",
+                    url,
+                    timeout=self.timeout_seconds,
+                )
                 if response.status_code == 200:
                     return response.content
         return None
@@ -163,6 +197,12 @@ class JenkinsAdapter:
 
         url = f"{self.url}/job/{job_name}/{build_number}/submitDescription"
 
-        response = self.session.post(url, data={"description": description})
+        response = request_with_retries(
+            self.session,
+            "POST",
+            url,
+            data={"description": description},
+            timeout=self.timeout_seconds,
+        )
 
         return response.status_code == 200

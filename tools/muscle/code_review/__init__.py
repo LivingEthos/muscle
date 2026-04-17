@@ -10,8 +10,8 @@ Provides autonomous code review with self-learning capabilities:
 - Learning from past reviews via ReviewKB
 """
 
-from .committee_reviewer import CommitteeReviewer
 from .code_reviewer import CodeReviewer
+from .committee_reviewer import CommitteeReviewer
 from .fix_generator import FixGenerator
 from .handoff_generator import HandoffGenerator
 from .review_artifacts import ReviewArtifactStore

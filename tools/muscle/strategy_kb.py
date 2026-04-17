@@ -86,6 +86,13 @@ class StrategyKB:
             try:
                 conn = sqlite3.connect(str(self.db_path), timeout=30.0)
                 conn.row_factory = sqlite3.Row
+                # Fix: SH-02. WAL + busy_timeout keeps concurrent workers
+                # (shadow + review) from serializing.
+                try:
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA busy_timeout=5000")
+                except sqlite3.Error:
+                    pass
             except sqlite3.Error as e:
                 logger.error(f"Failed to connect to database: {e}")
                 raise

@@ -18,11 +18,14 @@ import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+if TYPE_CHECKING:
+    from .optimization.types import TelemetryContext
 
 logger = logging.getLogger(__name__)
 
@@ -130,14 +133,57 @@ def _create_session() -> requests.Session:
     return session
 
 
+STREAM_ERROR_PREFIX = "__MUSCLE_STREAM_ERROR__:"
+
+# Maximum wait for a 429 Retry-After, in seconds. Protects against
+# malformed/malicious headers that could otherwise stall the worker for
+# arbitrary durations. Fix: M27-03.
+MAX_RETRY_AFTER_SECONDS = 300.0
+
+
+def _parse_retry_after(retry_after: str | None, default: float) -> float:
+    """Parse a ``Retry-After`` header value, clamped to a sane range.
+
+    Accepts integers and floats (including scientific notation). Returns
+    ``default`` for missing, malformed, or non-finite values. Clamps results
+    to ``[0, MAX_RETRY_AFTER_SECONDS]``. Fix: M27-03.
+    """
+    if not retry_after:
+        return default
+    try:
+        value = float(retry_after.strip())
+    except (ValueError, AttributeError):
+        return default
+    if value != value or value in (float("inf"), float("-inf")):  # NaN / inf
+        return default
+    return max(0.0, min(value, MAX_RETRY_AFTER_SECONDS))
+
+
 class M27Client:
     _rate_limit: float | None = None
     _max_concurrent: int | None = None
     _rate_limiter: RateLimiter | None = None
     _concurrency_limiter: ConcurrencyLimiter | None = None
     _session: requests.Session | None = None
-    _session_lock = threading.Lock()
-    _config_lock = threading.Lock()
+    # Single consolidated init lock covers session + limiter configuration to
+    # avoid lock-ordering deadlocks (fix: M27-08).
+    _init_lock = threading.RLock()
+
+    @classmethod
+    def _get_session(cls) -> requests.Session:
+        """Return the shared HTTP session, initializing it once under lock.
+
+        Fix: M27-01 (race condition), M27-02 (null check on consumer side).
+        """
+        session = cls._session
+        if session is None:
+            with cls._init_lock:
+                if cls._session is None:
+                    cls._session = _create_session()
+                session = cls._session
+        if session is None:  # pragma: no cover - defensive
+            raise RuntimeError("M27Client session failed to initialize")
+        return session
 
     def __init__(
         self,
@@ -162,17 +208,18 @@ class M27Client:
         self.timeout = max(10, min(timeout, 300))
         self.max_retries = max(1, min(max_retries, 10))
 
-        with self._session_lock:
-            if M27Client._session is None:
-                M27Client._session = _create_session()
+        # Ensure shared session is initialized before first request.
+        M27Client._get_session()
 
         self._configure_limiters(rate_limit, max_concurrent)
 
         self._rate_limit_errors = 0
         self._last_request_time: float | None = None
+        self._telemetry_sink: Any | None = None
+        self._model_identity: dict[str, Any] = {}
 
     def _configure_limiters(self, rate_limit: float | None, max_concurrent: int | None) -> None:
-        with M27Client._config_lock:
+        with M27Client._init_lock:
             if M27Client._rate_limiter is None:
                 env_rate = float(os.environ.get("MUSCLE_RATE_LIMIT", "10.0"))
                 env_concurrent = int(os.environ.get("MUSCLE_MAX_CONCURRENT", "5"))
@@ -194,6 +241,177 @@ class M27Client:
             "anthropic-version": "2023-06-01",
             "User-Agent": "MUSCLE/1.0",
         }
+
+    def set_telemetry_sink(self, telemetry_sink: Any | None) -> None:
+        """Attach a best-effort telemetry sink."""
+        self._telemetry_sink = telemetry_sink
+
+    def set_model_identity(self, model_identity: dict[str, Any] | None) -> None:
+        """Attach the resolved canonical model identity for telemetry."""
+        self._model_identity = dict(model_identity or {})
+
+    def _telemetry_model_identity(self) -> dict[str, Any]:
+        """Return normalized model identity fields for telemetry persistence."""
+        from .model_identity import endpoint_fingerprint
+
+        requested_label = self._model_identity.get("requested_label", self.model)
+        provider_endpoint = self._model_identity.get("provider_endpoint", self.base_url)
+        provider_fingerprint = self._model_identity.get("provider_fingerprint")
+        if provider_fingerprint is None:
+            provider_fingerprint = endpoint_fingerprint(provider_endpoint)
+        return {
+            "requested_label": requested_label,
+            "provider_endpoint": provider_endpoint,
+            "provider_fingerprint": provider_fingerprint,
+            "canonical_model_key": self._model_identity.get("canonical_model_key"),
+            "identity_source": self._model_identity.get("identity_source", "client_default"),
+            "confidence": float(self._model_identity.get("confidence", 0.0) or 0.0),
+            "manual_override": bool(self._model_identity.get("manual_override")),
+        }
+
+    def _should_adopt_model_identity(self, candidate_identity: dict[str, Any]) -> bool:
+        """Return whether stronger provider evidence should replace current identity."""
+        if not candidate_identity:
+            return False
+        current_identity = self._telemetry_model_identity()
+        if current_identity.get("manual_override"):
+            return False
+
+        current_key = current_identity.get("canonical_model_key")
+        candidate_key = candidate_identity.get("canonical_model_key")
+        current_confidence = float(current_identity.get("confidence", 0.0) or 0.0)
+        candidate_confidence = float(candidate_identity.get("confidence", 0.0) or 0.0)
+
+        if not current_key and candidate_key:
+            return True
+        if (
+            candidate_key
+            and candidate_key != current_key
+            and candidate_confidence >= current_confidence
+        ):
+            return True
+        if (
+            candidate_key == current_key
+            and candidate_identity.get("identity_source") == "provider_introspection"
+            and current_identity.get("identity_source") != "provider_introspection"
+        ):
+            return True
+        return candidate_confidence > current_confidence + 1e-9
+
+    def _record_model_identity_history(
+        self,
+        telemetry_context: TelemetryContext | None,
+        model_identity: dict[str, Any],
+    ) -> None:
+        """Persist refined model identity when a telemetry sink supports it."""
+        if telemetry_context is None or self._telemetry_sink is None:
+            return
+        record_fn = getattr(self._telemetry_sink, "record_model_identity_history", None)
+        if not callable(record_fn):
+            return
+        try:
+            record_fn(telemetry_context.project_path, model_identity)
+        except Exception:
+            logger.debug("Model identity recording failed", exc_info=True)
+
+    def _maybe_refresh_model_identity_from_response(
+        self,
+        response_payload: dict[str, Any],
+        telemetry_context: TelemetryContext | None,
+    ) -> None:
+        """Refine model identity from trusted provider response evidence."""
+        try:
+            from .model_identity import introspect_provider_response_identity
+
+            candidate = introspect_provider_response_identity(
+                requested_label=str(
+                    self._model_identity.get("requested_label") or self.model or ""
+                ),
+                provider_endpoint=str(
+                    self._model_identity.get("provider_endpoint") or self.base_url
+                ),
+                response_payload=response_payload,
+                manual_override=bool(self._model_identity.get("manual_override")),
+            )
+            if candidate is None or not self._should_adopt_model_identity(candidate.__dict__):
+                return
+            self._model_identity = candidate.__dict__
+            self._record_model_identity_history(telemetry_context, candidate.__dict__)
+        except Exception:
+            logger.debug("Provider-specific model introspection failed", exc_info=True)
+
+    def _record_telemetry(
+        self,
+        telemetry_context: TelemetryContext | None,
+        usage: TokenUsage,
+        duration_ms: int,
+        success: bool,
+    ) -> None:
+        if telemetry_context is None or self._telemetry_sink is None:
+            return
+        try:
+            from .optimization import LLMCallEvent
+
+            metadata = dict(telemetry_context.metadata)
+            model_identity = self._telemetry_model_identity()
+            metadata.setdefault("language", telemetry_context.language or "unknown")
+            metadata.setdefault("complexity", telemetry_context.complexity or "unknown")
+            metadata.setdefault("target_type", telemetry_context.target_type or "unknown")
+            metadata.setdefault("task_category", telemetry_context.task_category or "unknown")
+            metadata["requested_label"] = model_identity["requested_label"]
+            metadata["provider_endpoint"] = model_identity["provider_endpoint"]
+            metadata["provider_fingerprint"] = model_identity["provider_fingerprint"]
+            metadata["canonical_model_key"] = model_identity["canonical_model_key"]
+            metadata["identity_source"] = model_identity["identity_source"]
+            metadata["identity_confidence"] = model_identity["confidence"]
+            metadata["manual_override"] = model_identity["manual_override"]
+            self._telemetry_sink.record_llm_call(
+                LLMCallEvent(
+                    project_path=telemetry_context.project_path,
+                    call_id=telemetry_context.call_id,
+                    session_id=telemetry_context.session_id,
+                    stage=telemetry_context.stage,
+                    workflow_name=telemetry_context.workflow_name,
+                    review_mode=telemetry_context.review_mode,
+                    model=self.model,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    duration_ms=duration_ms,
+                    success=success,
+                    context_chars=telemetry_context.context_chars,
+                    context_strategy=telemetry_context.context_strategy,
+                    requested_label=model_identity["requested_label"],
+                    provider_endpoint=model_identity["provider_endpoint"],
+                    provider_fingerprint=model_identity["provider_fingerprint"],
+                    canonical_model_key=model_identity["canonical_model_key"],
+                    identity_source=model_identity["identity_source"],
+                    identity_confidence=model_identity["confidence"],
+                    manual_override=model_identity["manual_override"],
+                    metadata_json=json.dumps(metadata, sort_keys=True),
+                )
+            )
+        except Exception:
+            logger.debug("Telemetry recording failed", exc_info=True)
+
+    def update_telemetry_call(
+        self,
+        call_id: str,
+        parse_success: bool | None = None,
+        validation_success: bool | None = None,
+        metadata_updates: dict[str, Any] | None = None,
+    ) -> None:
+        """Forward outcome updates to the attached telemetry sink."""
+        if self._telemetry_sink is None:
+            return
+        try:
+            self._telemetry_sink.update_llm_call(
+                call_id=call_id,
+                parse_success=parse_success,
+                validation_success=validation_success,
+                metadata_updates=metadata_updates or {},
+            )
+        except Exception:
+            logger.debug("Telemetry update failed", exc_info=True)
 
     def _should_retry(self, error: str, attempt: int) -> bool:
         if attempt >= self.max_retries:
@@ -219,6 +437,7 @@ class M27Client:
         max_tokens: int = 4096,
         temperature: float = 1.0,
         stream: bool = False,
+        telemetry_context: TelemetryContext | None = None,
     ) -> tuple[str, TokenUsage]:
         if not messages:
             logger.error("Empty messages list provided to chat()")
@@ -260,6 +479,7 @@ class M27Client:
         last_error = None
         backoff = 1.0
         thinking_only_count = 0
+        started_at = time.perf_counter()
 
         for attempt in range(self.max_retries):
             try:
@@ -268,7 +488,7 @@ class M27Client:
 
                 if M27Client._concurrency_limiter:
                     with M27Client._concurrency_limiter:
-                        session: Any = M27Client._session
+                        session = M27Client._get_session()
                         response = session.post(
                             f"{self.base_url}/v1/messages",
                             headers=self._get_headers(),
@@ -294,10 +514,25 @@ class M27Client:
                         backoff *= 2
                         continue
 
+                    self._maybe_refresh_model_identity_from_response(data, telemetry_context)
+
+                    usage_payload = data.get("usage") or {}
+                    if not isinstance(usage_payload, dict):
+                        usage_payload = {}
                     usage = TokenUsage(
-                        input_tokens=data.get("usage", {}).get("input_tokens", 0) or 0,
-                        output_tokens=data.get("usage", {}).get("output_tokens", 0) or 0,
+                        input_tokens=int(usage_payload.get("input_tokens") or 0),
+                        output_tokens=int(usage_payload.get("output_tokens") or 0),
                     )
+                    # Fix: M27-06. Non-empty 200 response with zero tokens on both
+                    # sides is almost always a provider telemetry gap worth
+                    # surfacing in logs so cost accounting is auditable.
+                    if (
+                        usage.input_tokens == 0
+                        and usage.output_tokens == 0
+                        and isinstance(data.get("content"), list)
+                        and data.get("content")
+                    ):
+                        logger.warning("Provider returned zero token usage on non-empty response")
 
                     text_content = ""
                     has_text = False
@@ -318,6 +553,12 @@ class M27Client:
                             break
 
                     if has_text and text_content.strip():
+                        self._record_telemetry(
+                            telemetry_context,
+                            usage,
+                            int((time.perf_counter() - started_at) * 1000),
+                            True,
+                        )
                         return text_content.strip(), usage
 
                     if thinking_only:
@@ -341,15 +582,7 @@ class M27Client:
                 elif response.status_code == 429:
                     self._rate_limit_errors += 1
                     last_error = "Rate limited (429)"
-                    retry_after = response.headers.get("Retry-After")
-                    try:
-                        wait_time = (
-                            float(retry_after)
-                            if retry_after and retry_after.replace(".", "").isdigit()
-                            else backoff
-                        )
-                    except (ValueError, TypeError):
-                        wait_time = backoff
+                    wait_time = _parse_retry_after(response.headers.get("Retry-After"), backoff)
 
                     logger.warning(f"Rate limited. Waiting {wait_time}s before retry...")
                     time.sleep(wait_time)
@@ -407,7 +640,14 @@ class M27Client:
                 break
 
         logger.error(f"All {self.max_retries} attempts failed. Last error: {last_error}")
-        return "", TokenUsage()
+        failure_usage = TokenUsage()
+        self._record_telemetry(
+            telemetry_context,
+            failure_usage,
+            int((time.perf_counter() - started_at) * 1000),
+            False,
+        )
+        return "", failure_usage
 
     def chat_streaming(
         self,
@@ -416,6 +656,7 @@ class M27Client:
         max_tokens: int = 4096,
         temperature: float = 1.0,
         timeout: int | None = None,
+        telemetry_context: TelemetryContext | None = None,
     ) -> Iterator[tuple[str, TokenUsage | None]]:
         payload = {
             "model": self.model,
@@ -430,6 +671,7 @@ class M27Client:
         request_timeout = timeout or self.timeout
         last_error = None
         backoff = 1.0
+        started_at = time.perf_counter()
 
         for attempt in range(self.max_retries):
             try:
@@ -438,7 +680,7 @@ class M27Client:
 
                 if M27Client._concurrency_limiter:
                     with M27Client._concurrency_limiter:
-                        session: Any = M27Client._session
+                        session = M27Client._get_session()
                         response = session.post(
                             f"{self.base_url}/v1/messages",
                             headers=self._get_headers(),
@@ -449,14 +691,26 @@ class M27Client:
 
                 if response.status_code == 200:
                     self._rate_limit_errors = 0
-                    yield from self._parse_sse_stream(response)
+                    final_usage: TokenUsage | None = None
+                    for accumulated_text, usage in self._parse_sse_stream(
+                        response,
+                        telemetry_context=telemetry_context,
+                    ):
+                        if usage is not None:
+                            final_usage = usage
+                        yield accumulated_text, usage
+                    self._record_telemetry(
+                        telemetry_context,
+                        final_usage or TokenUsage(),
+                        int((time.perf_counter() - started_at) * 1000),
+                        True,
+                    )
                     return
 
                 elif response.status_code == 429:
                     self._rate_limit_errors += 1
                     last_error = "Rate limited (429)"
-                    retry_after = response.headers.get("Retry-After", str(backoff))
-                    wait_time = float(retry_after) if retry_after.isdigit() else backoff
+                    wait_time = _parse_retry_after(response.headers.get("Retry-After"), backoff)
 
                     logger.warning(f"Rate limited. Waiting {wait_time}s before retry...")
                     time.sleep(wait_time)
@@ -495,10 +749,21 @@ class M27Client:
                 break
 
         logger.error(f"All {self.max_retries} attempts failed. Last error: {last_error}")
-        yield "", None
+        self._record_telemetry(
+            telemetry_context,
+            TokenUsage(),
+            int((time.perf_counter() - started_at) * 1000),
+            False,
+        )
+        # Fix: M27-04. Emit a sentinel-prefixed error payload so downstream
+        # consumers (code_generator, evolver, tests) can distinguish an upstream
+        # failure from a legitimate empty end-of-stream event.
+        yield f"{STREAM_ERROR_PREFIX}{last_error or 'streaming failed'}", None
 
     def _parse_sse_stream(
-        self, response: requests.Response
+        self,
+        response: requests.Response,
+        telemetry_context: TelemetryContext | None = None,
     ) -> Iterator[tuple[str, TokenUsage | None]]:
         accumulated_text = ""
         usage = None
@@ -517,6 +782,9 @@ class M27Client:
                     event_data = json.loads(data)
                 except json.JSONDecodeError:
                     continue
+
+                if isinstance(event_data, dict):
+                    self._maybe_refresh_model_identity_from_response(event_data, telemetry_context)
 
                 if "content" in event_data:
                     for block in event_data.get("content", []):

@@ -28,6 +28,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..io_safety import update_text_file_locked
+
 logger = logging.getLogger(__name__)
 
 MARKER_START = "<!-- MUSCLE_LEARNED_START -->"
@@ -121,21 +123,22 @@ Return ONLY the summarized text, no quotes or explanation."""
 
     def _update_memory_file(self, filename: str, entry: str, category: str) -> bool:
         filepath = self.muscle_dir / filename
+        duplicate_found = False
 
-        if not filepath.exists():
-            filepath.write_text(self._create_file_with_markers(category))
+        def updater(current: str) -> str:
+            nonlocal duplicate_found
+            content = current or self._create_file_with_markers(category)
+            existing = self._extract_section(content)
+            if self._is_duplicate(existing, entry):
+                duplicate_found = True
+                return content
+            new_entry = self._format_entry(entry, category)
+            return self._insert_entry(content, new_entry, category)
 
-        content = filepath.read_text()
-        existing = self._extract_section(content)
-
-        if self._is_duplicate(existing, entry):
+        update_text_file_locked(filepath, updater, default_content="")
+        if duplicate_found:
             logger.debug(f"Duplicate entry in {filename}, skipping")
             return False
-
-        new_entry = self._format_entry(entry, category)
-        updated_content = self._insert_entry(content, new_entry, category)
-
-        filepath.write_text(updated_content)
         logger.info(f"Updated {filename} with {category} entry")
         return True
 

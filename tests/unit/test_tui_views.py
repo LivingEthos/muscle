@@ -2,26 +2,26 @@
 Unit tests for tui/views.py
 """
 
-import pytest
 from io import StringIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from rich.console import Console
 
 from tools.muscle.tui.views import (
+    TUI,
     AgentsView,
+    AuditView,
     BackupsView,
     DashboardView,
     FixesView,
     HistoryView,
     KnowledgeView,
-    MemoryView,
     NotesView,
+    OptimizationView,
     ProjectsView,
     ReviewsView,
     SettingsView,
     SkillsView,
-    TUI,
     View,
     ViewState,
 )
@@ -223,6 +223,41 @@ class TestHistoryView:
         rendered = _render(panel)
         assert "module.py" in rendered
 
+    def test_render_with_model_identity_and_lesson_usage_history(self):
+        view = HistoryView()
+        from tools.muscle.tui.data_provider import TUIData
+
+        data = TUIData(
+            project_path="/fake",
+            review_runs=[],
+            model_identity_history=[
+                {
+                    "created_at": "2026-04-16T09:00:00",
+                    "requested_label": "gpt-5-mini",
+                    "canonical_model_key": "openai/gpt-5-mini@1",
+                    "identity_source": "provider_introspection",
+                    "confidence": 0.92,
+                }
+            ],
+            lesson_usage_events=[
+                {
+                    "created_at": "2026-04-16T09:05:00",
+                    "stage": "semantic_review",
+                    "lesson_source": "model_pack",
+                    "lesson_key": "pack-json-retries",
+                    "canonical_model_key": "minimax/m2.7@1",
+                    "outcome": "positive_fix_verification",
+                }
+            ],
+        )
+        state = ViewState(current_project="/fake", data=data)
+        panel = view.render(state)
+        rendered = _render(panel)
+        assert "Model Identity History" in rendered
+        assert "gpt-5-mini" in rendered
+        assert "Lesson Usage Events" in rendered
+        assert "positive_fi" in rendered
+
 
 class TestSettingsView:
     def test_render_returns_panel(self):
@@ -272,7 +307,7 @@ class TestKnowledgeView:
         state = ViewState(current_project="/fake", data=None)
         panel = view.render(state)
         rendered = _render(panel)
-        assert "No patterns learned yet" in rendered
+        assert "No learned patterns" in rendered
 
     def test_render_with_rules(self):
         view = KnowledgeView()
@@ -294,6 +329,29 @@ class TestKnowledgeView:
         panel = view.render(state)
         rendered = _render(panel)
         assert "null check missing" in rendered
+
+    def test_render_with_external_lessons(self):
+        view = KnowledgeView()
+        from tools.muscle.tui.data_provider import TUIData
+
+        data = TUIData(
+            project_path="/fake",
+            learned_rules=[],
+            transferred_lessons=[
+                {
+                    "source_project_path": "/fake/source-app",
+                    "validation_status": "validated",
+                    "recommendation": "promote",
+                    "status_explanation": "Validated in this project and ready for promotion into local memory",
+                }
+            ],
+        )
+        state = ViewState(current_project="/fake", data=data)
+        panel = view.render(state)
+        rendered = _render(panel)
+        assert "External Overlays" in rendered
+        assert "source-app" in rendered
+        assert "promote" in rendered
 
 
 class TestFixesView:
@@ -444,6 +502,84 @@ class TestBackupsView:
         assert "full" in rendered
 
 
+class TestAuditView:
+    def test_render_empty_state(self):
+        view = AuditView()
+        from tools.muscle.tui.data_provider import TUIData
+
+        data = TUIData(project_path="/fake", action_logs=[])
+        state = ViewState(current_project="/fake", data=data)
+        panel = view.render(state)
+        rendered = _render(panel)
+        assert "No audit entries yet" in rendered
+
+    def test_render_with_transferred_lesson_actions(self):
+        view = AuditView()
+        from tools.muscle.tui.data_provider import TUIData
+
+        data = TUIData(
+            project_path="/fake",
+            action_logs=[
+                {
+                    "created_at": "2026-04-15T12:00:00",
+                    "action_type": "transferred_lesson_validated",
+                    "entity_type": "transferred_lesson",
+                    "entity_id": 7,
+                    "details_json": (
+                        '{"lesson_key":"abcdef1234567890","source_project_path":"/tmp/source-app",'
+                        '"success_count":2,"validation_count":2}'
+                    ),
+                }
+            ],
+        )
+        state = ViewState(current_project="/fake", data=data)
+        panel = view.render(state)
+        rendered = _render(panel)
+        assert "lesson validated" in rendered
+        assert "source-app" in rendered
+        assert "lesson:7@source-app" in rendered
+
+
+class TestOptimizationView:
+    def test_render_returns_panel(self):
+        view = OptimizationView()
+        state = ViewState(current_project="/fake", data=None)
+        panel = view.render(state)
+        assert panel is not None
+
+    def test_render_with_optimization_data(self):
+        view = OptimizationView()
+        from tools.muscle.tui.data_provider import TUIData
+
+        data = TUIData(
+            project_path="/fake",
+            optimization_hotspots=[
+                {
+                    "stage": "semantic_review",
+                    "total_tokens": 1200,
+                    "call_count": 4,
+                    "avg_context_chars": 800,
+                }
+            ],
+            optimization_recommendations=[
+                {
+                    "decision_scope": "semantic_review",
+                    "current_value": "expanded_file_slice",
+                    "recommended_value": "issue_windows",
+                    "reason": "Lower token use without hurting parse success",
+                }
+            ],
+            token_savings_summary={"net_tokens_saved": 300, "gross_tokens_saved": 450},
+            optimization_settings={"optimize.default_workflow": "review-smart"},
+        )
+        state = ViewState(current_project="/fake", data=data)
+        panel = view.render(state)
+        rendered = _render(panel)
+        assert "semantic_review" in rendered
+        assert "issue_windows" in rendered
+        assert "300" in rendered
+
+
 class TestProjectsView:
     def test_render(self):
         view = ProjectsView()
@@ -465,7 +601,9 @@ class TestNotesView:
         view = NotesView()
         state = ViewState(current_project="/fake")
         # Patch imports to raise
-        with patch.dict("sys.modules", {"tools.muscle.project_memory": None, "tools.muscle.project_notes": None}):
+        with patch.dict(
+            "sys.modules", {"tools.muscle.project_memory": None, "tools.muscle.project_notes": None}
+        ):
             panel = view.render(state)
             assert panel is not None
 
@@ -475,10 +613,10 @@ class TestTUI:
         tui = TUI()
         assert tui.state is not None
         assert tui.views is not None
-        # 13 menu items: Dashboard, Reviews, History, Settings, Knowledge, Fixes, Projects, Notes, Memory, Skills, Agents, Backups, Audit
-        assert len(tui.menu_items) == 13
-        # 13 views
-        assert len(tui.views) == 13
+        # 14 menu items including Optimize
+        assert len(tui.menu_items) == 14
+        # 14 views
+        assert len(tui.views) == 14
 
     def test_render_returns_layout(self):
         tui = TUI()
@@ -515,6 +653,12 @@ class TestTUI:
         tui.state.current_view = View.DASHBOARD
         tui.handle_key("s")
         assert tui.state.current_view == View.SETTINGS
+
+    def test_handle_key_o_switches_to_optimize(self):
+        tui = TUI()
+        tui.state.current_view = View.DASHBOARD
+        tui.handle_key("o")
+        assert tui.state.current_view == View.OPTIMIZE
 
     def test_handle_key_up_navigates(self):
         tui = TUI()

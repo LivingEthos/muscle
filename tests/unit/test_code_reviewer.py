@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tools.muscle.code_review.code_reviewer import CodeReviewer
+from tools.muscle.code_review.review_artifacts import ReviewArtifactStore
 from tools.muscle.code_review.types import IssueCategory, PressureFocus, Severity
 
 
@@ -405,20 +406,28 @@ class TestPressureReview:
 
         focus = PressureFocus()
         result = reviewer.pressure_review("test.py", "x = 1", focus)
-        assert result["findings"] == []
+        assert result["pressure_findings"] == []
         assert result["summary"]["total"] == 0
 
-    def test_pressure_review_invalid_json_with_fallback(self):
+    def test_pressure_review_invalid_json_fails_closed(self, tmp_path):
         mock_m27 = MagicMock()
         mock_m27.chat.return_value = (
-            '{"pressure_findings": [{"title": "Found it", "severity": "HIGH", "description": "desc", "finding_type": "design_tradeoff"}], "summary": {"total": 1}}',
+            '{"pressure_findings": [{"title": "Found it", "severity": "HIGH"',
             MagicMock(total=50),
         )
         reviewer = CodeReviewer(mock_m27)
+        artifact_store = ReviewArtifactStore(str(tmp_path), "sess-1")
 
         focus = PressureFocus()
-        result = reviewer.pressure_review("test.py", "x = 1", focus)
-        assert "pressure_findings" in result
+        result = reviewer.pressure_review(
+            "test.py",
+            "x = 1",
+            focus,
+            artifact_store=artifact_store,
+        )
+        assert result["pressure_findings"] == []
+        assert "parse_error" in result["summary"]
+        assert (Path(artifact_store.artifact_dir) / "pressure-raw-response.txt").exists()
 
     def test_pressure_review_all_focus_areas(self):
         mock_m27 = MagicMock()

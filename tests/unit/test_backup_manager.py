@@ -2,11 +2,16 @@
 Tests for backup_manager.py (MUS-030).
 """
 
+import io
 import os
+import tarfile
 import tempfile
-import time
+from pathlib import Path
+from unittest.mock import patch
 
-from tools.muscle.backup_manager import BackupManager, BackupType
+import pytest
+
+from tools.muscle.backup_manager import BackupManager
 
 
 class TestBackupManager:
@@ -15,6 +20,7 @@ class TestBackupManager:
     def _make_pm_and_bm(self, tmpdir: str):
         """Create a ProjectMemory and BackupManager pair for testing."""
         from tools.muscle.project_memory import ProjectMemory
+
         pm = ProjectMemory(tmpdir)
         return pm, BackupManager(pm, tmpdir, retention_days=7)
 
@@ -96,22 +102,16 @@ class TestBackupManager:
         pm, bm = self._make_pm_and_bm(tmpdir)
 
         # No CLAUDE.md at root
-        try:
+        with pytest.raises(FileNotFoundError):
             bm.create_backup("claude_md")
-            assert False, "Expected FileNotFoundError"
-        except FileNotFoundError:
-            pass  # expected
 
     def test_create_backup_invalid_type_raises(self):
         """create_backup raises ValueError for unknown type."""
         tmpdir = tempfile.mkdtemp()
         pm, bm = self._make_pm_and_bm(tmpdir)
 
-        try:
+        with pytest.raises(ValueError):
             bm.create_backup("invalid_type")  # type: ignore[arg-type]
-            assert False, "Expected ValueError"
-        except ValueError:
-            pass  # expected
 
     def test_list_backups_empty(self):
         """list_backups returns empty list when no backups exist."""
@@ -314,6 +314,115 @@ class TestBackupManager:
         assert db_path.stat().st_size == original_size
         assert not os.path.exists(os.path.join(tmpdir, "project_memory.db"))
 
+    def test_restore_memory_backup_roundtrip_preserves_queryable_database(self):
+        """Restored memory backups remain queryable through a fresh ProjectMemory instance."""
+        tmpdir = tempfile.mkdtemp()
+        pm, bm = self._make_pm_and_bm(tmpdir)
+
+        task_id = pm.insert_task(
+            project_path=tmpdir,
+            created_at="2026-04-16T00:00:00",
+            title="before-backup",
+            description="persist into backup",
+            status="success",
+            outcome="ok",
+            token_cost=1,
+            duration_ms=1,
+        )
+
+        backup = bm.create_backup("memory")
+        assert backup is not None
+        backup_row = pm.get_backup(backup.id)
+        assert backup_row is not None
+
+        db_path = bm._muscle_dir / "project_memory.db"
+        db_path.write_bytes(b"corrupted")
+        bm._pm.get_backup = lambda backup_id: backup_row if backup_id == backup.id else None
+
+        result = bm.restore_backup(backup.id)
+        assert result is not None
+        assert result["restored_count"] == 1
+
+        from tools.muscle.project_memory import ProjectMemory
+
+        restored_pm = ProjectMemory(tmpdir)
+        restored_task = restored_pm.get_task(task_id)
+        assert restored_task is not None
+        assert restored_task["title"] == "before-backup"
+
+    def test_restore_backup_rejects_path_traversal_member(self):
+        """restore_backup refuses archive members that escape the project root."""
+        tmpdir = tempfile.mkdtemp()
+        pm, bm = self._make_pm_and_bm(tmpdir)
+
+        config_path = bm._muscle_dir / "config.yaml"
+        config_path.write_text("safe: true\n")
+        backup = bm.create_backup("config")
+        assert backup is not None
+
+        archive_path = Path(backup.file_path)
+        with tarfile.open(archive_path, "w:gz") as tf:
+            payload = b"malicious"
+            member = tarfile.TarInfo(name="../escape.txt")
+            member.size = len(payload)
+            tf.addfile(member, io.BytesIO(payload))
+
+        result = bm.restore_backup(backup.id)
+        outside_path = Path(tmpdir).parent / "escape.txt"
+        assert result is not None
+        assert "outside project root" in result["error"]
+        assert not outside_path.exists()
+        assert not (Path(tmpdir) / "escape.txt").exists()
+
+    def test_restore_backup_rolls_back_partial_apply_on_write_failure(self):
+        """A failed restore apply leaves prior project files unchanged."""
+        tmpdir = tempfile.mkdtemp()
+        pm, bm = self._make_pm_and_bm(tmpdir)
+
+        alpha_path = bm._muscle_dir / "alpha.txt"
+        beta_path = bm._muscle_dir / "beta.txt"
+        alpha_path.write_text("current alpha\n")
+        beta_path.write_text("current beta\n")
+
+        archive_dir = bm._backups_dir / "full" / "manual"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = archive_dir / "full.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tf:
+            for name, payload in (
+                (".muscle/alpha.txt", b"backup alpha\n"),
+                (".muscle/beta.txt", b"backup beta\n"),
+            ):
+                member = tarfile.TarInfo(name=name)
+                member.size = len(payload)
+                tf.addfile(member, io.BytesIO(payload))
+
+        backup_id = pm.insert_backup(
+            project_path=tmpdir,
+            created_at="2026-04-16T00:00:00",
+            backup_type="full",
+            file_path=str(archive_path),
+            checksum="manual-checksum",
+            size_bytes=archive_path.stat().st_size,
+            retention_days=7,
+        )
+
+        real_replace = os.replace
+        replace_calls = {"count": 0}
+
+        def flaky_replace(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+            replace_calls["count"] += 1
+            if replace_calls["count"] == 2:
+                raise OSError("simulated apply failure")
+            real_replace(src, dst)
+
+        with patch("tools.muscle.backup_manager.os.replace", side_effect=flaky_replace):
+            result = bm.restore_backup(backup_id)
+
+        assert result is not None
+        assert "simulated apply failure" in result["error"]
+        assert alpha_path.read_text() == "current alpha\n"
+        assert beta_path.read_text() == "current beta\n"
+
     def test_restore_backup_not_found(self):
         """restore_backup returns None for unknown ID."""
         tmpdir = tempfile.mkdtemp()
@@ -322,21 +431,70 @@ class TestBackupManager:
         result = bm.restore_backup(9999, dry_run=False)
         assert result is None
 
+    def test_restore_invalid_archive_returns_error_and_leaves_target_unchanged(self):
+        """Invalid archives return an error without mutating the current project file."""
+        tmpdir = tempfile.mkdtemp()
+        pm, bm = self._make_pm_and_bm(tmpdir)
+
+        config_path = bm._muscle_dir / "config.yaml"
+        config_path.write_text("original: true\n")
+        backup = bm.create_backup("config")
+        assert backup is not None
+
+        config_path.write_text("current: true\n")
+        archive_path = Path(backup.file_path)
+        archive_path.write_bytes(b"not a tar archive")
+
+        result = bm.restore_backup(backup.id)
+        assert result is not None
+        assert "error" in result
+        assert config_path.read_text() == "current: true\n"
+
+    def test_describe_backup_scope_excludes_global_system_db(self):
+        """Backup scope descriptions call out the shared global system database boundary."""
+        tmpdir = tempfile.mkdtemp()
+        pm, bm = self._make_pm_and_bm(tmpdir)
+
+        scope = bm.describe_backup_scope("/tmp/shared/system.db")
+
+        assert str(bm._muscle_dir / "project_memory.db") in scope["included_paths"]
+        assert scope["excluded_paths"] == [
+            {
+                "path": "/tmp/shared/system.db",
+                "reason": (
+                    "Global MUSCLE system database is shared across projects and is not "
+                    "included in project-local backups."
+                ),
+            }
+        ]
+        assert any("Restore the project backup first" in note for note in scope["restore_guidance"])
+
     def test_backup_checksum_changes_on_content_change(self):
         """Two backups of same type get different checksums when content differs."""
+        from datetime import datetime as real_datetime
+
         tmpdir = tempfile.mkdtemp()
         pm, bm = self._make_pm_and_bm(tmpdir)
 
         bm._muscle_dir.mkdir(exist_ok=True)
         bm._muscle_dir.joinpath("config.yaml").write_text("v1\n")
 
-        b1 = bm.create_backup("config")
+        # Fix: Use deterministic timestamps via mocked ``datetime.now`` rather
+        # than ``time.sleep`` so the test is fast and flake-free.
+        t1 = real_datetime(2026, 4, 16, 10, 0, 0)
+        t2 = real_datetime(2026, 4, 16, 10, 0, 1)
+        with patch("tools.muscle.backup_manager.datetime") as mock_dt:
+            mock_dt.now.return_value = t1
+            mock_dt.side_effect = lambda *a, **kw: real_datetime(*a, **kw)
+            b1 = bm.create_backup("config")
         assert b1 is not None
 
         # Change content
         bm._muscle_dir.joinpath("config.yaml").write_text("v2\n")
-        time.sleep(0.1)  # ensure different timestamp
-        b2 = bm.create_backup("config")
+        with patch("tools.muscle.backup_manager.datetime") as mock_dt:
+            mock_dt.now.return_value = t2
+            mock_dt.side_effect = lambda *a, **kw: real_datetime(*a, **kw)
+            b2 = bm.create_backup("config")
         assert b2 is not None
 
         assert b1.checksum != b2.checksum

@@ -32,7 +32,7 @@ MigrationFunc = Callable[[sqlite3.Connection], bool]
 RollbackFunc = Callable[[sqlite3.Connection], None]
 
 # Current schema version - update when schema changes
-CURRENT_SCHEMA_VERSION = "1.7.0"
+CURRENT_SCHEMA_VERSION = "1.9.2"
 
 # Registered migrations in order
 # Each entry: (version, migrate_func, rollback_func)
@@ -75,6 +75,10 @@ def _load_migrations() -> list[tuple[str, MigrationFunc, RollbackFunc | None]]:
     m6 = _load_migration_module("_0006_action_log.py")
     m7 = _load_migration_module("_0007_review_workflow_fields.py")
     m8 = _load_migration_module("_0008_shadow_job_execution_mode.py")
+    m9 = _load_migration_module("_0009_project_optimization.py")
+    m10 = _load_migration_module("_0010_cross_project_learning.py")
+    m11 = _load_migration_module("_0011_llm_call_model_identity.py")
+    m12 = _load_migration_module("_0012_shadow_job_liveness.py")
 
     _MIGRATIONS = [
         ("1.0.0", m1.migrate, m1.rollback),
@@ -85,6 +89,10 @@ def _load_migrations() -> list[tuple[str, MigrationFunc, RollbackFunc | None]]:
         ("1.5.0", m6.migrate, m6.rollback),
         ("1.6.0", m7.migrate, m7.rollback),
         ("1.7.0", m8.migrate, m8.rollback),
+        ("1.8.0", m9.migrate, m9.rollback),
+        ("1.9.0", m10.migrate, m10.rollback),
+        ("1.9.1", m11.migrate, m11.rollback),
+        ("1.9.2", m12.migrate, m12.rollback),
     ]
 
     # Sort by version to ensure consistent ordering

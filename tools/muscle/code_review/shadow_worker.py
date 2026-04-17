@@ -19,11 +19,15 @@ Architecture:
 
 from __future__ import annotations
 
+import argparse
 import atexit
 import json
 import logging
+import os
 import queue
 import signal
+import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -43,6 +47,8 @@ WORKER_MAX_RETRIES = 3
 WORKER_RETRY_BASE_DELAY = 5.0
 WORKER_RETRY_MAX_DELAY = 60.0
 WORKER_DEFAULT_TIMEOUT_SECONDS = 300  # 5 minutes
+WORKER_HEARTBEAT_INTERVAL = 15.0
+WORKER_STALE_HEARTBEAT_SECONDS = 90.0
 
 
 @dataclass
@@ -130,10 +136,11 @@ class ShadowWorker:
 
             logger.info("ShadowWorker stopping...")
             self._stop_event.set()
+            worker_thread = self._worker_thread
 
-        if self._worker_thread and self._worker_thread.is_alive():
-            self._worker_thread.join(timeout=timeout)
-            if self._worker_thread.is_alive():
+        if worker_thread and worker_thread.is_alive():
+            worker_thread.join(timeout=timeout)
+            if worker_thread.is_alive():
                 logger.warning("Worker thread did not stop gracefully")
 
         with self._lock:
@@ -209,37 +216,51 @@ class ShadowWorker:
         last_poll = 0.0
         last_idle_check = time.time()
 
-        while not self._stop_event.is_set():
-            try:
-                current_time = time.time()
+        try:
+            self.broker.reap_stale_jobs(WORKER_STALE_HEARTBEAT_SECONDS)
 
-                if current_time - last_poll >= self.config.poll_interval:
-                    last_poll = current_time
-                    self._poll_for_pending_jobs()
-
-                if current_time - last_idle_check >= self._idle_check_interval:
-                    last_idle_check = current_time
-                    if self._should_idle_out():
-                        logger.info("Worker idle timeout reached, continuing to poll for new jobs")
-
+            while not self._stop_event.is_set():
                 try:
-                    task = self._job_queue.get(timeout=0.5)
-                    self._process_job(task)
-                except queue.Empty:
-                    continue
+                    current_time = time.time()
+
+                    if current_time - last_poll >= self.config.poll_interval:
+                        last_poll = current_time
+                        self._poll_for_pending_jobs()
+
+                    idle_check_interval = min(self._idle_check_interval, self.config.idle_timeout)
+                    if current_time - last_idle_check >= idle_check_interval:
+                        last_idle_check = current_time
+                        if self._should_idle_out():
+                            logger.info("Worker idle timeout reached, stopping background loop")
+                            self._stop_event.set()
+                            break
+
+                    try:
+                        queue_timeout = min(0.5, max(0.05, self.config.poll_interval))
+                        task = self._job_queue.get(timeout=queue_timeout)
+                        self._process_job(task)
+                    except queue.Empty:
+                        continue
+                    except Exception as e:
+                        logger.error(f"Unexpected error in worker loop: {e}")
+
                 except Exception as e:
-                    logger.error(f"Unexpected error in worker loop: {e}")
-
-            except Exception as e:
-                logger.error(f"Fatal error in worker loop: {e}")
-                time.sleep(1.0)
-
-        logger.info("Worker loop ended")
+                    logger.error(f"Fatal error in worker loop: {e}")
+                    time.sleep(1.0)
+        finally:
+            with self._lock:
+                self._is_running = False
+                self._worker_thread = None
+                self._current_job = None
+                self._current_job_started = None
+            logger.info("Worker loop ended")
 
     def _poll_for_pending_jobs(self) -> None:
         try:
+            self.broker.reap_stale_jobs(WORKER_STALE_HEARTBEAT_SECONDS)
             with self._lock:
-                pending = list(self.broker.get_pending_jobs())
+                pending_jobs = self.broker.get_pending_jobs()
+                pending = list(pending_jobs) if isinstance(pending_jobs, list) else []
             for job in pending:
                 job_id = job.get("job_id")
                 if not job_id:
@@ -252,43 +273,53 @@ class ShadowWorker:
                         if job_id in self._in_progress_jobs:
                             continue
                         self._in_progress_jobs.add(job_id)
-
-                    changed_files = None
-                    changed_json = job.get("changed_files_json")
-                    if changed_json:
-                        try:
-                            changed_files = json.loads(changed_json)
-                        except Exception:
-                            pass
-
-                    task = JobTask(
-                        job_id=job_id,
-                        target_path=job.get("target_path", ""),
-                        mode=self._parse_review_mode(job.get("mode", "review")),
-                        intensity=self._parse_intensity(job.get("intensity", "moderate")),
-                        execution_mode=job.get("execution_mode", "local"),
-                        project_path=job.get("project_path"),
-                        timeout_seconds=job.get("timeout_seconds", WORKER_DEFAULT_TIMEOUT_SECONDS),
-                        token_budget=job.get("token_budget"),
-                        changed_files=changed_files,
-                        workflow_name=job.get("workflow_name"),
-                        worktree_path=job.get("worktree_path"),
-                        base_branch=job.get("base_branch"),
-                        artifact_dir=job.get("artifact_dir"),
-                        scope_json=job.get("scope_json"),
-                    )
+                    task = self._task_from_job_record(job)
+                    if task is None:
+                        with self._lock:
+                            self._in_progress_jobs.discard(job_id)
+                        continue
                     self._job_queue.put(task)
                     self.broker.start_job(job_id)
                     logger.debug(f"Polled pending job {job_id}")
         except Exception as e:
             logger.error(f"Error polling for pending jobs: {e}")
 
+    def _task_from_job_record(self, job: dict) -> JobTask | None:
+        job_id = job.get("job_id")
+        if not job_id:
+            return None
+
+        changed_files = None
+        changed_json = job.get("changed_files_json")
+        if changed_json:
+            try:
+                changed_files = json.loads(changed_json)
+            except Exception:
+                changed_files = None
+
+        return JobTask(
+            job_id=str(job_id),
+            target_path=job.get("target_path", ""),
+            mode=self._parse_review_mode(job.get("mode", "review")),
+            intensity=self._parse_intensity(job.get("intensity", "moderate")),
+            execution_mode=job.get("execution_mode", "local"),
+            project_path=job.get("project_path"),
+            timeout_seconds=job.get("timeout_seconds", WORKER_DEFAULT_TIMEOUT_SECONDS),
+            token_budget=job.get("token_budget"),
+            changed_files=changed_files,
+            workflow_name=job.get("workflow_name"),
+            worktree_path=job.get("worktree_path"),
+            base_branch=job.get("base_branch"),
+            artifact_dir=job.get("artifact_dir"),
+            scope_json=job.get("scope_json"),
+        )
+
     def _should_idle_out(self) -> bool:
         if self._current_job is not None:
             return False
         if self._job_queue.qsize() > 0:
             return False
-        return False
+        return (time.time() - self._last_job_time) >= self.config.idle_timeout
 
     def _check_job_timeout(self, task: JobTask) -> bool:
         """Check if the current job has exceeded its timeout. Returns True if timed out."""
@@ -306,6 +337,15 @@ class ShadowWorker:
         self._current_job = task
         self._current_job_started = time.time()
         logger.info(f"Processing job {task.job_id}")
+        heartbeat_stop = threading.Event()
+        heartbeat_thread: threading.Thread | None = None
+
+        def heartbeat_loop() -> None:
+            while not heartbeat_stop.wait(WORKER_HEARTBEAT_INTERVAL):
+                try:
+                    self.broker.heartbeat_job(task.job_id)
+                except Exception as exc:
+                    logger.debug("Heartbeat update failed for %s: %s", task.job_id, exc)
 
         try:
             # Budget guardrail: check token budget before starting
@@ -313,6 +353,14 @@ class ShadowWorker:
                 self.broker.fail_job(task.job_id, "Token budget exhausted before job started")
                 logger.warning(f"Job {task.job_id} skipped: token_budget is 0")
                 return
+
+            self.broker.heartbeat_job(task.job_id)
+            heartbeat_thread = threading.Thread(
+                target=heartbeat_loop,
+                name=f"ShadowHeartbeat-{task.job_id}",
+                daemon=True,
+            )
+            heartbeat_thread.start()
 
             # Timeout guardrail: check periodically during processing
             if self.job_processor is None:
@@ -342,6 +390,9 @@ class ShadowWorker:
                 logger.warning(f"Job {task.job_id} failed after {task.retry_count} retries")
 
         finally:
+            heartbeat_stop.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=1.0)
             self._current_job = None
             self._current_job_started = None
             self._last_job_time = time.time()
@@ -508,6 +559,35 @@ class WorkerManager:
             return False
         return self._worker.is_running()
 
+    def _start_detached_worker_process(self, job_id: str) -> None:
+        log_dir = Path(self._project_path) / ".muscle"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "shadow_worker.log"
+        command = [
+            sys.executable,
+            "-m",
+            "tools.muscle.code_review.shadow_worker",
+            "--project-path",
+            self._project_path,
+            "--job-id",
+            job_id,
+        ]
+        if self._db_path:
+            command.extend(["--db-path", self._db_path])
+
+        logger.info("Launching detached shadow worker process for %s", job_id)
+        with log_path.open("a", encoding="utf-8") as log_file:
+            subprocess.Popen(
+                command,
+                cwd=self._project_path,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                close_fds=True,
+            )
+
     def submit_shadow_job(
         self,
         target_path: str,
@@ -518,6 +598,7 @@ class WorkerManager:
         token_budget: int | None = None,
         changed_files: list[str] | None = None,
         workflow_name: str | None = None,
+        detached: bool = False,
     ) -> str:
         """
         Create and submit a shadow job for background processing.
@@ -536,7 +617,6 @@ class WorkerManager:
         Returns:
             The generated job_id.
         """
-        self.start_worker()
         # Create the job record (broker generates the actual job_id)
         actual_job_id = self._broker.create_job(
             target_path=target_path,
@@ -548,6 +628,11 @@ class WorkerManager:
             token_budget=token_budget,
             workflow_name=workflow_name,
         )
+        if detached:
+            self._start_detached_worker_process(actual_job_id)
+            return actual_job_id
+
+        self.start_worker()
         self.get_worker().submit_job(
             job_id=actual_job_id,
             target_path=target_path,
@@ -565,3 +650,46 @@ class WorkerManager:
     @property
     def project_path(self) -> str:
         return self._project_path
+
+
+def _run_single_shadow_job(project_path: str, job_id: str, db_path: str | None = None) -> int:
+    manager = WorkerManager(project_path=project_path, db_path=db_path)
+    broker = manager.get_broker()
+    broker.reap_stale_jobs(WORKER_STALE_HEARTBEAT_SECONDS)
+    job = broker.get_job(job_id)
+    if not job:
+        logger.error("Shadow job %s not found for project %s", job_id, project_path)
+        return 1
+
+    worker = manager.get_worker()
+    task = worker._task_from_job_record(job)
+    if task is None:
+        logger.error("Shadow job %s is missing required task metadata", job_id)
+        return 1
+
+    status = str(job.get("status") or "pending")
+    if status == "pending":
+        broker.start_job(job_id)
+    elif status not in {"running", "pending"}:
+        logger.info("Shadow job %s already finished with status %s", job_id, status)
+        return 0
+
+    with worker._lock:
+        worker._in_progress_jobs.add(job_id)
+
+    worker._process_job(task)
+    updated = broker.get_job(job_id) or {}
+    return 0 if updated.get("status") in {"completed", "failed", "cancelled"} else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run MUSCLE shadow review jobs.")
+    parser.add_argument("--project-path", required=True, help="Project root for the shadow job.")
+    parser.add_argument("--db-path", help="Optional project_memory.db override.")
+    parser.add_argument("--job-id", required=True, help="Specific shadow job id to process.")
+    args = parser.parse_args(argv)
+    return _run_single_shadow_job(args.project_path, args.job_id, args.db_path)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

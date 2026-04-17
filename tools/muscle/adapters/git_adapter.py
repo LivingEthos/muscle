@@ -15,6 +15,14 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+class GitAdapterError(RuntimeError):
+    """Raised when an unexpected git command failure should not be swallowed.
+
+    Fix: AD-05. Distinguishes a legitimate empty diff from a crashed/denied
+    git invocation so callers can surface real errors.
+    """
+
+
 class GitAdapter:
     def __init__(self, repo_path: str = "."):
         self.repo_path = Path(repo_path)
@@ -97,11 +105,20 @@ class GitAdapter:
         return files
 
     def get_diff(self, files: list[str] | None = None) -> str:
-        """Get diff of files or all changes."""
+        """Get diff of files or all changes.
+
+        Fix: AD-05. On non-zero git exit, raise ``GitAdapterError`` carrying
+        stderr so callers can distinguish "no changes" (returns empty string)
+        from a broken repo state.
+        """
         cmd = ["git", "diff"]
         if files:
             cmd += files
         result = subprocess.run(cmd, cwd=self.repo_path, capture_output=True, text=True)
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            logger.error("git diff failed: %s", stderr)
+            raise GitAdapterError(f"git diff failed: {stderr}")
         return result.stdout
 
     def checkout(self, branch: str) -> bool:

@@ -71,7 +71,11 @@ class ReviewWorkflowLoader:
     """Load built-in review workflows from YAML."""
 
     def __init__(self, workflows_dir: str | None = None):
-        base_dir = Path(workflows_dir) if workflows_dir else Path(__file__).resolve().parent.parent / "workflows"
+        base_dir = (
+            Path(workflows_dir)
+            if workflows_dir
+            else Path(__file__).resolve().parent.parent / "workflows"
+        )
         self.workflows_dir = base_dir
 
     def load(self, workflow_name: str) -> ReviewWorkflow:

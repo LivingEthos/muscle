@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, Mock, patch
 
 from tools.muscle.interactive import InteractiveChoice
 from tools.muscle.loop_controller import LoopContext, LoopController
+from tools.muscle.project_memory import ProjectMemory
+from tools.muscle.tui.project_manager import ProjectConfig, ProjectManager
 from tools.muscle.types import (
     BudgetMode,
     EvalMode,
@@ -470,6 +472,100 @@ def test_loop_controller_session_persistence():
     assert len(session_manager.saved_iterations) >= 1
     assert len(session_manager.saved_reports) >= 0
     assert len(session_manager.saved_contexts) >= 0
+
+
+def test_loop_controller_records_positive_external_lesson_outcome(tmp_path):
+    current = tmp_path / "current"
+    source = tmp_path / "source"
+    current.mkdir()
+    source.mkdir()
+    ProjectManager(current).init_project(ProjectConfig(name="current", path=current, languages=["Python"]))
+    ProjectManager(source).init_project(ProjectConfig(name="source", path=source, languages=["Python"]))
+
+    current_pm = ProjectMemory(str(current))
+    source_pm = ProjectMemory(str(source))
+    source_pm.insert_learned_rule(str(source), "Reuse schema-first retries", "json")
+    current_pm.import_project_lessons(str(current), str(source), link_mode="snapshot", relatedness_score=0.8)
+    lesson = current_pm.list_transferred_lessons(project_path=str(current))[0]
+    current_pm.insert_lesson_usage_event(
+        project_path=str(current),
+        session_id="test-session-123",
+        stage="generate",
+        lesson_source="related",
+        lesson_key=str(lesson["lesson_key"]),
+        source_project_path=str(source),
+    )
+
+    controller = LoopController(
+        config=RunConfig(
+            task="Build a simple calculator",
+            output_dir=str(current),
+            max_iterations=1,
+            budget_mode=BudgetMode.UNLIMITED,
+        ),
+        code_generator=DummyGenerator(),
+        evaluator=DummyEvaluator(should_pass=True),
+        evolver=DummyEvolver(),
+        budget_manager=DummyBudgetManager(),
+        session_manager=DummySessionManager(),
+        project_memory=current_pm,
+    )
+
+    controller.run()
+
+    events = current_pm.list_lesson_usage_events(project_path=str(current), session_id="test-session-123")
+    updated_lesson = current_pm.list_transferred_lessons(project_path=str(current))[0]
+
+    assert events[0]["outcome"] == "positive_generation_iteration"
+    assert int(updated_lesson["validation_count"] or 0) == 1
+    assert int(updated_lesson["success_count"] or 0) == 1
+
+
+def test_loop_controller_records_negative_external_lesson_outcome(tmp_path):
+    current = tmp_path / "current"
+    source = tmp_path / "source"
+    current.mkdir()
+    source.mkdir()
+    ProjectManager(current).init_project(ProjectConfig(name="current", path=current, languages=["Python"]))
+    ProjectManager(source).init_project(ProjectConfig(name="source", path=source, languages=["Python"]))
+
+    current_pm = ProjectMemory(str(current))
+    source_pm = ProjectMemory(str(source))
+    source_pm.insert_learned_rule(str(source), "Reuse schema-first retries", "json")
+    current_pm.import_project_lessons(str(current), str(source), link_mode="snapshot", relatedness_score=0.8)
+    lesson = current_pm.list_transferred_lessons(project_path=str(current))[0]
+    current_pm.insert_lesson_usage_event(
+        project_path=str(current),
+        session_id="test-session-123",
+        stage="generate",
+        lesson_source="related",
+        lesson_key=str(lesson["lesson_key"]),
+        source_project_path=str(source),
+    )
+
+    controller = LoopController(
+        config=RunConfig(
+            task="Build a simple calculator",
+            output_dir=str(current),
+            max_iterations=1,
+            budget_mode=BudgetMode.UNLIMITED,
+        ),
+        code_generator=DummyGenerator(),
+        evaluator=DummyEvaluator(should_pass=False),
+        evolver=DummyEvolver(),
+        budget_manager=DummyBudgetManager(),
+        session_manager=DummySessionManager(),
+        project_memory=current_pm,
+    )
+
+    controller.run()
+
+    events = current_pm.list_lesson_usage_events(project_path=str(current), session_id="test-session-123")
+    updated_lesson = current_pm.list_transferred_lessons(project_path=str(current))[0]
+
+    assert events[0]["outcome"] == "negative_generation_evaluation"
+    assert int(updated_lesson["validation_count"] or 0) == 1
+    assert int(updated_lesson["success_count"] or 0) == 0
 
 
 def test_should_continue_early_exit_on_test_pass():

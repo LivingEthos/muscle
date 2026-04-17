@@ -1,16 +1,23 @@
 ---
-description: Cancel a running or pending MUSCLE shadow (background) job
-args:
-  - name: job-id
-    description: Job ID to cancel
-    required: true
+description: Explain how to stop MUSCLE work when there is no dedicated cancel subcommand
 ---
 
-Cancel a running or pending MUSCLE shadow job.
+There is no cancel command in MUSCLE, and there is no dedicated `cancel` CLI
+subcommand.
 
-Note: There is currently **no cancel command** in MUSCLE. To stop a running shadow job, you can:
+For a foreground generation session, use:
 
-- Kill the process running the shadow job directly
-- Use `muscle probe` to check the job status
+```bash
+muscle abort
+```
 
-Background shadow jobs can also be monitored with `muscle probe` and results retrieved with `muscle diagnosis`.
+For background shadow-review jobs, use the inspection commands that MUSCLE
+ships today:
+
+```bash
+muscle probe
+muscle diagnosis
+```
+
+If you need to stop an external worker process directly, do that at the process
+level and then use `muscle probe` again to confirm the recorded job state.

@@ -13,6 +13,7 @@ from tools.muscle.m27_client import (
     TokenUsage,
     _detect_api_base,
 )
+from tools.muscle.optimization.types import TelemetryContext
 
 
 class TestTokenUsage:
@@ -106,6 +107,7 @@ def _make_mock_response(
 ):
     """Create a mock requests.Response with given status and data."""
     from unittest.mock import MagicMock
+
     import requests
 
     response = MagicMock(spec=requests.Response)
@@ -261,13 +263,135 @@ class TestChatSuccess:
         assert usage.total == 23
         assert mock_session.post.called
 
+    def test_chat_records_telemetry_when_sink_attached(self, mock_client):
+        client, mock_session = mock_client
+        mock_session.post.return_value = _make_mock_response(
+            200,
+            json_data={
+                "content": [{"type": "text", "text": "Telemetry"}],
+                "usage": {"input_tokens": 7, "output_tokens": 4},
+            },
+        )
+        telemetry_sink = MagicMock()
+        client.set_telemetry_sink(telemetry_sink)
+        client.set_model_identity(
+            {
+                "requested_label": "claude-sonnet-4",
+                "provider_endpoint": "https://api.minimax.io/anthropic",
+                "provider_fingerprint": "api.minimax.io/anthropic",
+                "canonical_model_key": "openai/gpt-5@1",
+                "identity_source": "manual_override",
+                "confidence": 1.0,
+                "manual_override": True,
+            }
+        )
+
+        result, usage = client.chat(
+            [{"role": "user", "content": "hi"}],
+            telemetry_context=TelemetryContext(
+                project_path="/tmp/project",
+                session_id="sess-1",
+                stage="generate",
+            ),
+        )
+
+        assert result == "Telemetry"
+        assert usage.total == 11
+        telemetry_sink.record_llm_call.assert_called_once()
+        event = telemetry_sink.record_llm_call.call_args.args[0]
+        assert event.requested_label == "claude-sonnet-4"
+        assert event.canonical_model_key == "openai/gpt-5@1"
+        assert event.identity_source == "manual_override"
+        assert event.manual_override is True
+
+    def test_chat_adopts_trusted_provider_introspection_and_records_history(self, mock_client):
+        client, mock_session = mock_client
+        mock_session.post.return_value = _make_mock_response(
+            200,
+            json_data={
+                "model": "gpt-5-mini-2026-04-14",
+                "content": [{"type": "text", "text": "Telemetry"}],
+                "usage": {"input_tokens": 7, "output_tokens": 4},
+            },
+        )
+        telemetry_sink = MagicMock()
+        client.set_telemetry_sink(telemetry_sink)
+        client.set_model_identity(
+            {
+                "requested_label": "custom-openai-alias",
+                "provider_endpoint": "https://api.openai.com/v1",
+                "provider_fingerprint": "api.openai.com/v1",
+                "canonical_model_key": None,
+                "identity_source": "unresolved",
+                "confidence": 0.0,
+                "manual_override": False,
+            }
+        )
+
+        result, usage = client.chat(
+            [{"role": "user", "content": "hi"}],
+            telemetry_context=TelemetryContext(
+                project_path="/tmp/project",
+                session_id="sess-1",
+                stage="generate",
+            ),
+        )
+
+        assert result == "Telemetry"
+        assert usage.total == 11
+        telemetry_sink.record_model_identity_history.assert_called_once()
+        event = telemetry_sink.record_llm_call.call_args.args[0]
+        assert event.canonical_model_key == "openai/gpt-5-mini@1"
+        assert event.identity_source == "provider_introspection"
+
+    def test_chat_does_not_replace_manual_override_with_introspection(self, mock_client):
+        client, mock_session = mock_client
+        mock_session.post.return_value = _make_mock_response(
+            200,
+            json_data={
+                "model": "gpt-5-mini-2026-04-14",
+                "content": [{"type": "text", "text": "Telemetry"}],
+                "usage": {"input_tokens": 7, "output_tokens": 4},
+            },
+        )
+        telemetry_sink = MagicMock()
+        client.set_telemetry_sink(telemetry_sink)
+        client.set_model_identity(
+            {
+                "requested_label": "claude-sonnet-4",
+                "provider_endpoint": "https://api.openai.com/v1",
+                "provider_fingerprint": "api.openai.com/v1",
+                "canonical_model_key": "anthropic/claude-sonnet@4",
+                "identity_source": "manual_override",
+                "confidence": 1.0,
+                "manual_override": True,
+            }
+        )
+
+        result, usage = client.chat(
+            [{"role": "user", "content": "hi"}],
+            telemetry_context=TelemetryContext(
+                project_path="/tmp/project",
+                session_id="sess-1",
+                stage="generate",
+            ),
+        )
+
+        assert result == "Telemetry"
+        assert usage.total == 11
+        telemetry_sink.record_model_identity_history.assert_not_called()
+        event = telemetry_sink.record_llm_call.call_args.args[0]
+        assert event.canonical_model_key == "anthropic/claude-sonnet@4"
+        assert event.identity_source == "manual_override"
+
 
 class TestChatRetry:
     """Tests for chat() retry logic."""
 
     def test_retry_on_json_decode_error(self, mock_client):
-        import requests as req
         import json
+
+        import requests as req
 
         client, mock_session = mock_client
 
@@ -469,11 +593,10 @@ class TestChatErrors:
 
     def test_502_503_504_retries(self, mock_client):
         client, mock_session = mock_client
-        for code in [502, 503, 504]:
-            mock_session.post.return_value = _make_mock_response(code, text="Error")
+        for status_code in [502, 503, 504]:
+            mock_session.post.return_value = _make_mock_response(status_code, text="Error")
 
-        with patch("time.sleep"):
-            for code in [502, 503, 504]:
+            with patch("time.sleep"):
                 result, usage = client.chat([{"role": "user", "content": "hi"}])
                 assert result == ""
 
@@ -549,7 +672,7 @@ class TestChatStreaming:
         mock_session.post.side_effect = [rate_limited, success_response]
 
         with patch("time.sleep"):
-            chunks = list(client.chat_streaming([{"role": "user", "content": "hi"}]))
+            list(client.chat_streaming([{"role": "user", "content": "hi"}]))
 
         assert mock_session.post.call_count == 2
 
@@ -558,7 +681,7 @@ class TestChatStreaming:
         mock_session.post.return_value = _make_mock_response(500, text="Error")
 
         with patch("time.sleep"):
-            chunks = list(client.chat_streaming([{"role": "user", "content": "hi"}]))
+            list(client.chat_streaming([{"role": "user", "content": "hi"}]))
 
         assert mock_session.post.call_count == client.max_retries
 
@@ -569,7 +692,7 @@ class TestChatStreaming:
         mock_session.post.side_effect = req.exceptions.Timeout("timed out")
 
         with patch("time.sleep"):
-            chunks = list(client.chat_streaming([{"role": "user", "content": "hi"}]))
+            list(client.chat_streaming([{"role": "user", "content": "hi"}]))
 
         assert mock_session.post.call_count == client.max_retries
 
@@ -580,7 +703,7 @@ class TestChatStreaming:
         mock_session.post.side_effect = req.exceptions.ConnectionError("refused")
 
         with patch("time.sleep"):
-            chunks = list(client.chat_streaming([{"role": "user", "content": "hi"}]))
+            list(client.chat_streaming([{"role": "user", "content": "hi"}]))
 
         assert mock_session.post.call_count == client.max_retries
 

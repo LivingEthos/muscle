@@ -8,7 +8,6 @@ consistent with the plugin.json description.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -88,7 +87,21 @@ class TestPluginJson:
         """The plugin description should include settings-review and long-eval-benchmark."""
         desc = plugin_json["description"]
         assert "settings-review" in desc
+        assert "settings-model" in desc
         assert "long-eval-benchmark" in desc
+        assert "memory-related" in desc
+        assert "memory-import-project" in desc
+        assert "memory-history" in desc
+        assert "model-status" in desc
+        assert "model-history" in desc
+        assert "model-select" in desc
+        assert "model-pack-install" in desc
+        assert "model-pack-submit" in desc
+
+    def test_plugin_description_repeats_project_local_authority(self, plugin_json: dict):
+        """The plugin description should keep the project-first memory rule visible."""
+        desc = plugin_json["description"].lower()
+        assert "project-local memory always stays primary" in desc
 
 
 class TestCommandDocCompleteness:
@@ -109,6 +122,15 @@ class TestCommandDocCompleteness:
         "settings-show",
         "settings-api-key",
         "settings-review",
+        "settings-model",
+        "memory-related",
+        "memory-import-project",
+        "memory-history",
+        "model-status",
+        "model-history",
+        "model-select",
+        "model-pack-install",
+        "model-pack-submit",
         "status",
         "long-eval-benchmark",
         "long-eval-reports",
@@ -118,12 +140,9 @@ class TestCommandDocCompleteness:
 
     def test_all_expected_docs_exist(self, command_docs: dict[str, dict]):
         """All commands referenced in plugin.json should have doc files."""
-        # Check that status and long-eval-reports both exist (distinct commands)
         doc_names = set(command_docs.keys())
-        assert "settings-review" in doc_names, "settings-review.md must exist"
-        assert "long-eval-benchmark" in doc_names, "long-eval-benchmark.md must exist"
-        assert "long-eval-reports" in doc_names, "long-eval-reports.md must exist"
-        assert "status" in doc_names, "status.md must exist"
+        missing = self.EXPECTED_COMMAND_DOCS - doc_names
+        assert not missing, f"Missing expected plugin docs: {sorted(missing)}"
 
     def test_no_orphaned_docs(self, command_docs: dict[str, dict]):
         """Every .md file should have a non-empty description and (usually) a bash block."""
@@ -151,9 +170,7 @@ class TestCancelCommandDoc:
         assert any(
             phrase in content.lower()
             for phrase in ["no `muscle cancel`", "no cancel command", "not currently"]
-        ), (
-            "cancel.md must clearly state that `muscle cancel` does not exist"
-        )
+        ), "cancel.md must clearly state that `muscle cancel` does not exist"
 
 
 class TestResultCommandDoc:
@@ -198,3 +215,73 @@ class TestSetupCommandDoc:
         assert "settings hooks --disable" in content, (
             "setup.md must use `muscle settings hooks --disable`"
         )
+
+    def test_setup_doc_describes_guided_growth_and_model_setup(self):
+        """setup.md should describe guided init, conservative defaults, and model selection."""
+        setup_doc = COMMANDS_DIR / "setup.md"
+        if not setup_doc.exists():
+            pytest.skip("setup.md does not exist")
+
+        content = setup_doc.read_text()
+        assert "muscle init" in content
+        assert "--related-mode suggest" in content
+        assert "--pack-mode suggest" in content
+        assert "--canonical-model" in content
+        assert "never auto-imported" in content or "never auto-imported" in content.lower()
+        assert "defaults to `suggest`, not `auto`" in content
+
+
+class TestSettingsShowCommandDoc:
+    """settings-show.md should describe the expanded model and memory settings surface."""
+
+    def test_settings_show_doc_mentions_model_and_related_fields(self):
+        settings_doc = COMMANDS_DIR / "settings-show.md"
+        if not settings_doc.exists():
+            pytest.skip("settings-show.md does not exist")
+
+        content = settings_doc.read_text()
+        assert "related-project mode" in content.lower()
+        assert "model-pack mode" in content.lower()
+        assert "manual model override" in content.lower()
+        assert "canonical model" in content.lower()
+        assert "model identity source" in content.lower()
+
+
+class TestNewParityDocs:
+    """New plugin docs should cover the main post-discovery action paths."""
+
+    def test_settings_model_doc_mentions_related_and_pack_modes(self):
+        content = (COMMANDS_DIR / "settings-model.md").read_text()
+        assert "--canonical-model" in content
+        assert "--related-mode suggest" in content
+        assert "--pack-mode suggest" in content
+        assert "--clear" in content
+        assert "project-local memory remains authoritative" in content.lower()
+
+    def test_memory_import_project_doc_mentions_attach_and_unlink(self):
+        content = (COMMANDS_DIR / "memory-import-project.md").read_text()
+        assert "memory import-project" in content
+        assert "--mode snapshot" in content
+        assert "--mode attach" in content
+        assert "memory linked" in content
+        assert "memory unlink" in content
+
+    def test_model_pack_install_doc_mentions_install_list_and_update(self):
+        content = (COMMANDS_DIR / "model-pack-install.md").read_text()
+        assert "model packs install" in content
+        assert "--canonical-model" in content
+        assert "--bundle-path" in content
+        assert "model packs list" in content
+        assert "model packs update" in content
+
+    def test_memory_history_doc_mentions_recent_usage_and_related_context(self):
+        content = (COMMANDS_DIR / "memory-history.md").read_text()
+        assert "memory history" in content
+        assert "lesson-usage" in content.lower() or "lesson usage" in content.lower()
+        assert "memory related" in content
+
+    def test_model_history_doc_mentions_recent_identity_events(self):
+        content = (COMMANDS_DIR / "model-history.md").read_text()
+        assert "model history" in content
+        assert "manual override" in content.lower()
+        assert "model status" in content

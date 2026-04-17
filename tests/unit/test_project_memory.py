@@ -296,7 +296,7 @@ class TestConversationEventHelpers:
             description="Description",
             status="running",
         )
-        event_id = pm.insert_conversation_event(
+        pm.insert_conversation_event(
             project_path=str(temp_project_dir),
             task_id=task_id,
             event_type="task_end",
@@ -593,7 +593,7 @@ class TestAutomationStateHelpers:
             state_key="test_key",
             state_value="test_value",
         )
-        state = pm.get_automation_state("test_key")
+        state = pm.get_automation_state(str(temp_project_dir), "test_key")
         assert state is not None
         assert state["state_key"] == "test_key"
         assert state["state_value"] == "test_value"
@@ -610,7 +610,7 @@ class TestAutomationStateHelpers:
             state_key="updatable_key",
             state_value="updated",
         )
-        state = pm.get_automation_state("updatable_key")
+        state = pm.get_automation_state(str(temp_project_dir), "updatable_key")
         assert state["state_value"] == "updated"
 
     def test_list_automation_states(self, pm, temp_project_dir):
@@ -624,6 +624,29 @@ class TestAutomationStateHelpers:
 
         states = pm.list_automation_states(project_path=str(temp_project_dir))
         assert len(states) == 2
+
+    def test_automation_state_is_project_scoped(self, pm, temp_project_dir, tmp_path):
+        """Automation states with the same key remain isolated per project."""
+        other_project = tmp_path / "other-project"
+        other_project.mkdir()
+        pm.set_automation_state(
+            project_path=str(temp_project_dir),
+            state_key="shared_key",
+            state_value="primary",
+        )
+        pm.set_automation_state(
+            project_path=str(other_project),
+            state_key="shared_key",
+            state_value="secondary",
+        )
+
+        first_state = pm.get_automation_state(str(temp_project_dir), "shared_key")
+        second_state = pm.get_automation_state(str(other_project), "shared_key")
+
+        assert first_state is not None
+        assert second_state is not None
+        assert first_state["state_value"] == "primary"
+        assert second_state["state_value"] == "secondary"
 
 
 class TestBackupHelpers:
@@ -875,3 +898,38 @@ class TestActionLogHelpers:
 
         logs = pm.list_action_logs(project_path=str(temp_project_dir), limit=5)
         assert len(logs) == 5
+
+
+class TestObservabilityHelpers:
+    """Test debug-history helpers for model identity and lesson usage."""
+
+    def test_list_model_identity_history_returns_newest_first(self, pm, temp_project_dir):
+        """Model identity history should be returned newest-first."""
+        pm.insert_model_identity_history(
+            str(temp_project_dir),
+            {
+                "requested_label": "claude-sonnet-4",
+                "provider_endpoint": "https://gateway.example.com/anthropic",
+                "canonical_model_key": None,
+                "identity_source": "unresolved",
+                "confidence": 0.0,
+                "manual_override": False,
+            },
+        )
+        pm.insert_model_identity_history(
+            str(temp_project_dir),
+            {
+                "requested_label": "gpt-5-mini",
+                "provider_endpoint": "https://api.openai.com/v1",
+                "canonical_model_key": "openai/gpt-5-mini@1",
+                "identity_source": "provider_introspection",
+                "confidence": 0.9,
+                "manual_override": False,
+            },
+        )
+
+        history = pm.list_model_identity_history(str(temp_project_dir), limit=5)
+
+        assert len(history) == 2
+        assert history[0]["canonical_model_key"] == "openai/gpt-5-mini@1"
+        assert history[1]["identity_source"] == "unresolved"

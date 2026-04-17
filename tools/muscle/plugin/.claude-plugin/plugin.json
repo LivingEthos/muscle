@@ -1,6 +1,6 @@
 {
   "name": "muscle",
-  "description": "MUSCLE - Self-learning code review that gets smarter with every task. Commands: /muscle:review, /muscle:pressure, /muscle:rescue, /muscle:setup, /muscle:check, /muscle:history, /muscle:probe, /muscle:diagnosis, /muscle:lifeline, /muscle:kb-stats, /muscle:settings-show, /muscle:settings-api-key, /muscle:settings-review, /muscle:long-eval-reports, /muscle:long-eval-benchmark, /muscle:init, /muscle:enable, /muscle:disable, /muscle:status",
+  "description": "MUSCLE - Self-learning code review that gets smarter with every task. Project-local memory always stays primary; related-project lessons and model packs are optional overlays. Commands: /muscle:review, /muscle:pressure, /muscle:rescue, /muscle:setup, /muscle:check, /muscle:history, /muscle:probe, /muscle:diagnosis, /muscle:lifeline, /muscle:kb-stats, /muscle:settings-show, /muscle:settings-api-key, /muscle:settings-review, /muscle:settings-model, /muscle:memory-related, /muscle:memory-import-project, /muscle:memory-history, /muscle:model-status, /muscle:model-history, /muscle:model-select, /muscle:model-pack-install, /muscle:model-pack-submit, /muscle:long-eval-reports, /muscle:long-eval-benchmark, /muscle:init, /muscle:enable, /muscle:disable, /muscle:status",
   "version": "0.1.0",
   "author": {
     "name": "MUSCLE Team",

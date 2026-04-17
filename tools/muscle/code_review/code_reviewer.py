@@ -17,9 +17,15 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from ..m27_client import M27Client
+from ..optimization.prompt_context import build_telemetry_context, compose_prompt_envelope
 from .types import IssueCategory, PressureFocus, ReviewIssue, Severity
+
+if TYPE_CHECKING:
+    from ..optimization.context_budgeter import ContextBudgeter
+    from .review_artifacts import ReviewArtifactStore
 
 logger = logging.getLogger(__name__)
 
@@ -153,14 +159,27 @@ class CodeReviewer:
         self,
         m27_client: M27Client,
         max_issues_per_batch: int = 20,
+        context_budgeter: ContextBudgeter | None = None,
+        project_path: str | None = None,
+        lesson_resolver: object | None = None,
     ):
         self.m27_client = m27_client
         self.max_issues_per_batch = max_issues_per_batch
+        self.context_budgeter = context_budgeter
+        self.project_path = project_path or str(Path.cwd())
+        self.lesson_resolver = lesson_resolver
 
     def review(
         self,
         target_path: str,
         issues: list[dict],
+        telemetry_session_id: str | None = None,
+        telemetry_stage: str = "semantic_review",
+        workflow_name: str | None = None,
+        review_mode: str | None = None,
+        language: str | None = None,
+        complexity: str | None = None,
+        target_type: str | None = None,
     ) -> tuple[list[ReviewIssue], dict]:
         target = Path(target_path)
         if target.is_file():
@@ -227,7 +246,19 @@ class CodeReviewer:
             if cached_content is not None:
                 code_content = cached_content
 
-            return self._review_file(file_path, code_content, file_issues, proactive)
+            return self._review_file(
+                file_path,
+                code_content,
+                file_issues,
+                proactive,
+                telemetry_session_id=telemetry_session_id,
+                telemetry_stage=telemetry_stage,
+                workflow_name=workflow_name,
+                review_mode=review_mode,
+                language=language,
+                complexity=complexity,
+                target_type=target_type,
+            )
 
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FILE_REVIEWS) as executor:
             future_to_file = {
@@ -262,13 +293,37 @@ class CodeReviewer:
         code_content: str,
         issues: list[dict],
         proactive: bool = False,
+        telemetry_session_id: str | None = None,
+        telemetry_stage: str = "semantic_review",
+        workflow_name: str | None = None,
+        review_mode: str | None = None,
+        language: str | None = None,
+        complexity: str | None = None,
+        target_type: str | None = None,
     ) -> tuple[list[ReviewIssue], dict]:
+        review_budget = (
+            self.context_budgeter.build_semantic_review_budget(
+                file_path=file_path,
+                code_content=code_content,
+                issues=issues,
+                proactive=proactive,
+                escalate=False,
+            )
+            if self.context_budgeter
+            else None
+        )
+        prompt_code = (
+            review_budget.content
+            if review_budget is not None
+            else self._truncate_code(code_content, 500)
+        )
+
         if proactive:
             user_prompt = f"""Proactively review this file for bugs, security vulnerabilities, and code quality issues: {file_path}
 
 Source code:
 ```{self._get_lang_from_ext(file_path)}
-{self._truncate_code(code_content, 500)}
+{prompt_code}
 ```
 
 No static analysis issues were found, so conduct a thorough semantic review looking for:
@@ -286,24 +341,53 @@ Provide your findings in JSON format."""
 
 Source code:
 ```{self._get_lang_from_ext(file_path)}
-{self._truncate_code(code_content, 500)}
+{prompt_code}
 ```
 
 Static analysis issues found:
 {json.dumps(issues, indent=2)}
 
 Provide your review in JSON format."""
+        base_context_strategy = review_budget.strategy if review_budget else "truncated_file_slice"
+        prompt_envelope = compose_prompt_envelope(
+            base_prompt=user_prompt,
+            lesson_resolver=self.lesson_resolver,
+            query_text=f"{file_path}\n{json.dumps(issues, sort_keys=True)}",
+            stage=telemetry_stage,
+            base_context_strategy=base_context_strategy,
+            session_id=telemetry_session_id,
+            language=language or self._get_lang_from_ext(file_path),
+        )
+        user_prompt = prompt_envelope.prompt
 
         max_retries = 3
         response_text = ""
         usage = None
+        telemetry_context = None
 
         for attempt in range(max_retries):
+            telemetry_context = build_telemetry_context(
+                project_path=self.project_path,
+                session_id=telemetry_session_id,
+                stage=telemetry_stage,
+                prompt_envelope=prompt_envelope,
+                workflow_name=workflow_name,
+                review_mode=review_mode,
+                language=language or self._get_lang_from_ext(file_path),
+                complexity=complexity,
+                target_type=target_type,
+                metadata={
+                    "file_path": file_path,
+                    "issue_count": len(issues),
+                    "proactive": proactive,
+                },
+            )
             response_text, usage = self.m27_client.chat(
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
+                telemetry_context=telemetry_context,
             )
 
             logger.info(
@@ -333,47 +417,104 @@ Provide your review in JSON format."""
             }
 
         try:
-            json_text = response_text.strip()
-            if json_text.startswith("```"):
-                lines = json_text.split("\n")
-                json_lines = [
-                    line
-                    for line in lines
-                    if not line.startswith("```") and not line.startswith("json")
-                ]
-                json_text = "\n".join(json_lines).strip()
-            data = json.loads(json_text)
-            reviews = []
-            for item in data.get("reviews", []):
-                if not item.get("valid", False):
-                    continue
-
-                severity_str = item.get("severity", "MEDIUM")
-                severity = self._parse_severity(severity_str)
-                category_str = item.get("category", "best_practice")
-                category = self._parse_category(category_str)
-
-                reviews.append(
-                    ReviewIssue(
-                        file_path=item.get("file_path", file_path),
-                        line_number=item.get("line_number", 0),
-                        severity=severity,
-                        category=category,
-                        cwe_id=item.get("cwe_id"),
-                        title=item.get("title", "Code issue"),
-                        description=item.get("description", ""),
-                        code_snippet=item.get("code_snippet", ""),
-                        suggested_fix=item.get("suggested_fix"),
-                        auto_fixable=item.get("auto_fixable", False),
-                    )
-                )
-
+            data = self._load_json_response(response_text)
+            reviews = self._reviews_from_payload(data, file_path)
             summary = data.get("summary", {})
             summary["token_usage"] = usage.total if usage else 0
+            if telemetry_context:
+                self.m27_client.update_telemetry_call(
+                    telemetry_context.call_id,
+                    parse_success=True,
+                    metadata_updates={"review_count": len(reviews), "proactive": proactive},
+                )
             return reviews, summary
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse M2.7 response: {e}")
+            if telemetry_context:
+                self.m27_client.update_telemetry_call(
+                    telemetry_context.call_id,
+                    parse_success=False,
+                    metadata_updates={"json_error": str(e)},
+                )
+            if (
+                self.context_budgeter
+                and not proactive
+                and review_budget
+                and not review_budget.escalated
+            ):
+                expanded_budget = self.context_budgeter.build_semantic_review_budget(
+                    file_path=file_path,
+                    code_content=code_content,
+                    issues=issues,
+                    proactive=proactive,
+                    escalate=True,
+                )
+                retry_prompt = f"""Review this file: {file_path}
+
+Source code:
+```{self._get_lang_from_ext(file_path)}
+{expanded_budget.content}
+```
+
+Static analysis issues found:
+{json.dumps(issues, indent=2)}
+
+Provide your review in JSON format."""
+                retry_envelope = compose_prompt_envelope(
+                    base_prompt=retry_prompt,
+                    lesson_resolver=self.lesson_resolver,
+                    query_text=f"{file_path}\n{json.dumps(issues, sort_keys=True)}",
+                    stage=telemetry_stage,
+                    base_context_strategy=expanded_budget.strategy,
+                    session_id=telemetry_session_id,
+                    language=language or self._get_lang_from_ext(file_path),
+                )
+                retry_prompt = retry_envelope.prompt
+                retry_context = build_telemetry_context(
+                    project_path=self.project_path,
+                    session_id=telemetry_session_id,
+                    stage=telemetry_stage,
+                    prompt_envelope=retry_envelope,
+                    workflow_name=workflow_name,
+                    review_mode=review_mode,
+                    language=language or self._get_lang_from_ext(file_path),
+                    complexity=complexity,
+                    target_type=target_type,
+                    metadata={
+                        "file_path": file_path,
+                        "retry_reason": "json_parse_failure",
+                        "proactive": proactive,
+                    },
+                )
+                retry_response, retry_usage = self.m27_client.chat(
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": retry_prompt},
+                    ],
+                    telemetry_context=retry_context,
+                )
+                try:
+                    retry_data = self._load_json_response(retry_response)
+                    retry_reviews = self._reviews_from_payload(retry_data, file_path)
+                    retry_summary = retry_data.get("summary", {})
+                    retry_summary["token_usage"] = retry_usage.total if retry_usage else 0
+                    if retry_context:
+                        self.m27_client.update_telemetry_call(
+                            retry_context.call_id,
+                            parse_success=True,
+                            metadata_updates={
+                                "review_count": len(retry_reviews),
+                                "escalated": True,
+                            },
+                        )
+                    return retry_reviews, retry_summary
+                except json.JSONDecodeError:
+                    if retry_context:
+                        self.m27_client.update_telemetry_call(
+                            retry_context.call_id,
+                            parse_success=False,
+                        )
             return [], {
                 "total_reviewed": len(issues),
                 "valid_issues": 0,
@@ -398,6 +539,43 @@ Provide your review in JSON format."""
             "INFO": Severity.INFO,
         }
         return mapping.get(s, Severity.MEDIUM)
+
+    @staticmethod
+    def _load_json_response(response_text: str) -> dict[str, Any]:
+        json_text = response_text.strip()
+        if not json_text:
+            raise json.JSONDecodeError("Response is empty", response_text, 0)
+        if json_text.startswith("```"):
+            lines = json_text.splitlines()
+            json_lines = [line for line in lines if not line.startswith("```")]
+            json_text = "\n".join(json_lines).strip()
+        payload = json.loads(json_text)
+        if not isinstance(payload, dict):
+            raise json.JSONDecodeError("Response is not a JSON object", json_text, 0)
+        return payload
+
+    @classmethod
+    def _reviews_from_payload(cls, payload: dict, default_file_path: str) -> list[ReviewIssue]:
+        reviews: list[ReviewIssue] = []
+        for item in payload.get("reviews", []):
+            if not item.get("valid", False):
+                continue
+
+            reviews.append(
+                ReviewIssue(
+                    file_path=item.get("file_path", default_file_path),
+                    line_number=item.get("line_number", 0),
+                    severity=cls._parse_severity(item.get("severity", "MEDIUM")),
+                    category=cls._parse_category(item.get("category", "best_practice")),
+                    cwe_id=item.get("cwe_id"),
+                    title=item.get("title", "Code issue"),
+                    description=item.get("description", ""),
+                    code_snippet=item.get("code_snippet", ""),
+                    suggested_fix=item.get("suggested_fix"),
+                    auto_fixable=item.get("auto_fixable", False),
+                )
+            )
+        return reviews
 
     @staticmethod
     def _parse_category(s: str) -> IssueCategory:
@@ -443,6 +621,7 @@ Provide your review in JSON format."""
         target_path: str,
         code_content: str,
         pressure_focus: PressureFocus,
+        artifact_store: ReviewArtifactStore | None = None,
     ) -> dict:
         focus_areas = []
         if pressure_focus.design_tradeoffs:
@@ -500,142 +679,59 @@ Your goal is to expose weaknesses, hidden risks, and assumptions. Think like an 
 
         if not response_text or not response_text.strip():
             logger.warning("All attempts returned empty response for pressure review")
-            return {
-                "findings": [],
-                "summary": {"total": 0, "critical": 0, "high": 0, "token_usage": 0},
-            }
+            return self._pressure_parse_failure(
+                target_path=target_path,
+                raw_response=response_text,
+                parse_error="empty_response",
+                token_usage=0,
+                artifact_store=artifact_store,
+            )
 
         try:
-            json_text = response_text.strip()
-            if json_text.startswith("```"):
-                lines = json_text.split("\n")
-                json_lines = [
-                    line
-                    for line in lines
-                    if not line.startswith("```") and not line.startswith("json")
-                ]
-                json_text = "\n".join(json_lines).strip()
-            data = json.loads(json_text)
-            assert isinstance(data, dict)
+            data = self._load_json_response(response_text)
             data.setdefault("summary", {})
             if isinstance(data["summary"], dict):
                 data["summary"]["token_usage"] = usage.total if usage else 0
             return data
         except json.JSONDecodeError as e:
-            logger.warning(f"Initial JSON parse failed: {e}, attempting to extract valid JSON")
-            try:
-                import re
+            logger.error("Failed to parse pressure review response for %s: %s", target_path, e)
+            return self._pressure_parse_failure(
+                target_path=target_path,
+                raw_response=response_text,
+                parse_error=str(e),
+                token_usage=usage.total if usage else 0,
+                artifact_store=artifact_store,
+            )
 
-                json_text_clean = json_text.strip()
-                if json_text_clean.startswith("```"):
-                    lines = json_text_clean.split("\n")
-                    json_lines = [line for line in lines if not line.strip().startswith("```")]
-                    json_text_clean = "\n".join(json_lines).strip()
-
-                partial_match = re.search(r"\{[\s\S]*", json_text_clean)
-                if not partial_match:
-                    logger.error(f"Failed to parse pressure review response: {e}")
-                    return {"findings": [], "summary": {"total": 0, "critical": 0, "high": 0}}
-
-                partial = partial_match.group(0)
-
-                valid_endings = ['"}', ",'", "}]", "}}", '"]', "}"]
-                for trail in valid_endings:
-                    if partial.endswith(trail):
-                        try:
-                            data = json.loads(partial)
-                            if isinstance(data, dict) and "pressure_findings" in data:
-                                valid_findings = [
-                                    f
-                                    for f in data.get("pressure_findings", [])
-                                    if isinstance(f, dict) and "title" in f
-                                ]
-                                data["pressure_findings"] = valid_findings
-                                logger.info(
-                                    f"Recovered partial JSON with {len(valid_findings)} valid findings"
-                                )
-                                return data
-                        except json.JSONDecodeError:
-                            pass
-
-                finding_matches = re.finditer(
-                    r'\{[^{}]*"title":\s*"[^"]*"[^{}]*\}',
-                    partial,
-                )
-                valid_findings = []
-                for match in finding_matches:
-                    try:
-                        finding_json = match.group(0)
-                        finding = json.loads(finding_json)
-                        valid_findings.append(finding)
-                    except (json.JSONDecodeError, AttributeError):
-                        pass
-
-                if valid_findings:
-                    summary_match = re.search(r'"summary":\s*\{[^}]+\}', partial)
-                    summary = {
-                        "total": len(valid_findings),
-                        "critical": 0,
-                        "high": 0,
-                        "medium": 0,
-                        "low": 0,
-                        "info": 0,
-                    }
-                    if summary_match:
-                        try:
-                            summary = json.loads("{" + summary_match.group(0) + "}")
-                        except json.JSONDecodeError:
-                            pass
-                    for f in valid_findings:
-                        sev = f.get("severity", "MEDIUM").upper()
-                        if sev == "CRITICAL":
-                            summary["critical"] = summary.get("critical", 0) + 1
-                        elif sev == "HIGH":
-                            summary["high"] = summary.get("high", 0) + 1
-                        elif sev == "MEDIUM":
-                            summary["medium"] = summary.get("medium", 0) + 1
-                        elif sev == "LOW":
-                            summary["low"] = summary.get("low", 0) + 1
-                        else:
-                            summary["info"] = summary.get("info", 0) + 1
-                    logger.info(f"Extracted {len(valid_findings)} valid findings via regex")
-                    return {"pressure_findings": valid_findings, "summary": summary}
-
-                last_open = max(partial.rfind('{"'), partial.rfind('["'))
-                if last_open > 0:
-                    try_data = partial[last_open:]
-                    for ending in ["]", "}", '"]', '"}']:
-                        if try_data.endswith(ending):
-                            try:
-                                data = json.loads(try_data)
-                                if isinstance(data, dict) and "pressure_findings" in data:
-                                    logger.info(
-                                        f"Recovered partial JSON by finding start at char {last_open}"
-                                    )
-                                    return data
-                            except json.JSONDecodeError:
-                                pass
-
-                brace_count = partial.count("{") - partial.count("}")
-                if brace_count > 0:
-                    partial_fixed = partial + ("}" * brace_count)
-                    try:
-                        data = json.loads(partial_fixed)
-                        if isinstance(data, dict) and "pressure_findings" in data:
-                            valid_findings = [
-                                f
-                                for f in data.get("pressure_findings", [])
-                                if isinstance(f, dict) and "title" in f
-                            ]
-                            data["pressure_findings"] = valid_findings
-                            logger.info(
-                                f"Recovered JSON by balancing braces, {len(valid_findings)} valid findings"
-                            )
-                            return data
-                    except json.JSONDecodeError:
-                        pass
-
-            except Exception as ex:
-                logger.debug(f"JSON extraction attempt failed: {ex}")
-            logger.error(f"Failed to parse pressure review response: {e}")
-            return {"findings": [], "summary": {"total": 0, "critical": 0, "high": 0}}
+    @staticmethod
+    def _pressure_parse_failure(
+        target_path: str,
+        raw_response: str,
+        parse_error: str,
+        token_usage: int,
+        artifact_store: ReviewArtifactStore | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "pressure_findings": [],
+            "summary": {
+                "total": 0,
+                "critical": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0,
+                "info": 0,
+                "token_usage": token_usage,
+                "parse_error": parse_error,
+            },
+        }
+        if artifact_store is not None:
+            artifact_store.write_diagnostic(
+                "pressure-parse-failure",
+                {
+                    "target_path": target_path,
+                    "parse_error": parse_error,
+                    "token_usage": token_usage,
+                },
+            )
+            artifact_store.write_raw_response("pressure-raw-response", raw_response)
+        return payload

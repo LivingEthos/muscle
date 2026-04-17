@@ -16,7 +16,8 @@ import logging
 import time
 from collections.abc import Callable, Iterator
 
-from .m27_client import M27Client, TokenUsage
+from .m27_client import STREAM_ERROR_PREFIX, M27Client, TokenUsage
+from .optimization.prompt_context import build_telemetry_context, compose_prompt_envelope
 from .strategy_kb import Strategy, StrategyKB
 
 logger = logging.getLogger(__name__)
@@ -54,11 +55,15 @@ def _build_evolver_prompt(
 
     errors_json = json.dumps(safe_errors, indent=2, ensure_ascii=False)
 
+    # Fix: EV-03. Cap the iteration value surfaced to the prompt so runaway
+    # sessions do not bloat context or leak absurd counters into the model.
+    display_iteration = max(1, min(int(iteration or 1), 20))
+
     prompt_parts = [
         "Analyze the following failed code attempt and generate an improved strategy.",
         "",
         f"Task: {safe_task}",
-        f"Iteration: {iteration}",
+        f"Iteration: {display_iteration}",
         "",
         "Errors encountered:",
         errors_json,
@@ -120,6 +125,9 @@ class Evolver:
         retry_delay: float = 2.0,
         use_kb: bool = True,
         kb_path: str | None = None,
+        context_budgeter: object | None = None,
+        project_path: str | None = None,
+        lesson_resolver: object | None = None,
     ):
         self.client = m27_client
         self.max_retries = max_retries
@@ -127,6 +135,9 @@ class Evolver:
         self._strategy_history: list[str] = []
         self.use_kb = use_kb
         self.kb = StrategyKB(kb_path=kb_path) if use_kb else None
+        self.context_budgeter = context_budgeter
+        self.project_path = project_path or "."
+        self.lesson_resolver = lesson_resolver
 
     def evolve(
         self,
@@ -134,6 +145,7 @@ class Evolver:
         errors: list[str],
         previous_strategy: str | None,
         iteration: int = 1,
+        session_id: str | None = None,
     ) -> tuple[str, TokenUsage]:
         if not errors or not any(e for e in errors if e and str(e).strip()):
             logger.warning("Evolver called with no valid errors")
@@ -141,6 +153,8 @@ class Evolver:
 
         safe_task = _sanitize_for_prompt(task)
         safe_errors = [str(e).strip() for e in errors if e and str(e).strip()]
+        if self.context_budgeter is not None and hasattr(self.context_budgeter, "trim_errors"):
+            safe_errors = self.context_budgeter.trim_errors(safe_errors)
 
         if not safe_errors:
             return "No errors to analyze. Continue with current approach.", TokenUsage()
@@ -162,19 +176,48 @@ class Evolver:
                 similar_strategies = []
 
         prompt = _build_evolver_prompt(
-            safe_task, safe_errors, previous_strategy, iteration, similar_strategies
+            safe_task,
+            safe_errors,
+            self.context_budgeter.trim_strategy_text(previous_strategy)
+            if self.context_budgeter is not None
+            and hasattr(self.context_budgeter, "trim_strategy_text")
+            else previous_strategy,
+            iteration,
+            similar_strategies,
         )
+        base_context_strategy = (
+            "trimmed_error_history"
+            if self.context_budgeter is not None
+            else "default_error_history"
+        )
+        prompt_envelope = compose_prompt_envelope(
+            base_prompt=prompt,
+            lesson_resolver=self.lesson_resolver,
+            query_text=" ".join([safe_task] + safe_errors[:5]),
+            stage="evolve",
+            base_context_strategy=base_context_strategy,
+            session_id=session_id,
+        )
+        prompt = prompt_envelope.prompt
 
         response = ""
         usage = TokenUsage()
         last_error = None
+        telemetry_context = None
 
         for attempt in range(self.max_retries):
             try:
+                telemetry_context = build_telemetry_context(
+                    project_path=self.project_path,
+                    session_id=session_id,
+                    stage="evolve",
+                    prompt_envelope=prompt_envelope,
+                )
                 response, usage = self.client.chat(
                     messages=[{"role": "user", "content": prompt}],
                     system=SYSTEM_PROMPT,
                     max_tokens=2048,
+                    telemetry_context=telemetry_context,
                 )
 
                 if not response or response.strip() == "":
@@ -183,6 +226,11 @@ class Evolver:
                     time.sleep(self.retry_delay)
                     continue
 
+                if telemetry_context:
+                    self.client.update_telemetry_call(
+                        telemetry_context.call_id,
+                        parse_success=bool(response and response.strip()),
+                    )
                 break
 
             except Exception as e:
@@ -205,6 +253,13 @@ class Evolver:
             self._strategy_history.append(safe_strategy)
             logger.info(f"Evolved strategy: {safe_strategy[:100]}...")
 
+            if telemetry_context:
+                self.client.update_telemetry_call(
+                    telemetry_context.call_id,
+                    parse_success=True,
+                    metadata_updates={"strategy_chars": len(safe_strategy)},
+                )
+
             if self.kb and safe_errors:
                 try:
                     root_causes = self._extract_root_causes(response)
@@ -215,7 +270,9 @@ class Evolver:
                         solution_strategy=safe_strategy,
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to save strategy to KB: {e}")
+                    # Fix: EV-02. KB save failures represent knowledge loss and
+                    # should surface at ERROR so operators notice in telemetry.
+                    logger.error(f"Failed to save strategy to KB: {e}", exc_info=True)
         else:
             logger.warning("Failed to parse evolved strategy from response")
             evolved_strategy = "Analyze errors and try a different approach."
@@ -226,7 +283,10 @@ class Evolver:
         try:
             start = response.find("{")
             end = response.rfind("}") + 1
-            if start == -1 or end == 0:
+            # Fix: EV-01. Require well-formed bounds; ``end > start`` guards
+            # against degenerate slices like ``[0:0]`` that silently yield an
+            # empty JSON candidate.
+            if start < 0 or end <= start:
                 return self._extract_fallback_strategy(response)
 
             json_str = response[start:end]
@@ -254,7 +314,8 @@ class Evolver:
         try:
             start = response.find("{")
             end = response.rfind("}") + 1
-            if start == -1 or end == 0:
+            # Fix: EV-01. Require well-formed bounds.
+            if start < 0 or end <= start:
                 return "Unknown root cause"
             json_str = response[start:end]
             data = json.loads(json_str)
@@ -296,16 +357,29 @@ class Evolver:
         prompt = _build_evolver_prompt(task, errors, previous_strategy, iteration)
 
         full_response = ""
+        stream_error: str | None = None
 
         for accumulated_text, _usage in self.client.chat_streaming(
             messages=[{"role": "user", "content": prompt}],
             system=SYSTEM_PROMPT,
             max_tokens=2048,
         ):
+            # Fix: M27-04. Detect streaming-error sentinel.
+            if accumulated_text.startswith(STREAM_ERROR_PREFIX):
+                stream_error = accumulated_text[len(STREAM_ERROR_PREFIX) :]
+                logger.error(f"Evolver streaming failed: {stream_error}")
+                break
             full_response = accumulated_text
             if progress_callback and accumulated_text:
                 progress_callback(accumulated_text)
             yield "", TokenUsage()
+
+        if stream_error:
+            yield (
+                "Analyze errors and try a different approach.",
+                TokenUsage(),
+            )
+            return
 
         if full_response:
             evolved_strategy: str | None = self._parse_strategy(full_response)

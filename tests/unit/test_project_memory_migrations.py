@@ -9,18 +9,15 @@ Tests:
 
 import importlib
 import importlib.machinery
-import json
 import sqlite3
 import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 from tools.muscle.migrations import CURRENT_SCHEMA_VERSION, MigrationRunner, _load_migrations
-
 
 EXPECTED_VERSIONS = [version for version, _, _ in _load_migrations()]
 
@@ -66,7 +63,7 @@ class TestMigrationRunner:
         muscle_dir = project_path / ".muscle"
         assert not muscle_dir.exists()
 
-        runner = MigrationRunner(str(project_path))
+        MigrationRunner(str(project_path))
         assert muscle_dir.exists()
         assert muscle_dir.is_dir()
 
@@ -91,11 +88,35 @@ class TestMigrationRunner:
         cursor = conn.cursor()
         cursor.execute("PRAGMA table_info(agents)")
         agent_columns = {row[1] for row in cursor.fetchall()}
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = {row[0] for row in cursor.fetchall()}
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        indexes = {row[0] for row in cursor.fetchall()}
+        cursor.execute("PRAGMA table_info(llm_calls)")
+        llm_call_columns = {row[1] for row in cursor.fetchall()}
         conn.close()
 
         assert "archived_at" in agent_columns
         assert "revision_count" in agent_columns
         assert "revision_history_json" in agent_columns
+        assert "llm_calls" in tables
+        assert "workflow_rollups" in tables
+        assert "optimization_decisions" in tables
+        assert "external_benchmark_sessions" in tables
+        assert "external_benchmark_turns" in tables
+        assert "token_savings_ledger" in tables
+        assert "related_project_links" in tables
+        assert "transferred_lessons" in tables
+        assert "model_identity_history" in tables
+        assert "lesson_usage_events" in tables
+        assert "idx_automation_state_project_key" in indexes
+        assert "requested_label" in llm_call_columns
+        assert "provider_endpoint" in llm_call_columns
+        assert "provider_fingerprint" in llm_call_columns
+        assert "canonical_model_key" in llm_call_columns
+        assert "identity_source" in llm_call_columns
+        assert "identity_confidence" in llm_call_columns
+        assert "manual_override" in llm_call_columns
 
     def test_run_is_idempotent(self, temp_db_path, project_path):
         """Running migrations multiple times is safe (idempotent)."""
@@ -106,7 +127,7 @@ class TestMigrationRunner:
         assert len(applied1) >= 1
 
         # Run migrations again - should be no-op
-        applied2 = runner.run()
+        runner.run()
         # All versions should still be marked as applied
         versions = runner.get_applied_versions()
         assert "1.0.0" in versions
@@ -154,6 +175,236 @@ class TestMigrationRunner:
         for m in status["migrations"]:
             assert m["status"] == "applied"
             assert m["can_rollback"] is True
+
+    def test_project_memory_repairs_missing_optimization_tables_when_version_exists(
+        self,
+        project_path,
+    ):
+        """ProjectMemory self-heals optimization tables for drifted existing databases."""
+        from tools.muscle.project_memory import ProjectMemory
+
+        ProjectMemory(str(project_path))
+        db_path = project_path / ".muscle" / "project_memory.db"
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("DROP TABLE IF EXISTS token_savings_ledger")
+            conn.execute("DROP TABLE IF EXISTS external_benchmark_turns")
+            conn.execute("DROP TABLE IF EXISTS external_benchmark_sessions")
+            conn.execute("DROP TABLE IF EXISTS optimization_decisions")
+            conn.execute("DROP TABLE IF EXISTS workflow_rollups")
+            conn.execute("DROP TABLE IF EXISTS llm_calls")
+            conn.commit()
+        finally:
+            conn.close()
+
+        ProjectMemory(str(project_path))
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            tables = {
+                row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+        finally:
+            conn.close()
+
+        assert "llm_calls" in tables
+        assert "workflow_rollups" in tables
+        assert "optimization_decisions" in tables
+        assert "external_benchmark_sessions" in tables
+        assert "external_benchmark_turns" in tables
+        assert "token_savings_ledger" in tables
+
+    def test_project_memory_repairs_missing_llm_identity_columns_when_schema_drifted(
+        self,
+        project_path,
+    ):
+        """ProjectMemory self-heals llm_calls identity columns for drifted databases."""
+        from tools.muscle.project_memory import ProjectMemory
+
+        ProjectMemory(str(project_path))
+        db_path = project_path / ".muscle" / "project_memory.db"
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("ALTER TABLE llm_calls RENAME TO llm_calls_new")
+            conn.execute(
+                """
+                CREATE TABLE llm_calls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_path TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    call_id TEXT NOT NULL UNIQUE,
+                    session_id TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    workflow_name TEXT,
+                    review_mode TEXT,
+                    model TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    duration_ms INTEGER NOT NULL DEFAULT 0,
+                    success INTEGER NOT NULL DEFAULT 0,
+                    parse_success INTEGER,
+                    validation_success INTEGER,
+                    context_chars INTEGER NOT NULL DEFAULT 0,
+                    context_strategy TEXT NOT NULL DEFAULT 'default',
+                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO llm_calls (
+                    id, project_path, created_at, call_id, session_id, stage,
+                    workflow_name, review_mode, model, input_tokens, output_tokens,
+                    duration_ms, success, parse_success, validation_success,
+                    context_chars, context_strategy, metadata_json
+                )
+                SELECT
+                    id, project_path, created_at, call_id, session_id, stage,
+                    workflow_name, review_mode, model, input_tokens, output_tokens,
+                    duration_ms, success, parse_success, validation_success,
+                    context_chars, context_strategy, metadata_json
+                FROM llm_calls_new
+                """
+            )
+            conn.execute("DROP TABLE llm_calls_new")
+            conn.commit()
+        finally:
+            conn.close()
+
+        ProjectMemory(str(project_path))
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(llm_calls)").fetchall()}
+        finally:
+            conn.close()
+
+        assert "requested_label" in columns
+        assert "provider_endpoint" in columns
+        assert "provider_fingerprint" in columns
+        assert "canonical_model_key" in columns
+        assert "identity_source" in columns
+        assert "identity_confidence" in columns
+        assert "manual_override" in columns
+
+    def test_project_memory_upgrades_legacy_database_preserves_existing_rows(
+        self,
+        project_path,
+    ):
+        """Existing project rows survive upgrade from an older populated schema."""
+        from tools.muscle.project_memory import ProjectMemory
+
+        db_path = project_path / ".muscle" / "project_memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            for version, migrate_fn, _ in _load_migrations():
+                migrate_fn(conn)
+                if version == "1.8.0":
+                    break
+
+            now = datetime.now().isoformat()
+            task_id = conn.execute(
+                """
+                INSERT INTO tasks (
+                    project_path, created_at, title, description, status, outcome, token_cost, duration_ms
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(project_path),
+                    now,
+                    "legacy task",
+                    "created before the cross-project/model-identity migrations",
+                    "success",
+                    "ok",
+                    12,
+                    34,
+                ),
+            ).lastrowid
+            backup_id = conn.execute(
+                """
+                INSERT INTO backups (
+                    project_path, created_at, backup_type, file_path, checksum, size_bytes, retention_days
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(project_path),
+                    now,
+                    "full",
+                    str(project_path / ".muscle" / "backups" / "full.tar.gz"),
+                    "checksum",
+                    128,
+                    30,
+                ),
+            ).lastrowid
+            conn.commit()
+        finally:
+            conn.close()
+
+        pm = ProjectMemory(str(project_path))
+        task = pm.get_task(int(task_id or 0))
+        backup = pm.get_backup(int(backup_id or 0))
+        assert task is not None
+        assert task["title"] == "legacy task"
+        assert backup is not None
+        assert backup["backup_type"] == "full"
+
+        runner = MigrationRunner(str(project_path), str(db_path))
+        applied_versions = runner.get_applied_versions()
+        assert CURRENT_SCHEMA_VERSION in applied_versions
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            tables = {
+                row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+        finally:
+            conn.close()
+
+        assert "related_project_links" in tables
+        assert "transferred_lessons" in tables
+        assert "model_identity_history" in tables
+        assert "lesson_usage_events" in tables
+
+    def test_project_memory_repairs_missing_cross_project_tables_when_schema_drifted(
+        self,
+        project_path,
+    ):
+        """ProjectMemory self-heals missing cross-project tables for drifted databases."""
+        from tools.muscle.project_memory import ProjectMemory
+
+        ProjectMemory(str(project_path))
+        db_path = project_path / ".muscle" / "project_memory.db"
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("DROP TABLE IF EXISTS lesson_usage_events")
+            conn.execute("DROP TABLE IF EXISTS model_identity_history")
+            conn.execute("DROP TABLE IF EXISTS transferred_lessons")
+            conn.execute("DROP TABLE IF EXISTS related_project_links")
+            conn.commit()
+        finally:
+            conn.close()
+
+        ProjectMemory(str(project_path))
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            tables = {
+                row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+        finally:
+            conn.close()
+
+        assert "related_project_links" in tables
+        assert "transferred_lessons" in tables
+        assert "model_identity_history" in tables
+        assert "lesson_usage_events" in tables
 
 
 class TestMigrationV1:
@@ -363,8 +614,8 @@ class TestMigrationRollback:
         migrate_v2(conn)
 
         # Rollback v2 then v1
-        from tools.muscle.migrations._0002_add_indices import rollback as rollback_v2
         from tools.muscle.migrations._0001_initial_schema import rollback as rollback_v1
+        from tools.muscle.migrations._0002_add_indices import rollback as rollback_v2
 
         rollback_v2(conn)
         rollback_v1(conn)
@@ -470,7 +721,7 @@ class TestMigrationIntegration:
         """ProjectMemory creates all tables via migrations."""
         from tools.muscle.project_memory import ProjectMemory
 
-        pm = ProjectMemory(str(temp_project))
+        ProjectMemory(str(temp_project))
 
         db_path = temp_project / ".muscle" / "project_memory.db"
         conn = sqlite3.connect(str(db_path))

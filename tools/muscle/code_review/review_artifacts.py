@@ -9,11 +9,11 @@ Architecture Decision Record (ADR):
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from ..io_safety import atomic_write_json, atomic_write_text
 from .types import ReviewIssue
 
 
@@ -47,7 +47,9 @@ class ReviewArtifactStore:
         return str(self.root)
 
     def write_scope(self, scope: Any) -> Path:
-        return self._write_json("scope.json", scope.to_dict() if hasattr(scope, "to_dict") else scope)
+        return self._write_json(
+            "scope.json", scope.to_dict() if hasattr(scope, "to_dict") else scope
+        )
 
     def write_agent_findings(self, agent_findings: dict[str, list[ReviewIssue]]) -> Path:
         payload = {
@@ -75,7 +77,16 @@ class ReviewArtifactStore:
 
     def write_summary(self, markdown: str) -> Path:
         path = self.root / "summary.md"
-        path.write_text(markdown, encoding="utf-8")
+        atomic_write_text(path, markdown)
+        return path
+
+    def write_diagnostic(self, name: str, payload: Any) -> Path:
+        filename = f"{name}.json"
+        return self._write_json(filename, payload)
+
+    def write_raw_response(self, name: str, payload: str) -> Path:
+        path = self.root / f"{name}.txt"
+        atomic_write_text(path, payload)
         return path
 
     def _write_json(self, filename: str, payload: Any) -> Path:
@@ -84,5 +95,5 @@ class ReviewArtifactStore:
             data = asdict(payload)
         else:
             data = payload
-        path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        atomic_write_json(path, data, indent=2, sort_keys=True)
         return path

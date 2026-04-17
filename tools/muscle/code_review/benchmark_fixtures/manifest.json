@@ -1,7 +1,28 @@
 {
+  "manifest_version": 2,
+  "suites": {
+    "core-review": {
+      "description": "General review workflow regression fixtures."
+    },
+    "neutral-baseline": {
+      "description": "Low-risk fixtures that guard against false-positive regressions."
+    },
+    "related-project": {
+      "description": "Fixtures where imported related-project lessons should be available."
+    },
+    "unrelated-project": {
+      "description": "Fixtures where unrelated project lessons should not help materially."
+    },
+    "model-pack": {
+      "description": "Fixtures where canonical-model pack lessons should be available."
+    }
+  },
   "scenarios": [
     {
       "name": "python_security_basics",
+      "suite": "core-review",
+      "description": "Baseline Python security review issues.",
+      "languages": ["Python"],
       "target_path": "python/bad_code.py",
       "false_positive_severity": "medium",
       "expected_findings": [
@@ -24,6 +45,9 @@
     },
     {
       "name": "javascript_server_risks",
+      "suite": "core-review",
+      "description": "Baseline JavaScript server-side risks.",
+      "languages": ["JavaScript"],
       "target_path": "javascript/buggy_server.js",
       "false_positive_severity": "medium",
       "expected_findings": [
@@ -46,6 +70,9 @@
     },
     {
       "name": "typescript_auth_issues",
+      "suite": "core-review",
+      "description": "Baseline TypeScript auth and async correctness issues.",
+      "languages": ["TypeScript"],
       "target_path": "typescript/auth_service.ts",
       "false_positive_severity": "medium",
       "expected_findings": [
@@ -63,6 +90,114 @@
           "file_path": "auth_service.ts",
           "minimum_severity": "medium",
           "matchers": ["unhandled", "promise", "deleteuser"]
+        }
+      ]
+    },
+    {
+      "name": "neutral_python_clean_module",
+      "suite": "neutral-baseline",
+      "description": "Defensive Python code that should mainly guard against false positives.",
+      "languages": ["Python"],
+      "target_path": "neutral/clean_module.py",
+      "false_positive_severity": "medium",
+      "expected_findings": []
+    },
+    {
+      "name": "related_project_payment_parser",
+      "suite": "related-project",
+      "description": "Payment parsing code with related-project lessons available in the benchmark workspace.",
+      "project_root": "project_first/related_current",
+      "languages": ["Python"],
+      "target_path": "project_first/related_current/payment_parser.py",
+      "false_positive_severity": "medium",
+      "tags": ["project-first", "related-memory", "python"],
+      "setup": {
+        "related_project": {
+          "source_project_path": "project_first/related_source",
+          "link_mode": "snapshot",
+          "relatedness_score": 0.91,
+          "languages": ["Python"],
+          "learned_rules": [
+            {
+              "rule_text": "For payment API parsers, validate required JSON keys and handle schema drift before indexing nested fields.",
+              "trigger_pattern": "payment"
+            }
+          ]
+        }
+      },
+      "expected_findings": [
+        {
+          "file_path": "payment_parser.py",
+          "minimum_severity": "medium",
+          "matchers": ["json", "schema", "missing key", "validation"]
+        }
+      ]
+    },
+    {
+      "name": "unrelated_project_payment_parser",
+      "suite": "unrelated-project",
+      "description": "The same payment parsing risk with only unrelated project lessons available.",
+      "project_root": "project_first/unrelated_current",
+      "languages": ["Python"],
+      "target_path": "project_first/unrelated_current/payment_parser.py",
+      "false_positive_severity": "medium",
+      "tags": ["project-first", "unrelated-memory", "python"],
+      "setup": {
+        "related_project": {
+          "source_project_path": "project_first/unrelated_source",
+          "link_mode": "snapshot",
+          "relatedness_score": 0.18,
+          "languages": ["Python"],
+          "learned_rules": [
+            {
+              "rule_text": "Frontend token palettes should use shared semantic color names instead of hard-coded hex values.",
+              "trigger_pattern": "theme"
+            }
+          ]
+        }
+      },
+      "expected_findings": [
+        {
+          "file_path": "payment_parser.py",
+          "minimum_severity": "medium",
+          "matchers": ["json", "schema", "missing key", "validation"]
+        }
+      ]
+    },
+    {
+      "name": "model_pack_api_response_parser",
+      "suite": "model-pack",
+      "description": "Nested API parsing code with a canonical-model pack lesson available.",
+      "project_root": "model_pack",
+      "languages": ["Python"],
+      "target_path": "model_pack/api_response_parser.py",
+      "false_positive_severity": "medium",
+      "tags": ["model-pack", "python", "api"],
+      "setup": {
+        "model_pack": {
+          "canonical_model_key": "minimax/m2.7@1",
+          "pack_mode": "suggest",
+          "version": "fixture-v1",
+          "lessons": [
+            {
+              "lesson_key": "python-api-schema-guard",
+              "lesson_text": "When reviewing Python API parsers, look for unvalidated nested JSON access and recommend schema validation or safe defaults before indexing response objects.",
+              "scope_tags": ["python", "api"],
+              "safety_scope": "review-only",
+              "portability": "portable",
+              "evidence": {
+                "source": "benchmark-fixture"
+              },
+              "rationale": "Model-pack lesson for API parsing blind spots."
+            }
+          ]
+        }
+      },
+      "expected_findings": [
+        {
+          "file_path": "api_response_parser.py",
+          "minimum_severity": "medium",
+          "matchers": ["nested", "json", "schema", "validation", "missing key"]
         }
       ]
     }

@@ -252,6 +252,251 @@ class AutomationState:
 
 
 # ---------------------------------------------------------------------------
+# Cross-project learning and model-pack types
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ProjectFingerprint:
+    """Lightweight metadata describing a project for overlap detection."""
+
+    project_path: str
+    display_name: str
+    languages: list[str] = field(default_factory=list)
+    frameworks: list[str] = field(default_factory=list)
+    dependencies: list[str] = field(default_factory=list)
+    archetypes: list[str] = field(default_factory=list)
+    fingerprint_hash: str = ""
+
+
+@dataclass
+class RelatedProjectLink:
+    id: int | None
+    project_path: str
+    source_project_path: str
+    link_mode: str
+    status: str
+    relatedness_score: float
+    fingerprint_json: str
+    created_at: str
+    updated_at: str
+    last_synced_at: str | None
+
+
+@dataclass
+class TransferredLesson:
+    id: int | None
+    project_path: str
+    source_project_path: str
+    source_rule_id: int | None
+    lesson_key: str
+    lesson_text: str
+    trigger_pattern: str
+    link_mode: str
+    validation_status: str
+    validation_count: int
+    success_count: int
+    scope_json: str
+    metadata_json: str
+    imported_at: str
+    updated_at: str
+    promoted_rule_id: int | None
+
+
+@dataclass
+class ModelIdentity:
+    requested_label: str | None
+    provider_endpoint: str | None
+    provider_fingerprint: str | None
+    canonical_model_key: str | None
+    identity_source: str
+    confidence: float
+    manual_override: bool = False
+    metadata: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class ModelIdentityHistoryEntry:
+    id: int | None
+    project_path: str
+    created_at: str
+    requested_label: str | None
+    provider_endpoint: str | None
+    provider_fingerprint: str | None
+    canonical_model_key: str | None
+    identity_source: str
+    confidence: float
+    manual_override: bool
+    metadata_json: str
+
+
+@dataclass
+class LessonUsageEvent:
+    id: int | None
+    project_path: str
+    created_at: str
+    session_id: str | None
+    call_id: str | None
+    stage: str
+    lesson_source: str
+    lesson_key: str
+    canonical_model_key: str | None
+    source_project_path: str | None
+    outcome: str | None
+    metadata_json: str
+
+
+@dataclass
+class ModelPackMetadata:
+    canonical_model_key: str
+    version: str
+    install_status: str
+    source_repo: str | None = None
+    source_repo_commit: str | None = None
+    pack_path: str | None = None
+    metadata: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class ModelPackLesson:
+    canonical_model_key: str
+    lesson_key: str
+    lesson_text: str
+    scope_tags: list[str] = field(default_factory=list)
+    safety_scope: str = "review-only"
+    portability: str = "portable"
+    evidence: dict[str, object] = field(default_factory=dict)
+    rationale: str | None = None
+    source_repo_commit: str | None = None
+
+
+@dataclass
+class PackSubmissionRecord:
+    export_id: str
+    canonical_model_key: str
+    repo: str
+    branch: str
+    status: str
+    pr_url: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Optimization and telemetry types
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class LLMCall:
+    id: int | None
+    project_path: str
+    created_at: str
+    call_id: str
+    session_id: str
+    stage: str
+    workflow_name: str | None
+    review_mode: str | None
+    model: str
+    input_tokens: int
+    output_tokens: int
+    duration_ms: int
+    success: bool
+    parse_success: bool | None
+    validation_success: bool | None
+    context_chars: int
+    context_strategy: str
+    metadata_json: str
+
+
+@dataclass
+class WorkflowRollup:
+    id: int | None
+    project_path: str
+    workflow_name: str
+    stage: str
+    language: str
+    complexity: str
+    target_type: str
+    run_count: int
+    success_count: int
+    total_tokens: int
+    total_duration_ms: int
+    valid_findings: int
+    verified_fixes: int
+    one_shot_verified_fixes: int
+    high_critical_findings: int
+    validation_successes: int
+    last_session_id: str | None
+    updated_at: str
+
+
+@dataclass
+class OptimizationDecision:
+    id: int | None
+    project_path: str
+    created_at: str
+    decision_type: str
+    decision_scope: str
+    comparable_key: str
+    recommendation_json: str
+    applied: bool
+    confidence: float
+    outcome_json: str
+
+
+@dataclass
+class ExternalBenchmarkSession:
+    id: int | None
+    project_path: str
+    provider: str
+    external_session_id: str
+    source_path: str
+    project_hint: str | None
+    normalized_project_path: str
+    started_at: str | None
+    ended_at: str | None
+    metadata_json: str
+    created_at: str
+
+
+@dataclass
+class ExternalBenchmarkTurn:
+    id: int | None
+    benchmark_session_id: int
+    timestamp: str
+    category: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cache_tokens: int
+    reasoning_tokens: int
+    retry_count: int
+    success_signal: bool
+    token_cost: int
+    tool_names_json: str
+    metadata_json: str
+    dedup_key: str
+
+
+@dataclass
+class TokenSavingsLedgerEntry:
+    id: int | None
+    project_path: str
+    created_at: str
+    session_id: str
+    stage: str
+    workflow_name: str | None
+    comparable_key: str
+    baseline_tokens: int | None
+    actual_tokens: int
+    delta_tokens: int
+    confidence: float
+    realized: bool
+    estimation_type: str
+    metadata_json: str
+
+
+# ---------------------------------------------------------------------------
 # Schema version tracking
 # ---------------------------------------------------------------------------
 

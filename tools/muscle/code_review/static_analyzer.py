@@ -241,19 +241,29 @@ class StaticAnalyzer:
             logger.warning(f"No tools configured for language: {self.language}")
             return []
 
-        results: list[StaticAnalysisResult] = []
-        with ThreadPoolExecutor(max_workers=len(tools)) as executor:
-            futures = {executor.submit(self._run_tool, tool): tool for tool in tools}
+        # Fix: SA-01. Sort tools by name for deterministic scheduling. We keep
+        # parallel execution for throughput but iterate results back in the
+        # input order so downstream consumers see stable output regardless of
+        # which tool finishes first.
+        ordered_tools = sorted(tools, key=lambda t: t.get("name", ""))
+
+        indexed_results: dict[int, StaticAnalysisResult] = {}
+        with ThreadPoolExecutor(max_workers=max(1, len(ordered_tools))) as executor:
+            futures = {
+                executor.submit(self._run_tool, tool): index
+                for index, tool in enumerate(ordered_tools)
+            }
             for future in as_completed(futures):
-                tool = futures[future]
+                index = futures[future]
+                tool = ordered_tools[index]
                 try:
                     result = future.result()
                     if result:
-                        results.append(result)
+                        indexed_results[index] = result
                 except Exception as e:
                     logger.error(f"Tool {tool['name']} failed: {e}")
 
-        return results
+        return [indexed_results[i] for i in sorted(indexed_results)]
 
     def _run_tool(self, tool: dict[str, Any]) -> StaticAnalysisResult | None:
         tool_name = tool["name"]

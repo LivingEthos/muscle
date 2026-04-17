@@ -185,6 +185,30 @@ class TestGenerateHandoff:
         assert plan.session_id == "test-003"
         assert len(plan.issues) == 1
 
+    def test_generate_handoff_recovers_wrapped_json(self, sample_issue):
+        """Test handoff parsing succeeds when JSON is wrapped in prose or fences."""
+
+        class WrappedJsonClient:
+            def chat(self, messages, system=None, **kwargs):
+                return (
+                    "Here is the handoff plan:\n```json\n"
+                    '{"root_cause":"wrapped","verification_steps":["Run tests"],'
+                    '"effort_estimate":"Low","related_files":["src/auth.py"]}\n```',
+                    MagicMock(total=100),
+                )
+
+        generator = HandoffGenerator(WrappedJsonClient())
+
+        plan = generator.generate_handoff(
+            issue=sample_issue,
+            all_issues=[sample_issue],
+            session_id="test-003b",
+            target_path="./src",
+        )
+
+        assert plan.issues[0].root_cause == "wrapped"
+        assert plan.issues[0].verification_steps == ["Run tests"]
+
 
 class TestGenerateHandoffs:
     """Test generating handoffs for multiple issues."""

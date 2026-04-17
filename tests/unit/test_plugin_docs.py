@@ -38,6 +38,8 @@ CLI_GROUPS = {
     "cost",
     "improve",
     "long-eval",
+    "memory",
+    "model",
     "settings",
 }
 
@@ -47,7 +49,9 @@ CLI_SUBCOMMANDS = {
     "cost": {"stats", "clear"},
     "improve": {"report", "export", "import", "clear", "prompt"},
     "long-eval": {"run", "reports", "cleanup", "benchmark"},
-    "settings": {"show", "api-key", "hooks", "platform", "reset", "review"},
+    "memory": {"status", "history", "related", "import-project", "linked", "unlink"},
+    "model": {"status", "history", "select", "packs"},
+    "settings": {"show", "api-key", "hooks", "platform", "reset", "review", "model"},
 }
 
 # Commands documented but known NOT to exist in CLI
@@ -164,9 +168,7 @@ class TestPluginDocsFrontmatter:
         content = doc_file.read_text()
         fm = _parse_frontmatter(content)
         assert fm is not None, f"{doc_file.name} has invalid YAML frontmatter"
-        assert "description" in fm, (
-            f"{doc_file.name} frontmatter missing `description` field"
-        )
+        assert "description" in fm, f"{doc_file.name} frontmatter missing `description` field"
         assert fm["description"], f"{doc_file.name} `description` must not be empty"
 
     @pytest.mark.parametrize("doc_file", sorted(COMMANDS_DIR.glob("*.md")), ids=lambda p: p.name)

@@ -53,8 +53,17 @@ class ReviewKB:
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
+        # Fix: SH-02. Enable WAL + busy_timeout so concurrent readers/writers
+        # (shadow workers, review jobs) do not serialize or fail on lock.
         conn = sqlite3.connect(str(self.db_path), timeout=30.0)
         conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+        except sqlite3.Error:
+            # Some filesystems (notably some network mounts) don't support WAL;
+            # fall back gracefully without breaking the connection.
+            pass
         return conn
 
     def _init_db(self) -> None:

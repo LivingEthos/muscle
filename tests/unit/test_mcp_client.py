@@ -11,12 +11,17 @@ import pytest
 class TestMCPClient:
     @pytest.fixture
     def mock_popen(self):
-        with patch("subprocess.Popen") as mock:
+        with patch("subprocess.Popen") as mock, patch(
+            "tools.muscle.adapters.mcp_client.select.select"
+        ) as mock_select:
             process_mock = MagicMock()
             process_mock.stdin = MagicMock()
             process_mock.stdout = MagicMock()
             process_mock.stderr = MagicMock()
-            process_mock.poll.return_value = 0
+            process_mock.poll.return_value = None
+            process_mock.stdout.fileno.return_value = 0
+            process_mock.stderr.fileno.return_value = 0
+            mock_select.side_effect = lambda read, *_args, **_kwargs: (read, [], [])
             mock.return_value = process_mock
             yield mock, process_mock
 
@@ -110,3 +115,18 @@ class TestMCPClient:
         client.start_server()
         voices = client.list_voices()
         assert isinstance(voices, list)
+
+    def test_send_request_raises_on_timeout(self, mock_popen, monkeypatch):
+        from tools.muscle.adapters.mcp_client import MCPClient
+
+        _, process_mock = mock_popen
+        monkeypatch.setattr(
+            "tools.muscle.adapters.mcp_client.select.select",
+            lambda *args, **kwargs: ([], [], []),
+        )
+
+        client = MCPClient(api_key="test-key", request_timeout_seconds=0.01)
+        client.start_server()
+
+        with pytest.raises(TimeoutError):
+            client._send_request("test_tool", {"arg": "value"})

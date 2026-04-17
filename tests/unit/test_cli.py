@@ -21,13 +21,13 @@ import pytest
 from click.testing import CliRunner
 
 from tools.muscle.cli import (
+    _create_event_handler,
     _get_status_color,
     _parse_budget,
     _parse_timeout,
     _serialize_json,
     _session_report_to_dict,
     _truncate,
-    _event_handler,
     abort,
     agents_group,
     agents_list,
@@ -57,6 +57,7 @@ from tools.muscle.cli import (
     tui,
 )
 from tools.muscle.loop_controller import LoopContext, LoopEvent
+from tools.muscle.model_identity import SUPPORTED_CANONICAL_MODELS
 from tools.muscle.types import (
     BudgetInfo,
     BudgetMode,
@@ -347,48 +348,51 @@ class TestEventHandler:
     """
 
     def test_iteration_start_resets_streaming_text(self, capsys):
-        _event_handler(LoopEvent.ITERATION_START, {"iteration": 1})
+        state, handler = _create_event_handler()
+        handler(LoopEvent.ITERATION_START, {"iteration": 1})
         captured = capsys.readouterr()
         assert "Iteration 1" in captured.out
 
     def test_generation_stream_appends_chunk(self):
-        import tools.muscle.cli as cli_module
-
-        original = getattr(cli_module, "_streaming_text", [])
-        cli_module._streaming_text = []
-        _event_handler(LoopEvent.GENERATION_STREAM, {"chunk": "test_chunk"})
-        assert "test_chunk" in cli_module._streaming_text
-        cli_module._streaming_text = original
+        state, handler = _create_event_handler()
+        handler(LoopEvent.GENERATION_STREAM, {"chunk": "test_chunk"})
+        assert "test_chunk" in state.chunks
 
     def test_evaluation_passed(self, capsys):
-        _event_handler(LoopEvent.EVALUATION_END, {"passed": True, "errors": 0})
+        _, handler = _create_event_handler()
+        handler(LoopEvent.EVALUATION_END, {"passed": True, "errors": 0})
         captured = capsys.readouterr()
         assert "PASSED" in captured.out
 
     def test_evaluation_failed(self, capsys):
-        _event_handler(LoopEvent.EVALUATION_END, {"passed": False, "errors": 3})
+        _, handler = _create_event_handler()
+        handler(LoopEvent.EVALUATION_END, {"passed": False, "errors": 3})
         captured = capsys.readouterr()
         assert "failed" in captured.out
 
     def test_parallel_evaluation_mode(self, capsys):
-        _event_handler(LoopEvent.EVALUATION_START, {"eval_mode": EvalMode.PARALLEL})
+        _, handler = _create_event_handler()
+        handler(LoopEvent.EVALUATION_START, {"eval_mode": EvalMode.PARALLEL})
         captured = capsys.readouterr()
         assert "parallel" in captured.out
 
     def test_evolution_end(self, capsys):
-        _event_handler(LoopEvent.EVOLUTION_END, {"tokens": 500})
+        _, handler = _create_event_handler()
+        handler(LoopEvent.EVOLUTION_END, {"tokens": 500})
         captured = capsys.readouterr()
         assert "Evolved strategy" in captured.out
 
     def test_session_complete_success(self, capsys):
-        _event_handler(
+        _, handler = _create_event_handler()
+        handler(
             LoopEvent.SESSION_COMPLETE, {"status": SessionStatus.SUCCESS.value, "reason": ""}
         )
         captured = capsys.readouterr()
         assert "SUCCESS" in captured.out
 
     def test_session_complete_failed(self, capsys):
-        _event_handler(
+        _, handler = _create_event_handler()
+        handler(
             LoopEvent.SESSION_COMPLETE,
             {"status": SessionStatus.FAILED.value, "reason": "budget exceeded"},
         )
@@ -396,7 +400,8 @@ class TestEventHandler:
         assert "FAILED" in captured.out
 
     def test_budget_warning(self, capsys):
-        _event_handler(LoopEvent.BUDGET_WARNING, {"iteration": 5, "total_tokens": 50000})
+        _, handler = _create_event_handler()
+        handler(LoopEvent.BUDGET_WARNING, {"iteration": 5, "total_tokens": 50000})
         captured = capsys.readouterr()
         assert "Budget warning" in captured.out
 
@@ -420,6 +425,66 @@ class TestInitCommand:
         assert config_path.exists()
         config = json.loads(config_path.read_text(encoding="utf-8"))
         assert config["project"]["review_execution"] == "local"
+        assert config["project"]["related_project_mode"] == "suggest"
+        assert config["project"]["model_pack_mode"] == "suggest"
+        assert "canonical_model_key" in config["project"]
+        assert config["project"]["model_identity_source"]
+        assert "Setup Summary" in result.output
+        assert "Related-project mode" in result.output
+        assert "Model-pack mode" in result.output
+
+    def test_init_non_interactive_accepts_growth_and_model_overrides(
+        self,
+        runner,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(
+            init,
+            [
+                "--non-interactive",
+                "--related-mode",
+                "off",
+                "--pack-mode",
+                "auto",
+                "--canonical-model",
+                "openai/gpt-5@1",
+            ],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        config = json.loads((tmp_path / ".muscle" / "config.yaml").read_text(encoding="utf-8"))
+        assert config["project"]["related_project_mode"] == "off"
+        assert config["project"]["model_pack_mode"] == "auto"
+        assert config["project"]["canonical_model_key"] == "openai/gpt-5@1"
+        assert config["project"]["model_manual_override"] == "openai/gpt-5@1"
+        assert config["project"]["model_identity_source"] == "manual_override"
+        assert "openai/gpt-5@1" in result.output
+
+    def test_init_interactive_prompts_for_unresolved_model(self, runner, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr("tools.muscle.cli._requested_model_label", lambda: "opaque-gateway")
+        monkeypatch.setattr(
+            "tools.muscle.cli._provider_endpoint",
+            lambda: "https://gateway.example/anthropic",
+        )
+
+        result = runner.invoke(
+            init,
+            ["--platform", "claude-code", "--review-execution", "local"],
+            input="\n\n2\n\n\n\n1\n",
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        config = json.loads((tmp_path / ".muscle" / "config.yaml").read_text(encoding="utf-8"))
+        assert config["project"]["model_manual_override"] == SUPPORTED_CANONICAL_MODELS[0]
+        assert config["project"]["canonical_model_key"] == SUPPORTED_CANONICAL_MODELS[0]
+        assert config["project"]["model_identity_source"] == "manual_override"
+        assert "could not confidently verify the backing model" in result.output
 
     def test_init_interactive_detects_no_project(self, runner):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -874,8 +939,62 @@ class TestLongEvalGroup:
                 "report_paths": {"json": "/tmp/benchmark.json"},
             }
             mock_cls.return_value = mock_runner
-            result = runner.invoke(long_eval_group, ["benchmark"], catch_exceptions=False)
+            result = runner.invoke(
+                long_eval_group,
+                ["benchmark", "--suite", "model-pack"],
+                catch_exceptions=False,
+            )
             assert result.exit_code == 0
+            mock_runner.run_benchmark.assert_called_once_with(
+                baseline="legacy",
+                candidate="review-smart",
+                include_history=True,
+                suite="model-pack",
+            )
+
+    def test_long_eval_benchmark_enforce_gates(self, runner):
+        with patch("tools.muscle.code_review.review_benchmark.ReviewBenchmarkRunner") as mock_cls:
+            mock_runner = MagicMock()
+            mock_runner.run_benchmark.return_value = {
+                "aggregate": {
+                    "baseline": {
+                        "high_critical_recall": 0.4,
+                        "false_positive_rate": 0.1,
+                        "tokens_used": 100,
+                    },
+                    "candidate": {
+                        "high_critical_recall": 0.6,
+                        "false_positive_rate": 0.08,
+                        "tokens_used": 90,
+                    },
+                },
+                "thresholds": {
+                    "high_critical_recall_up_20pct": True,
+                    "false_positive_rate_not_worse": True,
+                    "token_cost_down_30pct": False,
+                },
+                "benchmark_gates": {"overall_passed": True, "gates": {}},
+                "report_paths": {"json": "/tmp/benchmark.json"},
+            }
+            mock_runner.build_release_evidence.return_value = {
+                "release_gates": {"overall_passed": True, "gates": {}}
+            }
+            mock_runner.write_release_evidence.return_value = {"json": "/tmp/release.json"}
+            mock_cls.return_value = mock_runner
+            with patch(
+                "tools.muscle.cli._run_benchmark_release_invariants",
+                return_value={"checked": True, "passed": True, "summary": "ok", "details": {}},
+            ) as mock_invariants:
+                result = runner.invoke(
+                    long_eval_group,
+                    ["benchmark", "--enforce-gates"],
+                    catch_exceptions=False,
+                )
+
+            assert result.exit_code == 0
+            mock_invariants.assert_called_once_with()
+            mock_runner.build_release_evidence.assert_called_once()
+            mock_runner.write_release_evidence.assert_called_once()
 
 
 class TestSettingsGroup:
@@ -891,6 +1010,10 @@ class TestSettingsGroup:
         assert result.exit_code == 0
         assert "Review Execution" in result.output
         assert "local" in result.output
+        assert "Related Project Mode" in result.output
+        assert "Model Pack Mode" in result.output
+        assert "Canonical Model" in result.output
+        assert "Model Identity Source" in result.output
 
     def test_settings_review_updates_execution_mode(self, runner, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

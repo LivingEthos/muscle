@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from tools.muscle.code_review.code_reviewer import CodeReviewer
-from tools.muscle.code_review.fix_generator import FixGenerator, FixResult
+from tools.muscle.code_review.fix_generator import FixGenerator, FixResult, GeneratedFix
 from tools.muscle.code_review.handoff_generator import HandoffGenerator
 from tools.muscle.code_review.review_controller import ReviewContext, ReviewController
 from tools.muscle.code_review.static_analyzer import StaticAnalyzer
@@ -30,7 +30,10 @@ from tools.muscle.code_review.types import (
     StaticAnalysisResult,
     StaticIssue,
 )
+from tools.muscle.code_review.verification_loop import VerificationResult
 from tools.muscle.m27_client import M27Client
+from tools.muscle.project_memory import ProjectMemory
+from tools.muscle.tui.project_manager import ProjectConfig, ProjectManager
 
 
 class MockM27Client(M27Client):
@@ -469,3 +472,175 @@ class TestReviewContext:
 
         assert len(ctx.issues) == 1
         assert ctx.issues[0].title == "Bug"
+
+
+def test_review_controller_records_positive_external_lesson_outcome(tmp_path):
+    current = tmp_path / "current"
+    source = tmp_path / "source"
+    current.mkdir()
+    source.mkdir()
+    ProjectManager(current).init_project(ProjectConfig(name="current", path=current, languages=["Python"]))
+    ProjectManager(source).init_project(ProjectConfig(name="source", path=source, languages=["Python"]))
+
+    file_path = current / "module.py"
+    file_path.write_text("x = 1\n", encoding="utf-8")
+
+    current_pm = ProjectMemory(str(current))
+    source_pm = ProjectMemory(str(source))
+    source_pm.insert_learned_rule(str(source), "Prefer schema-first review retries", "json")
+    current_pm.import_project_lessons(str(current), str(source), link_mode="snapshot", relatedness_score=0.8)
+    lesson = current_pm.list_transferred_lessons(project_path=str(current))[0]
+    current_pm.insert_lesson_usage_event(
+        project_path=str(current),
+        session_id="review-session",
+        stage="fix_generation",
+        lesson_source="related",
+        lesson_key=str(lesson["lesson_key"]),
+        source_project_path=str(source),
+    )
+
+    controller = ReviewController(
+        config=ReviewConfig(target_path=str(file_path), mode=ReviewMode.AUTO_FIX),
+        m27_client=MockM27Client(),
+        use_kb=False,
+        project_path=str(current),
+    )
+    issue = ReviewIssue(
+        file_path=str(file_path),
+        line_number=1,
+        severity=Severity.MEDIUM,
+        category=IssueCategory.CORRECTNESS,
+        cwe_id=None,
+        title="Bug",
+        description="Bug description",
+        code_snippet="x = 1",
+        suggested_fix="x = 2",
+        auto_fixable=True,
+    )
+    ctx = ReviewContext(session_id="review-session", config=controller.config, stats=ReviewStats())
+    controller._review_context = ctx
+
+    with patch.object(
+        controller.fix_generator,
+        "generate_fix",
+        return_value=GeneratedFix(ok=True, file_path=str(file_path), code="x = 2\n"),
+    ):
+        with patch.object(
+            controller.fix_generator,
+            "apply_fix",
+            return_value=FixResult(
+                success=True,
+                file_path=str(file_path),
+                original_content="x = 1\n",
+                fixed_content="x = 2\n",
+                applied=True,
+                verified=False,
+            ),
+        ):
+            with patch.object(
+                controller.verification_loop,
+                "verify_fix",
+                return_value=VerificationResult(
+                    issue=issue,
+                    fix_applied=True,
+                    fix_verified=True,
+                    verification_details="verified",
+                    reverted=False,
+                ),
+            ):
+                success, _ = controller._apply_fix_with_verification(ctx, issue)
+
+    updated_lesson = current_pm.list_transferred_lessons(project_path=str(current))[0]
+    usage_events = current_pm.list_lesson_usage_events(project_path=str(current), session_id="review-session")
+
+    assert success is True
+    assert usage_events[0]["outcome"] == "positive_fix_verification"
+    assert int(updated_lesson["validation_count"] or 0) == 1
+    assert int(updated_lesson["success_count"] or 0) == 1
+
+
+def test_review_controller_records_negative_external_lesson_outcome(tmp_path):
+    current = tmp_path / "current"
+    source = tmp_path / "source"
+    current.mkdir()
+    source.mkdir()
+    ProjectManager(current).init_project(ProjectConfig(name="current", path=current, languages=["Python"]))
+    ProjectManager(source).init_project(ProjectConfig(name="source", path=source, languages=["Python"]))
+
+    file_path = current / "module.py"
+    file_path.write_text("x = 1\n", encoding="utf-8")
+
+    current_pm = ProjectMemory(str(current))
+    source_pm = ProjectMemory(str(source))
+    source_pm.insert_learned_rule(str(source), "Prefer schema-first review retries", "json")
+    current_pm.import_project_lessons(str(current), str(source), link_mode="snapshot", relatedness_score=0.8)
+    lesson = current_pm.list_transferred_lessons(project_path=str(current))[0]
+    current_pm.insert_lesson_usage_event(
+        project_path=str(current),
+        session_id="review-session",
+        stage="semantic_review",
+        lesson_source="related",
+        lesson_key=str(lesson["lesson_key"]),
+        source_project_path=str(source),
+    )
+
+    controller = ReviewController(
+        config=ReviewConfig(target_path=str(file_path), mode=ReviewMode.AUTO_FIX),
+        m27_client=MockM27Client(),
+        use_kb=False,
+        project_path=str(current),
+    )
+    issue = ReviewIssue(
+        file_path=str(file_path),
+        line_number=1,
+        severity=Severity.MEDIUM,
+        category=IssueCategory.CORRECTNESS,
+        cwe_id=None,
+        title="Bug",
+        description="Bug description",
+        code_snippet="x = 1",
+        suggested_fix="x = 2",
+        auto_fixable=True,
+    )
+    ctx = ReviewContext(session_id="review-session", config=controller.config, stats=ReviewStats())
+    controller._review_context = ctx
+
+    with patch.object(
+        controller.fix_generator,
+        "generate_fix",
+        return_value=GeneratedFix(ok=True, file_path=str(file_path), code="x = 2\n"),
+    ):
+        with patch.object(
+            controller.fix_generator,
+            "apply_fix",
+            return_value=FixResult(
+                success=True,
+                file_path=str(file_path),
+                original_content="x = 1\n",
+                fixed_content="x = 2\n",
+                applied=True,
+                verified=False,
+            ),
+        ):
+            with patch.object(
+                controller.verification_loop,
+                "verify_fix",
+                return_value=VerificationResult(
+                    issue=issue,
+                    fix_applied=True,
+                    fix_verified=False,
+                    verification_details="failed",
+                    reverted=False,
+                    failure_analysis="still broken",
+                ),
+            ):
+                with patch.object(controller.fix_generator, "rollback_fix", return_value=True):
+                    success, _ = controller._apply_fix_with_verification(ctx, issue)
+
+    updated_lesson = current_pm.list_transferred_lessons(project_path=str(current))[0]
+    usage_events = current_pm.list_lesson_usage_events(project_path=str(current), session_id="review-session")
+
+    assert success is False
+    assert usage_events[0]["outcome"] == "negative_fix_verification"
+    assert int(updated_lesson["validation_count"] or 0) == 1
+    assert int(updated_lesson["success_count"] or 0) == 0

@@ -12,6 +12,8 @@ from typing import Any
 
 import requests
 
+from .http_utils import DEFAULT_HTTP_TIMEOUT_SECONDS, request_with_retries
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,6 +27,7 @@ class GitLabAdapter:
         self.token = token or os.environ.get("GITLAB_TOKEN")
         self.project_id = project_id or os.environ.get("CI_PROJECT_ID")
         self.base_url = base_url or os.environ.get("CI_API_V4_URL", "https://gitlab.com/api/v4")
+        self.timeout_seconds = DEFAULT_HTTP_TIMEOUT_SECONDS
 
     def _get_headers(self) -> dict:
         headers = {"Content-Type": "application/json"}
@@ -52,7 +55,14 @@ class GitLabAdapter:
             "description": description,
         }
 
-        response = requests.post(url, headers=self._get_headers(), json=data)
+        response = request_with_retries(
+            requests,
+            "POST",
+            url,
+            headers=self._get_headers(),
+            json=data,
+            timeout=self.timeout_seconds,
+        )
 
         if response.status_code == 201:
             return response.json()  # type: ignore[no-any-return]
@@ -66,7 +76,13 @@ class GitLabAdapter:
 
         url = f"{self.base_url}/projects/{self.project_id}/merge_requests/{mr_iid}"
 
-        response = requests.get(url, headers=self._get_headers())
+        response = request_with_retries(
+            requests,
+            "GET",
+            url,
+            headers=self._get_headers(),
+            timeout=self.timeout_seconds,
+        )
 
         if response.status_code == 200:
             return response.json()  # type: ignore[no-any-return]
@@ -84,7 +100,14 @@ class GitLabAdapter:
 
         data = {"body": body}
 
-        response = requests.post(url, headers=self._get_headers(), json=data)
+        response = request_with_retries(
+            requests,
+            "POST",
+            url,
+            headers=self._get_headers(),
+            json=data,
+            timeout=self.timeout_seconds,
+        )
 
         if response.status_code == 201:
             return response.json()  # type: ignore[no-any-return]
@@ -104,7 +127,14 @@ class GitLabAdapter:
         if variables:
             data["variables"] = [{"key": k, "value": v} for k, v in variables.items()]
 
-        response = requests.post(url, headers=self._get_headers(), json=data)
+        response = request_with_retries(
+            requests,
+            "POST",
+            url,
+            headers=self._get_headers(),
+            json=data,
+            timeout=self.timeout_seconds,
+        )
 
         if response.status_code == 201:
             return response.json()  # type: ignore[no-any-return]
@@ -116,7 +146,13 @@ class GitLabAdapter:
 
         url = f"{self.base_url}/projects/{self.project_id}/pipelines/{pipeline_id}"
 
-        response = requests.get(url, headers=self._get_headers())
+        response = request_with_retries(
+            requests,
+            "GET",
+            url,
+            headers=self._get_headers(),
+            timeout=self.timeout_seconds,
+        )
 
         if response.status_code == 200:
             return response.json().get("status")  # type: ignore[no-any-return]
@@ -137,7 +173,14 @@ class GitLabAdapter:
             "variables": [{"key": k, "value": v} for k, v in (variables or {}).items()],
         }
 
-        response = requests.post(url, headers=self._get_headers(), json=data)
+        response = request_with_retries(
+            requests,
+            "POST",
+            url,
+            headers=self._get_headers(),
+            json=data,
+            timeout=self.timeout_seconds,
+        )
 
         if response.status_code == 201:
             return response.json()  # type: ignore[no-any-return]
@@ -153,7 +196,14 @@ class GitLabAdapter:
 
         url = f"{self.base_url}/projects/{self.project_id}/jobs/{job_id}/artifacts/{artifact_path}"
 
-        response = requests.get(url, headers=self._get_headers(), allow_redirects=True)
+        response = request_with_retries(
+            requests,
+            "GET",
+            url,
+            headers=self._get_headers(),
+            allow_redirects=True,
+            timeout=self.timeout_seconds,
+        )
 
         if response.status_code == 200:
             return response.content

@@ -267,6 +267,12 @@ class TestCLIInitCommand:
 
         assert result.exit_code == 0
         assert "initialized" in result.output.lower() or "MUSCLE" in result.output
+        config = json.loads((tmp_path / ".muscle" / "config.yaml").read_text(encoding="utf-8"))
+        assert config["project"]["related_project_mode"] == "suggest"
+        assert config["project"]["model_pack_mode"] == "suggest"
+        assert "canonical_model_key" in config["project"]
+        assert config["project"]["model_identity_source"]
+        assert "Setup Summary" in result.output
 
     def test_init_creates_files(self, tmp_path: Path):
         """muscle init should create .muscle/ directory structure."""
@@ -432,6 +438,10 @@ class TestCLISettingsShow:
         assert "opencode" in result.output
         assert "warn" in result.output  # review_gate should show persisted value
         assert "False" in result.output  # hooks_enabled should show persisted value
+        assert "Related Project Mode" in result.output
+        assert "Model Pack Mode" in result.output
+        assert "Canonical Model" in result.output
+        assert "Model Identity Source" in result.output
 
     def test_settings_show_not_initialized(self, tmp_path: Path):
         """settings show should indicate not initialized when no config exists."""
@@ -579,6 +589,8 @@ class TestBackupsCommands:
             result = runner.invoke(cli, ["backups", "list"], catch_exceptions=False)
 
         assert result.exit_code == 0
+        assert "Project backups cover project-local" in result.output
+        assert "system.db" in result.output
 
     def test_backups_list_with_type_filter(self, tmp_path: Path):
         """List command accepts --type filter after init."""
@@ -601,9 +613,7 @@ class TestBackupsCommands:
         manager.init_project(config)
 
         with patch("pathlib.Path.cwd", return_value=tmp_path):
-            result = runner.invoke(
-                cli, ["backups", "show", "9999"], catch_exceptions=False
-            )
+            result = runner.invoke(cli, ["backups", "show", "9999"], catch_exceptions=False)
         # Should not crash - exits with 0 even for not-found since it's a user-facing message
         assert result.exit_code == 0
 
@@ -615,9 +625,7 @@ class TestBackupsCommands:
         manager.init_project(config)
 
         with patch("pathlib.Path.cwd", return_value=tmp_path):
-            result = runner.invoke(
-                cli, ["backups", "restore", "9999"], catch_exceptions=False
-            )
+            result = runner.invoke(cli, ["backups", "restore", "9999"], catch_exceptions=False)
         assert result.exit_code == 0
 
     def test_backups_restore_dry_run_nonexistent(self, tmp_path: Path):
@@ -774,4 +782,3 @@ class TestInitStoresEnablement:
         loaded = manager.load_config(tmp_path)
         assert loaded is not None
         assert loaded.platform == "claude-code"
-

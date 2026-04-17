@@ -11,6 +11,7 @@ Architecture Decision Record (ADR):
 """
 
 import hashlib
+import inspect
 import logging
 import os
 import signal
@@ -101,6 +102,7 @@ class LoopController:
         git_auto_push: bool = False,
         interactive: InteractiveHandler | None = None,
         session_manager: Any = None,
+        project_memory: Any = None,
     ):
         self.config = config
         self.code_generator = code_generator
@@ -113,6 +115,7 @@ class LoopController:
         self.git_auto_push = git_auto_push
         self.interactive = interactive or InteractiveHandler(enabled=config.interactive)
         self._session_manager = session_manager
+        self._project_memory = project_memory
         self._abort_requested = False
         self._session_report: SessionReport | None = None
         self._git_commit: str | None = None
@@ -122,6 +125,34 @@ class LoopController:
         if self.event_callback:
             self.event_callback(event, data)
         logger.debug(f"Event: {event.value} - {data}")
+
+    def _record_external_lesson_outcome(
+        self,
+        ctx: LoopContext,
+        *,
+        success: bool,
+        outcome: str,
+    ) -> None:
+        if self._project_memory is None:
+            return
+        try:
+            self._project_memory.apply_transferred_lesson_outcomes(
+                project_path=str(
+                    getattr(
+                        self._project_memory, "project_path", Path(ctx.config.output_dir).resolve()
+                    )
+                ),
+                session_id=ctx.session_id,
+                stages=["generate"],
+                outcome=outcome,
+                success=success,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to record external lesson outcome for generation session %s: %s",
+                ctx.session_id,
+                exc,
+            )
 
     def _emit_webhook(self, event: WebhookEvent, session_id: str, data: dict) -> None:
         if self.webhook_notifier and self.webhook_notifier.enabled:
@@ -232,15 +263,34 @@ class LoopController:
                 return False, reason
         return True, None
 
+    @staticmethod
+    def _supports_kwarg(callable_obj: Callable[..., Any], name: str) -> bool:
+        try:
+            signature = inspect.signature(callable_obj)
+        except (TypeError, ValueError):
+            return False
+        parameter = signature.parameters.get(name)
+        if parameter is None:
+            return False
+        return parameter.kind in {
+            inspect.Parameter.KEYWORD_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }
+
     def _wait_for_evolved_strategy(self, errors: list[str], ctx: LoopContext) -> str | None:
         self._emit(
             LoopEvent.EVOLUTION_START, {"iteration": ctx.current_iteration, "errors": errors}
         )
 
+        evolve_kwargs: dict[str, Any] = {}
+        if self._supports_kwarg(self.evolver, "session_id"):
+            evolve_kwargs["session_id"] = ctx.session_id
+
         evolved, usage = self.evolver(
             ctx.config.task,
             errors,
             ctx.evolved_strategy,
+            **evolve_kwargs,
         )
 
         ctx.stats.total_tokens += usage.total
@@ -314,30 +364,50 @@ class LoopController:
         if streaming_callback:
             gen_streaming = getattr(self.code_generator, "generate_streaming", None)
             if gen_streaming:
-                full_response = ""
-                for chunk, _ in gen_streaming(
+                code_output = ""
+                gen_usage = TokenUsage()
+
+                def on_stream_chunk(chunk: str) -> None:
+                    if not chunk:
+                        return
+                    streaming_callback(chunk)
+                    self._emit(LoopEvent.GENERATION_STREAM, {"chunk": chunk})
+
+                generate_streaming_kwargs: dict[str, Any] = {}
+                if self._supports_kwarg(gen_streaming, "progress_callback"):
+                    generate_streaming_kwargs["progress_callback"] = on_stream_chunk
+
+                for chunk, usage in gen_streaming(
                     effective_task,
                     ctx.evolved_strategy or "",
                     ctx.config.output_dir,
+                    **generate_streaming_kwargs,
                 ):
-                    full_response = chunk
+                    if usage is not None:
+                        gen_usage = usage
                     if chunk:
-                        streaming_callback(chunk)
-                        self._emit(LoopEvent.GENERATION_STREAM, {"chunk": chunk})
-
-                code_output = full_response
-                gen_usage = TokenUsage()
+                        code_output = chunk
+                        if not generate_streaming_kwargs:
+                            on_stream_chunk(chunk)
             else:
+                generate_kwargs: dict[str, Any] = {}
+                if self._supports_kwarg(self.code_generator, "session_id"):
+                    generate_kwargs["session_id"] = ctx.session_id
                 code_output, gen_usage = self.code_generator(
                     effective_task,
                     ctx.evolved_strategy or "",
                     ctx.config.output_dir,
+                    **generate_kwargs,
                 )
         else:
+            generate_kwargs = {}
+            if self._supports_kwarg(self.code_generator, "session_id"):
+                generate_kwargs["session_id"] = ctx.session_id
             code_output, gen_usage = self.code_generator(
                 effective_task,
                 ctx.evolved_strategy or "",
                 ctx.config.output_dir,
+                **generate_kwargs,
             )
 
         ctx.stats.total_tokens += gen_usage.total
@@ -346,6 +416,12 @@ class LoopController:
         self._emit(LoopEvent.EVALUATION_START, {})
 
         evaluation = self.evaluator(ctx.config.output_dir)
+        if evaluation is None:
+            logger.error("Evaluator returned None for %s", ctx.config.output_dir)
+            evaluation = EvaluationResult(
+                passed=False,
+                compiler_errors=["Evaluator returned no result"],
+            )
 
         ctx.last_evaluation = evaluation
         duration = time.time() - iter_start
@@ -370,6 +446,11 @@ class LoopController:
 
         if evaluation.passed or (self.config.allow_warnings and evaluation.has_warnings_only):
             result.success = True
+            self._record_external_lesson_outcome(
+                ctx,
+                success=True,
+                outcome="positive_generation_iteration",
+            )
             self._emit(LoopEvent.ITERATION_END, {"success": True})
             self._emit(LoopEvent.EVALUATION_END, {"passed": True})
 
@@ -382,6 +463,11 @@ class LoopController:
             return result
 
         result.errors = evaluation.all_errors
+        self._record_external_lesson_outcome(
+            ctx,
+            success=False,
+            outcome="negative_generation_evaluation",
+        )
         result.warnings = evaluation.linter_warnings
         self._emit(LoopEvent.EVALUATION_END, {"passed": False, "errors": len(result.errors)})
 
@@ -549,11 +635,17 @@ class LoopController:
                     break
 
                 if ctx.current_iteration > 1 and ctx.current_iteration % 5 == 0:
+                    remaining_tokens = (
+                        max(0, self.config.budget_tokens - ctx.stats.total_tokens)
+                        if self.config.budget_tokens > 0
+                        else 0
+                    )
                     self._emit(
                         LoopEvent.BUDGET_WARNING,
                         {
                             "iteration": ctx.current_iteration,
                             "total_tokens": ctx.stats.total_tokens,
+                            "remaining_tokens": remaining_tokens,
                         },
                     )
                     if self.webhook_notifier and self.webhook_notifier.enabled:
@@ -562,9 +654,7 @@ class LoopController:
                             float(ctx.stats.total_tokens) / float(self.config.budget_tokens)
                             if self.config.budget_tokens > 0
                             else 0.0,
-                            self.config.budget_tokens - ctx.stats.total_tokens
-                            if self.config.budget_tokens > 0
-                            else 0,
+                            remaining_tokens,
                         )
 
             logger.info(

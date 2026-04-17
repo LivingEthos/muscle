@@ -133,6 +133,27 @@ class TestReviewCommand:
         assert "critical" in result.output
         assert "high" in result.output
 
+    def test_review_does_not_trigger_remote_model_pack_fetch(
+        self,
+        runner,
+        mock_review_controller,
+    ):
+        """Review should stay off the remote model-pack install path."""
+        env = os.environ.copy()
+        env["MINIMAX_API_KEY"] = "test-key"
+
+        with patch(
+            "tools.muscle.cli.ModelPackManager",
+            side_effect=AssertionError("review should not instantiate remote model-pack flows"),
+        ):
+            result = runner.invoke(
+                cli,
+                ["review", "--target", "/tmp/test", "--language", "python"],
+                env=env,
+            )
+
+        assert result.exit_code == 0
+
     def test_review_max_fixes(self, runner, mock_review_controller):
         """Test review command with custom max fixes."""
         env = os.environ.copy()
@@ -198,6 +219,27 @@ class TestReviewCommand:
         )
 
         assert result.exit_code == 0
+
+    def test_review_shadow_uses_detached_worker(self, runner):
+        """Shadow review should launch a detached background worker process."""
+        env = os.environ.copy()
+        env["MINIMAX_API_KEY"] = "test-key"
+
+        with patch("tools.muscle.code_review.shadow_worker.WorkerManager") as mock_manager_cls:
+            mock_manager = MagicMock()
+            mock_manager.submit_shadow_job.return_value = "shadow123"
+            mock_manager_cls.return_value = mock_manager
+
+            result = runner.invoke(
+                cli,
+                ["review", "--target", "/tmp/test", "--shadow"],
+                env=env,
+            )
+
+        assert result.exit_code == 0
+        mock_manager.submit_shadow_job.assert_called_once()
+        assert mock_manager.submit_shadow_job.call_args.kwargs["detached"] is True
+        assert "shadow123" in result.output
 
     def test_review_uses_cli_execution_override(self, runner, tmp_path):
         env = os.environ.copy()

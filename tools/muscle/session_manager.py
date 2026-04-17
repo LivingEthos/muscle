@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import string
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -36,6 +37,8 @@ from .types import (
 if TYPE_CHECKING:
     from .loop_controller import LoopContext
 
+from .io_safety import atomic_write_json, locked_jsonl_append, update_json_file_locked
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_SESSION_DIR = ".muscle/sessions"
@@ -51,7 +54,9 @@ class SessionManager:
             raise
 
     def _sanitize_session_id(self, session_id: str) -> str:
-        safe_id = "".join(c for c in session_id if c.isalnum() or c in "_-")
+        safe_id = "".join(
+            c for c in session_id.strip() if c in string.ascii_letters + string.digits + "_-"
+        )
         if not safe_id or safe_id.startswith("."):
             raise ValueError(f"Invalid session ID: {session_id}")
         return safe_id
@@ -99,7 +104,7 @@ class SessionManager:
 
         try:
             meta_file = session_dir / "meta.json"
-            meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+            atomic_write_json(meta_file, meta, ensure_ascii=False, indent=2)
             (session_dir / "iterations.jsonl").touch()
             (session_dir / "artifacts").mkdir(exist_ok=True)
         except OSError as e:
@@ -139,8 +144,7 @@ class SessionManager:
         )
 
         try:
-            with open(iterations_file, "a", encoding="utf-8") as f:
-                f.write(iteration_entry + "\n")
+            locked_jsonl_append(iterations_file, iteration_entry + "\n")
         except OSError as e:
             logger.error(f"Cannot write iterations file: {e}")
 
@@ -185,9 +189,7 @@ class SessionManager:
             "iterations_count": len(ctx.iterations),
         }
         try:
-            context_file.write_text(
-                json.dumps(context_data, indent=2, ensure_ascii=False), encoding="utf-8"
-            )
+            atomic_write_json(context_file, context_data, ensure_ascii=False, indent=2)
         except OSError as e:
             logger.error(f"Cannot write context file: {e}")
 
@@ -261,9 +263,7 @@ class SessionManager:
 
         try:
             report_file = session_dir / "report.json"
-            report_file.write_text(
-                json.dumps(report_data, indent=2, ensure_ascii=False), encoding="utf-8"
-            )
+            atomic_write_json(report_file, report_data, ensure_ascii=False, indent=2)
             logger.info(f"Saved session report to {report_file}")
         except OSError as e:
             logger.error(f"Cannot write report file: {e}")
@@ -277,16 +277,14 @@ class SessionManager:
         session_dir = self.base_dir / session_id
         meta_file = session_dir / "meta.json"
         try:
-            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            update_json_file_locked(
+                meta_file,
+                lambda meta: {**meta, **updates},
+                ensure_ascii=False,
+                indent=2,
+            )
         except (json.JSONDecodeError, OSError) as e:
-            logger.warning(f"Cannot read meta file: {e}")
-            return
-
-        meta.update(updates)
-        try:
-            meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
-        except OSError as e:
-            logger.error(f"Cannot write meta file: {e}")
+            logger.warning(f"Cannot update meta file: {e}")
 
     def list_sessions(self) -> list[dict]:
         sessions = []

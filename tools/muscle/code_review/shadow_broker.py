@@ -11,6 +11,8 @@ isolated job tracking with no global shared state.
 from __future__ import annotations
 
 import json
+import os
+import socket
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -114,10 +116,14 @@ class ShadowBroker:
         job = self._memory.get_shadow_job(job_id)
         if not job:
             return False
+        now = datetime.now().isoformat()
         self._memory.update_shadow_job_status(
             job_id,
             status="running",
-            started_at=datetime.now().isoformat(),
+            started_at=now,
+            heartbeat_at=now,
+            worker_pid=os.getpid(),
+            worker_host=socket.gethostname(),
         )
         return True
 
@@ -132,6 +138,7 @@ class ShadowBroker:
             status="completed",
             completed_at=datetime.now().isoformat(),
             result=result_json,
+            heartbeat_at=datetime.now().isoformat(),
         )
         return True
 
@@ -145,6 +152,7 @@ class ShadowBroker:
             status="failed",
             completed_at=datetime.now().isoformat(),
             error_message=error,
+            heartbeat_at=datetime.now().isoformat(),
         )
         return True
 
@@ -157,8 +165,33 @@ class ShadowBroker:
             job_id,
             status="cancelled",
             completed_at=datetime.now().isoformat(),
+            heartbeat_at=datetime.now().isoformat(),
         )
         return True
+
+    def heartbeat_job(self, job_id: str) -> bool:
+        """Refresh heartbeat metadata for a running job."""
+        job = self._memory.get_shadow_job(job_id)
+        if not job:
+            return False
+        status = str(job.get("status") or "running")
+        return self._memory.update_shadow_job_status(
+            job_id,
+            status=status,
+            heartbeat_at=datetime.now().isoformat(),
+            worker_pid=os.getpid(),
+            worker_host=socket.gethostname(),
+        )
+
+    def reap_stale_jobs(self, max_staleness_seconds: float) -> int:
+        """Mark stale running jobs failed so workers can recover them."""
+        stale_before = datetime.fromtimestamp(
+            datetime.now().timestamp() - max_staleness_seconds
+        ).isoformat()
+        return self._memory.reap_stale_shadow_jobs(
+            self.project_path,
+            stale_before,
+        )
 
     def get_job(self, job_id: str) -> dict | None:
         """Return the full job record, or None if not found."""

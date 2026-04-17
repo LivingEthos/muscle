@@ -10,7 +10,9 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +31,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.text import Text
 
+from .audit_presenter import format_action_log_entry
 from .backup_manager import BackupManager
 from .budget_manager import BudgetManager
 from .code_generator import CodeGenerator
@@ -37,14 +40,29 @@ from .cost_optimizer import CostOptimizer
 from .evolver import Evolver
 from .interactive import InteractiveHandler
 from .learning_ingestor import LearningIngestor
+from .lesson_resolver import LessonResolver
 from .loop_controller import LoopController, LoopEvent
-from .m27_client import M27Client
+from .m27_client import DEFAULT_MODEL, M27Client
+from .model_identity import SUPPORTED_CANONICAL_MODELS, ModelIdentityResolver
+from .model_packs import DEFAULT_MODEL_PACK_REF, DEFAULT_MODEL_PACK_REPO, ModelPackManager
+from .optimization import (
+    ContextBudgeter,
+    ExternalBenchmarkImporter,
+    TelemetryRecorder,
+    WorkflowOptimizer,
+)
 from .project_builder import ProjectBuilder
+from .project_fingerprint import (
+    build_project_fingerprint,
+    explain_relatedness,
+    fingerprint_from_row,
+)
 from .project_memory import ProjectMemory
 from .project_memory_types import TaskStatus
 from .self_improver import SelfImprover
 from .session_manager import SessionManager
 from .strategy_kb import GlobalKnowledgeBase
+from .system_db import DEFAULT_SYSTEM_DB_PATH, SystemDatabase
 from .types import BudgetMode, EvalMode, RunConfig, SessionReport, SessionStatus
 from .webhook_notifier import WebhookNotifier
 
@@ -59,6 +77,40 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+TRANSFER_AUDIT_ACTIONS = [
+    "related_project_imported",
+    "related_project_attached",
+    "related_project_unlinked",
+    "related_import_scrub",
+    "transferred_lesson_validated",
+    "transferred_lesson_promoted",
+    "transferred_lesson_archived",
+]
+RELEASE_GATE_TEST_TARGETS = [
+    "tests/unit/test_cli_run_offline.py",
+    "tests/unit/test_cli_review.py::TestReviewCommand::test_review_does_not_trigger_remote_model_pack_fetch",
+    "tests/unit/test_cross_project_learning.py::test_lesson_resolver_uses_remote_installed_pack_without_fetch",
+]
+
+
+def _print_backup_scope_note(backup_manager: BackupManager) -> None:
+    """Print one concise note about project-local vs global MUSCLE backups."""
+    scope = backup_manager.describe_backup_scope(DEFAULT_SYSTEM_DB_PATH)
+    excluded = scope.get("excluded_paths", [])
+    if not isinstance(excluded, list) or not excluded:
+        return
+    global_entry = excluded[0]
+    if not isinstance(global_entry, dict):
+        return
+    global_path = global_entry.get("path")
+    if not isinstance(global_path, str):
+        return
+    console.print(
+        "[dim]Project backups cover project-local `.muscle/` state only. "
+        f"Global shared MUSCLE state at `{global_path}` is not included; "
+        "back it up separately if you need cross-project, model-pack, or submission metadata.[/dim]"
+    )
 
 
 def _resolve_project_context(start_path: Path | None = None) -> tuple[Path, Any]:
@@ -95,20 +147,199 @@ def _create_m27_client() -> M27Client:
     return M27Client(api_key=api_key)
 
 
-_streaming_text: list[str] = []
+def _build_context_budgeter(settings: dict[str, str]) -> ContextBudgeter:
+    return ContextBudgeter(
+        review_strategy=settings.get("optimize.context.semantic_review"),
+        fix_strategy=settings.get("optimize.context.fix_generation"),
+    )
 
 
-def _event_handler(event: LoopEvent, data: dict) -> None:
-    global _streaming_text
+def _requested_model_label() -> str:
+    return (
+        os.environ.get("ANTHROPIC_MODEL")
+        or os.environ.get("MINIMAX_MODEL")
+        or os.environ.get("MUSCLE_MODEL")
+        or DEFAULT_MODEL
+    )
+
+
+def _provider_endpoint() -> str | None:
+    return os.environ.get("ANTHROPIC_BASE_URL")
+
+
+def _resolve_model_identity(
+    project_path: str,
+    project_config: Any | None,
+    project_memory: ProjectMemory | None = None,
+    system_db: SystemDatabase | None = None,
+) -> dict[str, Any]:
+    system_store = system_db or SystemDatabase()
+    resolver = ModelIdentityResolver(system_store)
+    identity = resolver.resolve(
+        requested_label=_requested_model_label(),
+        provider_endpoint=_provider_endpoint(),
+        manual_override=getattr(project_config, "model_manual_override", None),
+    )
+    pm = project_memory or ProjectMemory(project_path)
+    pm.insert_model_identity_history(project_path, identity.__dict__)
+    return identity.__dict__
+
+
+def _build_lesson_resolver(
+    project_path: str,
+    project_config: Any | None,
+    project_memory: ProjectMemory | None = None,
+    system_db: SystemDatabase | None = None,
+) -> tuple[LessonResolver, dict[str, Any], SystemDatabase]:
+    pm = project_memory or ProjectMemory(project_path)
+    system_store = system_db or SystemDatabase()
+    identity = _resolve_model_identity(
+        project_path=project_path,
+        project_config=project_config,
+        project_memory=pm,
+        system_db=system_store,
+    )
+    resolver = LessonResolver(
+        project_path=project_path,
+        project_memory=pm,
+        system_db=system_store,
+        global_kb=GlobalKnowledgeBase(),
+        project_config=project_config,
+        requested_model_label=str(identity.get("requested_label") or _requested_model_label()),
+        provider_endpoint=str(identity.get("provider_endpoint") or _provider_endpoint() or ""),
+    )
+    return resolver, identity, system_store
+
+
+def _suggest_related_projects(
+    project_path: Path,
+    project_config: Any | None,
+    system_db: SystemDatabase | None = None,
+    limit: int = 3,
+    threshold: float = 0.35,
+    refresh_current: bool = False,
+    prune_stale: bool = False,
+    stale_days: int = 90,
+    include_stale: bool = False,
+) -> list[dict[str, Any]]:
+    system_store = system_db or SystemDatabase()
+    current_fp = build_project_fingerprint(
+        project_path,
+        display_name=getattr(project_config, "name", project_path.name),
+        languages=getattr(project_config, "languages", None),
+    )
+    if refresh_current:
+        system_store.register_project(current_fp)
+    if prune_stale:
+        system_store.prune_registered_projects(
+            stale_after_days=stale_days,
+            keep_paths=[str(project_path.resolve())],
+        )
+    candidates: list[dict[str, Any]] = []
+    for row in system_store.list_registered_projects(
+        exclude_path=str(project_path.resolve()),
+        stale_after_days=stale_days,
+        include_stale=include_stale,
+    ):
+        candidate_fp = fingerprint_from_row(row)
+        explanation = explain_relatedness(current_fp, candidate_fp)
+        score = float(explanation["score"])
+        if score < threshold:
+            continue
+        candidates.append(
+            {
+                "project_path": candidate_fp.project_path,
+                "display_name": candidate_fp.display_name,
+                "score": score,
+                "languages": candidate_fp.languages,
+                "frameworks": candidate_fp.frameworks,
+                "why": explanation["summary"],
+                "overlap": explanation["overlap"],
+                "component_scores": explanation["component_scores"],
+                "shared_total": explanation["shared_total"],
+                "stale": bool(row.get("stale")),
+                "age_days": row.get("age_days"),
+            }
+        )
+    candidates.sort(
+        key=lambda item: (
+            -float(item["score"]),
+            -int(item.get("shared_total", 0) or 0),
+            str(item["display_name"]).lower(),
+            str(item["project_path"]).lower(),
+        )
+    )
+    return candidates[:limit]
+
+
+def _attach_optimization_runtime(
+    project_path: str,
+    m27_client: M27Client,
+) -> tuple[
+    ProjectMemory | None,
+    WorkflowOptimizer | None,
+    ContextBudgeter | None,
+    TelemetryRecorder | None,
+    LessonResolver | None,
+    dict[str, Any] | None,
+    SystemDatabase | None,
+]:
+    try:
+        pm = ProjectMemory(project_path)
+        optimizer = WorkflowOptimizer(pm, project_path)
+        settings = optimizer.get_applied_settings()
+        context_budgeter = _build_context_budgeter(settings)
+        recorder = TelemetryRecorder(pm)
+        m27_client.set_telemetry_sink(recorder)
+        project_config = _resolve_project_context(Path(project_path))[1]
+        lesson_resolver, identity, system_db = _build_lesson_resolver(
+            project_path=project_path,
+            project_config=project_config,
+            project_memory=pm,
+        )
+        m27_client.set_model_identity(identity)
+        return pm, optimizer, context_budgeter, recorder, lesson_resolver, identity, system_db
+    except Exception as exc:
+        logger.warning("Optimization runtime disabled for %s: %s", project_path, exc)
+        return None, None, None, None, None, None, None
+
+
+def _resolve_stage_totals(
+    project_memory: ProjectMemory | None,
+    project_path: str,
+    session_id: str,
+) -> dict[str, int]:
+    if project_memory is None:
+        return {}
+    calls = project_memory.list_llm_calls(
+        project_path=project_path, session_id=session_id, limit=5000
+    )
+    totals: dict[str, int] = {}
+    for call in calls:
+        stage = str(call.get("stage") or "unknown")
+        totals[stage] = (
+            totals.get(stage, 0)
+            + int(call.get("input_tokens", 0) or 0)
+            + int(call.get("output_tokens", 0) or 0)
+        )
+    return totals
+
+
+@dataclass
+class _StreamingState:
+    chunks: list[str] = field(default_factory=list)
+
+
+def _event_handler(event: LoopEvent, data: dict, state: _StreamingState) -> None:
     if event == LoopEvent.ITERATION_START:
-        _streaming_text = []
+        state.chunks = []
         console.print(f"\n[cyan]Iteration {data['iteration']}[/cyan]")
     elif event == LoopEvent.GENERATION_STREAM:
         chunk = data.get("chunk", "")
         if chunk:
-            _streaming_text.append(chunk)
+            state.chunks.append(chunk)
     elif event == LoopEvent.GENERATION_END:
-        _streaming_text = []
+        state.chunks = []
         console.print(f"  Generated (tokens: {data.get('tokens', 0)})")
     elif event == LoopEvent.EVALUATION_END:
         if data.get("passed"):
@@ -133,12 +364,21 @@ def _event_handler(event: LoopEvent, data: dict) -> None:
         )
 
 
+def _create_event_handler() -> tuple[_StreamingState, Any]:
+    state = _StreamingState()
+
+    def handler(event: LoopEvent, data: dict) -> None:
+        _event_handler(event, data, state)
+
+    return state, handler
+
+
 @click.group()
 @click.version_option(version="0.1.0")
 def cli() -> None:
     """MUSCLE - MiniMax Unified Self-Correcting Learning Engine
 
-    Autonomous code generation and improvement using MiniMax M2.7.
+    Project-first review, memory, and iterative generation using MiniMax M2.7.
     """
     pass
 
@@ -160,6 +400,23 @@ def cli() -> None:
 @click.option("--api-key", help="MINIMAX/M2.7 API key (or set MINIMAX_API_KEY env var)")
 @click.option("--hooks/--no-hooks", default=True, help="Enable/disable post-task review hooks")
 @click.option("--cli-path", help="Path to muscle CLI (auto-detected if not specified)")
+@click.option(
+    "--related-mode",
+    type=click.Choice(["off", "suggest"]),
+    default=None,
+    help="Project-level related-project suggestion mode",
+)
+@click.option(
+    "--pack-mode",
+    type=click.Choice(["off", "suggest", "auto"]),
+    default=None,
+    help="Project-level model-pack mode",
+)
+@click.option(
+    "--canonical-model",
+    default=None,
+    help="Manual canonical model override to apply during initialization",
+)
 def init(
     non_interactive: bool,
     platform: str,
@@ -167,11 +424,16 @@ def init(
     api_key: str | None,
     hooks: bool,
     cli_path: str | None,
+    related_mode: str | None,
+    pack_mode: str | None,
+    canonical_model: str | None,
 ) -> None:
     """Initialize MUSCLE for the current project.
 
-    Creates .muscle/ directory with configuration, knowledge base,
-    and memory files. Run this once per project.
+    Creates .muscle/ with configuration, project-local memory, and bounded
+    markdown memory files. This also bootstraps project-first growth settings
+    such as related-project suggestion mode, model-pack mode, and optional
+    canonical model selection.
 
     For OpenCode integration, run with --platform opencode.
     For Claude Code integration, run with --platform claude-code.
@@ -218,6 +480,8 @@ def init(
         project.triggers = ["review-gate", "manual"]
         project.github_enabled = False
         project.memory_location = ".muscle"
+        project.related_project_mode = related_mode or "suggest"
+        project.model_pack_mode = pack_mode or "suggest"
     else:
         console.print("[bold]Automation Level:[/bold]")
         console.print("  [1] Auto-fix (Recommended)")
@@ -304,6 +568,56 @@ def init(
             if custom_path:
                 project.cli_path = custom_path
 
+        if related_mode:
+            project.related_project_mode = related_mode
+        else:
+            console.print("\n[bold]Cross-Project Memory Suggestions:[/bold]")
+            console.print("  [1] Suggest related-project imports (Recommended)")
+            console.print("  [2] Keep this project fully isolated")
+            related_choice = console.input("Select [1-2] (default: 1): ").strip() or "1"
+            project.related_project_mode = "off" if related_choice == "2" else "suggest"
+
+        if pack_mode:
+            project.model_pack_mode = pack_mode
+        else:
+            console.print("\n[bold]Model-Pack Suggestions:[/bold]")
+            console.print("  [1] Suggest model packs when identity is known (Recommended)")
+            console.print("  [2] Auto-apply matching model packs when identity is known")
+            console.print("  [3] Disable model-pack suggestions")
+            pack_choice = console.input("Select [1-3] (default: 1): ").strip() or "1"
+            pack_modes = {"1": "suggest", "2": "auto", "3": "off"}
+            project.model_pack_mode = pack_modes.get(pack_choice, "suggest")
+
+    if canonical_model:
+        project.model_manual_override = canonical_model
+
+    identity = ModelIdentityResolver(SystemDatabase()).resolve(
+        requested_label=_requested_model_label(),
+        provider_endpoint=_provider_endpoint(),
+        manual_override=project.model_manual_override,
+    )
+    if not non_interactive and canonical_model is None and identity.canonical_model_key is None:
+        console.print("\n[bold]Model Identity:[/bold]")
+        console.print("MUSCLE could not confidently verify the backing model for this endpoint.")
+        console.print(
+            "Select a canonical model to enable model-specific packs, or press Enter to skip."
+        )
+        for idx, model_name in enumerate(SUPPORTED_CANONICAL_MODELS, start=1):
+            console.print(f"  [{idx}] {model_name}")
+        manual_choice = console.input("Select model number (or press Enter to skip): ").strip()
+        if manual_choice.isdigit():
+            selected_index = int(manual_choice) - 1
+            if 0 <= selected_index < len(SUPPORTED_CANONICAL_MODELS):
+                project.model_manual_override = SUPPORTED_CANONICAL_MODELS[selected_index]
+                identity = ModelIdentityResolver(SystemDatabase()).resolve(
+                    requested_label=_requested_model_label(),
+                    provider_endpoint=_provider_endpoint(),
+                    manual_override=project.model_manual_override,
+                )
+
+    project.canonical_model_key = identity.canonical_model_key
+    project.model_identity_source = identity.identity_source
+
     console.print()
     console.print("[bold]Initializing...[/bold]")
 
@@ -339,6 +653,76 @@ def init(
         # Store project enablement state in project_memory.db
         manager.set_project_enabled(project.path, True)
         console.print("[green]✓[/green] Project enabled in database")
+        manager.register_project(project.path)
+
+        try:
+            pm = ProjectMemory(str(project.path))
+            pm.insert_model_identity_history(str(project.path), identity.__dict__)
+        except Exception as exc:
+            logger.warning("Could not persist model identity during init: %s", exc)
+
+        suggestions = (
+            _suggest_related_projects(
+                project.path,
+                project,
+                refresh_current=True,
+            )
+            if project.related_project_mode != "off"
+            else []
+        )
+        if suggestions:
+            console.print("[green]✓[/green] Related-project suggestions available")
+            for suggestion in suggestions:
+                console.print(
+                    f"  - {suggestion['display_name']} "
+                    f"({suggestion['score']:.2f}) at {suggestion['project_path']}"
+                )
+                console.print(f"    why: {suggestion['why']}")
+
+            if not non_interactive:
+                choice = (
+                    console.input(
+                        "Import strongest match now? [s]napshot/[a]ttach/[Enter to skip]: "
+                    )
+                    .strip()
+                    .lower()
+                )
+                if choice in {"s", "a"}:
+                    best = suggestions[0]
+                    mode = "snapshot" if choice == "s" else "attach"
+                    result = pm.import_project_lessons(
+                        project_path=str(project.path),
+                        source_project_path=str(best["project_path"]),
+                        link_mode=mode,
+                        relatedness_score=float(best["score"]),
+                    )
+                    if mode == "attach":
+                        console.print(
+                            f"[green]✓[/green] Attached related project: {best['display_name']}"
+                        )
+                    else:
+                        console.print(
+                            f"[green]✓[/green] Imported {result['imported']} provisional lessons "
+                            f"from {best['display_name']}"
+                        )
+
+        console.print()
+        console.print("[bold]Setup Summary:[/bold]")
+        console.print(f"  Related-project mode: [cyan]{project.related_project_mode}[/cyan]")
+        console.print(f"  Model-pack mode: [cyan]{project.model_pack_mode}[/cyan]")
+        console.print(
+            f"  Canonical model: [cyan]{project.canonical_model_key or 'Unresolved'}[/cyan]"
+        )
+        if project.canonical_model_key is None:
+            console.print(
+                "  [dim]Tip: run 'muscle model select --canonical-model <model-key>' "
+                "to enable model-specific packs for unresolved endpoints.[/dim]"
+            )
+        if project.related_project_mode != "off":
+            console.print(
+                "  [dim]Tip: run 'muscle memory related' to review or import related-project "
+                "lessons later without auto-applying them.[/dim]"
+            )
 
         console.print()
         console.print("[bold green]MUSCLE initialized successfully![/bold green]")
@@ -375,6 +759,7 @@ def enable() -> None:
         return
 
     if manager.set_project_enabled(project_path, True):
+        manager.register_project(project_path)
         console.print("[green]MUSCLE enabled for this project.[/green]")
     else:
         console.print("[red]Failed to enable MUSCLE.[/red]")
@@ -411,8 +796,9 @@ def disable() -> None:
 def status() -> None:
     """Show MUSCLE status for the current project.
 
-    Displays whether MUSCLE is enabled/disabled, project info,
-    database path, and review counts.
+    Displays whether MUSCLE is enabled, the active project config, the
+    project-local database path, review/run counts, and project-first growth
+    state needed to reason about related-project and model-pack overlays.
 
     Examples:
 
@@ -446,8 +832,13 @@ def status() -> None:
         table.add_row("Project", project.name)
         table.add_row("Platform", project.platform)
         table.add_row("Languages", ", ".join(project.languages) if project.languages else "None")
+        table.add_row("Related Memory Mode", getattr(project, "related_project_mode", "suggest"))
+        table.add_row("Model Pack Mode", getattr(project, "model_pack_mode", "suggest"))
     else:
         table.add_row("Project", project_path.name)
+
+    if project is not None:
+        manager.register_project(project.path)
 
     # Database path
     db_path = muscle_dir / "project_memory.db"
@@ -464,6 +855,31 @@ def status() -> None:
         table.add_row("Total Findings", str(stats.get("total_findings", 0)))
         table.add_row("Learned Rules", str(stats.get("total_learned_rules", 0)))
         table.add_row("Skills", str(stats.get("total_skills", 0)))
+        table.add_row("Related Projects", str(stats.get("related_projects", 0)))
+        table.add_row("Transferred Lessons", str(stats.get("transferred_lessons", 0)))
+
+        identity = pm.get_latest_model_identity(str(project_path))
+        if identity:
+            table.add_row(
+                "Canonical Model",
+                str(identity.get("canonical_model_key") or "Unresolved"),
+            )
+            table.add_row(
+                "Model Identity",
+                f"{identity.get('identity_source', 'unresolved')} "
+                f"({float(identity.get('confidence', 0.0) or 0.0):.2f})",
+            )
+            pack_count = 0
+            canonical_model = identity.get("canonical_model_key")
+            if canonical_model:
+                pack_count = len(
+                    [
+                        pack
+                        for pack in SystemDatabase().list_model_packs()
+                        if pack.get("canonical_model_key") == canonical_model
+                    ]
+                )
+            table.add_row("Active Model Packs", str(pack_count))
     except Exception:
         table.add_row("Reviews", "N/A")
 
@@ -638,14 +1054,36 @@ def run(
 
     m27_client = _create_m27_client()
     budget_manager = BudgetManager(mode=budget_mode, fixed_limit=budget_tokens)
+    resolved_run_project_path, _ = _resolve_project_context(Path(output).resolve())
+    project_path = str(resolved_run_project_path)
 
     if not m27_client.api_key:
         console.print("[red]Error: MINIMAX_API_KEY not set[/red]")
         console.print("Set it with: export MINIMAX_API_KEY='your-key'")
         sys.exit(1)
 
-    code_gen = CodeGenerator(m27_client)
-    evolver = Evolver(m27_client, use_kb=kb, kb_path=kb_path)
+    pm, _, context_budgeter, telemetry_recorder, lesson_resolver, _, _ = (
+        _attach_optimization_runtime(
+            project_path,
+            m27_client,
+        )
+    )
+
+    code_gen = CodeGenerator(
+        m27_client,
+        cost_optimizer=cost_optimizer,
+        context_budgeter=context_budgeter,
+        project_path=project_path,
+        lesson_resolver=lesson_resolver,
+    )
+    evolver = Evolver(
+        m27_client,
+        use_kb=kb,
+        kb_path=kb_path,
+        context_budgeter=context_budgeter,
+        project_path=project_path,
+        lesson_resolver=lesson_resolver,
+    )
 
     def evaluator(output_dir: str) -> Any:
         from .evaluator_registry import EvaluatorRegistry
@@ -654,9 +1092,19 @@ def run(
         return registry.evaluate(output_dir, config.language, config.eval_mode)
 
     def code_gen_wrapper(
-        task: str, strategy: str | None, output_dir: str | None
+        task: str,
+        strategy: str | None,
+        output_dir: str | None,
+        session_id: str | None = None,
     ) -> tuple[str, Any]:
-        return code_gen.generate(task, strategy or "", output_dir or ".")
+        return code_gen.generate(
+            task,
+            strategy or "",
+            output_dir or ".",
+            session_id=session_id,
+        )
+
+    code_gen_wrapper.generate_streaming = code_gen.generate_streaming  # type: ignore[attr-defined]
 
     git_enabled = git if git is not None else interactive
     git_repo_path = git_repo if git_enabled else None
@@ -668,6 +1116,7 @@ def run(
     webhook_notifier = WebhookNotifier(webhook_url or os.environ.get("MUSCLE_WEBHOOK_URL"))
 
     interactive_handler = InteractiveHandler(enabled=interactive)
+    stream_state, event_handler = _create_event_handler()
 
     controller = LoopController(
         config=config,
@@ -675,12 +1124,13 @@ def run(
         evaluator=evaluator,
         evolver=evolver.evolve,
         budget_manager=budget_manager.check_budget,
-        event_callback=_event_handler,
+        event_callback=event_handler,
         webhook_notifier=webhook_notifier,
         git_repo_path=git_repo_path,
         git_auto_push=git_push if git_enabled else False,
         interactive=interactive_handler,
         session_manager=session_manager,
+        project_memory=pm,
     )
 
     try:
@@ -689,7 +1139,7 @@ def run(
 
         def streaming_callback(chunk: str) -> None:
             nonlocal streaming_display, live
-            full_text = "".join(_streaming_text) + chunk
+            full_text = "".join(stream_state.chunks) + chunk
             if len(full_text) > 2000:
                 full_text = "..." + full_text[-1997:]
             streaming_display = Text(full_text, style="cyan")
@@ -717,7 +1167,6 @@ def run(
 
         # Structured DB ingestion for task run
         try:
-            project_path = str(Path.cwd())
             pm = ProjectMemory(project_path)
             ingestor = LearningIngestor(pm)
             duration_ms = int(ctx.stats.total_duration_seconds * 1000)
@@ -766,6 +1215,9 @@ def run(
         controller.request_abort()
         console.print("\n[yellow]Aborted by user[/yellow]")
         sys.exit(130)
+    finally:
+        if telemetry_recorder is not None:
+            telemetry_recorder.close()
 
 
 @cli.command()
@@ -869,8 +1321,31 @@ def resume(session_id: str) -> None:
         console.print("Set it with: export MINIMAX_API_KEY='your-key'")
         sys.exit(1)
 
-    code_gen = CodeGenerator(m27_client)
-    evolver = Evolver(m27_client, use_kb=True, kb_path=resume_ctx.config.kb_path)
+    resolved_resume_project_path, _ = _resolve_project_context(
+        Path(resume_ctx.config.output_dir).resolve()
+    )
+    project_path = str(resolved_resume_project_path)
+    pm, _, context_budgeter, telemetry_recorder, lesson_resolver, _, _ = (
+        _attach_optimization_runtime(
+            project_path,
+            m27_client,
+        )
+    )
+
+    code_gen = CodeGenerator(
+        m27_client,
+        context_budgeter=context_budgeter,
+        project_path=project_path,
+        lesson_resolver=lesson_resolver,
+    )
+    evolver = Evolver(
+        m27_client,
+        use_kb=True,
+        kb_path=resume_ctx.config.kb_path,
+        context_budgeter=context_budgeter,
+        project_path=project_path,
+        lesson_resolver=lesson_resolver,
+    )
     budget_manager = BudgetManager(
         mode=resume_ctx.config.budget_mode,
         fixed_limit=resume_ctx.config.budget_tokens,
@@ -888,19 +1363,31 @@ def resume(session_id: str) -> None:
         )
 
     def code_gen_wrapper(
-        task: str, strategy: str | None, output_dir: str | None
+        task: str,
+        strategy: str | None,
+        output_dir: str | None,
+        session_id: str | None = None,
     ) -> tuple[str, Any]:
-        return code_gen.generate(task, strategy or "", output_dir or ".")
+        return code_gen.generate(
+            task,
+            strategy or "",
+            output_dir or ".",
+            session_id=session_id,
+        )
 
+    code_gen_wrapper.generate_streaming = code_gen.generate_streaming  # type: ignore[attr-defined]
+
+    stream_state, event_handler = _create_event_handler()
     controller = LoopController(
         config=resume_ctx.config,
         code_generator=code_gen_wrapper,
         evaluator=evaluator,
         evolver=evolver.evolve,
         budget_manager=budget_manager.check_budget,
-        event_callback=_event_handler,
+        event_callback=event_handler,
         interactive=InteractiveHandler(enabled=resume_ctx.config.interactive),
         session_manager=session_manager,
+        project_memory=pm,
     )
 
     try:
@@ -909,7 +1396,7 @@ def resume(session_id: str) -> None:
 
         def streaming_callback(chunk: str) -> None:
             nonlocal streaming_display, live
-            full_text = "".join(_streaming_text) + chunk
+            full_text = "".join(stream_state.chunks) + chunk
             if len(full_text) > 2000:
                 full_text = "..." + full_text[-1997:]
             streaming_display = Text(full_text, style="cyan")
@@ -946,6 +1433,9 @@ def resume(session_id: str) -> None:
         controller.request_abort()
         console.print("\n[yellow]Aborted by user[/yellow]")
         sys.exit(130)
+    finally:
+        if telemetry_recorder is not None:
+            telemetry_recorder.close()
 
 
 @cli.command()
@@ -1491,6 +1981,36 @@ def _truncate(s: str, max_len: int) -> str:
     return s[: max_len - 3] + "..."
 
 
+def _source_project_name(source_project_path: str) -> str:
+    """Return a compact label for a source project path."""
+    if not source_project_path:
+        return "-"
+    return Path(source_project_path).name or source_project_path
+
+
+def _parse_json_dict(payload: Any) -> dict[str, Any]:
+    """Parse a JSON payload into a dictionary for CLI rendering."""
+    if isinstance(payload, dict):
+        return payload
+    if not payload:
+        return {}
+    try:
+        parsed = json.loads(str(payload))
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _lesson_usage_source_label(row: dict[str, Any]) -> str:
+    """Format a compact source label for one lesson-usage event."""
+    lesson_source = str(row.get("lesson_source") or "unknown")
+    if lesson_source == "related_project":
+        return f"related:{_source_project_name(str(row.get('source_project_path') or ''))}"
+    if lesson_source == "model_pack":
+        return f"pack:{str(row.get('canonical_model_key') or 'unknown')}"
+    return lesson_source
+
+
 def _format_size(size_bytes: float) -> str:
     """Format byte size as human-readable string."""
     for unit in ("B", "KB", "MB", "GB"):
@@ -1688,6 +2208,17 @@ def review(
         execution,
     )
     project_path = str(resolved_project_path)
+    configured_workflow = workflow
+    try:
+        optimization_memory = ProjectMemory(project_path)
+        optimization_settings = WorkflowOptimizer(
+            optimization_memory,
+            project_path,
+        ).get_applied_settings()
+        if configured_workflow is None:
+            configured_workflow = optimization_settings.get("optimize.default_workflow")
+    except Exception as exc:
+        logger.warning("Could not resolve optimization defaults for %s: %s", project_path, exc)
 
     if shadow:
         from .code_review.shadow_worker import WorkerManager
@@ -1698,12 +2229,13 @@ def review(
             mode=mode_map.get(mode, ReviewMode.REVIEW),
             intensity=intensity_map.get(intensity, Intensity.MODERATE),
             execution_mode=execution_mode,
-            workflow_name=workflow,
+            workflow_name=configured_workflow,
+            detached=True,
         )
         console.print(f"[cyan]Shadow job created: {job_id}[/cyan]")
         console.print("Check status with: muscle probe")
         console.print("Get results with: muscle diagnosis")
-        console.print("[dim]Worker started in background...[/dim]")
+        console.print("[dim]Detached worker launched in background...[/dim]")
         return
 
     def event_handler(event: ReviewEvent, data: dict) -> None:
@@ -1748,6 +2280,12 @@ def review(
     from .m27_client import M27Client
 
     m27_client = M27Client(api_key=api_key)
+    pm, optimizer, context_budgeter, telemetry_recorder, lesson_resolver, _, _ = (
+        _attach_optimization_runtime(
+            project_path,
+            m27_client,
+        )
+    )
 
     config = ReviewConfig(
         target_path=str(resolved_target),
@@ -1756,15 +2294,18 @@ def review(
         intensity=intensity_map.get(intensity, Intensity.MODERATE),
         severity_threshold=severity_map.get(severity, Severity.LOW),
         max_fixes_per_round=max_fixes,
-        workflow_name=workflow,
-        review_profile="comprehensive" if workflow == "review-comprehensive" else "smart",
+        workflow_name=configured_workflow,
+        review_profile=(
+            "comprehensive" if configured_workflow == "review-comprehensive" else "smart"
+        ),
         execution_mode=execution_mode,
         worktree_enabled=execution_mode == "worktree",
     )
 
     # Initialize ProjectMemory and LearningIngestor early for correction signal callback
     try:
-        pm = ProjectMemory(project_path)
+        if pm is None:
+            pm = ProjectMemory(project_path)
         ingestor = LearningIngestor(pm)
     except Exception as e:
         logger.warning(f"ProjectMemory init failed: {e}")
@@ -1803,11 +2344,40 @@ def review(
         event_callback=event_handler,
         correction_signal_callback=on_correction_signal,
         project_path=project_path,
+        context_budgeter=context_budgeter,
+        lesson_resolver=lesson_resolver,
     )
 
     try:
         result = controller.run()
         review_result = controller.get_review_result()
+        savings_estimate = None
+        if optimizer is not None and review_result is not None:
+            stage_totals = _resolve_stage_totals(pm, project_path, review_result.session_id)
+            target_type = "file" if resolved_target.is_file() else "directory"
+            try:
+                savings_estimate = optimizer.record_review_outcome(
+                    session_id=review_result.session_id,
+                    workflow_name=review_result.workflow_name or configured_workflow or "legacy",
+                    language=language,
+                    complexity=str(
+                        (review_result.scope_summary or {}).get("complexity", "unknown")
+                    ),
+                    target_type=target_type,
+                    total_tokens=result.stats.tokens_used,
+                    duration_ms=int(result.stats.duration_seconds * 1000),
+                    valid_findings=len(review_result.issues),
+                    verified_fixes=len(review_result.fixed_issues),
+                    one_shot_verified_fixes=len(review_result.fixed_issues),
+                    high_critical_findings=(
+                        review_result.critical_count + review_result.high_count
+                    ),
+                    validation_success=result.stats.failed_fixes == 0,
+                    success=True,
+                    stage_totals=stage_totals,
+                )
+            except Exception as exc:
+                logger.warning("Failed to record optimization outcome: %s", exc)
 
         # Self-learning: update CLAUDE.md, MEMORY.md, and skills
         if review_result:
@@ -1891,6 +2461,31 @@ def review(
                     console.print(f"Low: {review_result.low_count}")
                 if review_result.info_count:
                     console.print(f"Info: {review_result.info_count}")
+                if savings_estimate and savings_estimate.baseline_tokens is not None:
+                    delta_label = "saved" if savings_estimate.delta_tokens >= 0 else "overspend"
+                    console.print(
+                        f"Optimization {delta_label}: {abs(savings_estimate.delta_tokens):,} tokens "
+                        f"({savings_estimate.estimation_type}, confidence {savings_estimate.confidence:.0%})"
+                    )
+                if optimizer is not None:
+                    status = optimizer.get_status()
+                    hotspots = status.get("hotspots", [])
+                    recommendations = status.get("recommendations", [])
+                    if hotspots:
+                        hotspot = hotspots[0]
+                        console.print(
+                            "Top token hotspot: "
+                            f"{hotspot.get('stage', 'unknown')} "
+                            f"({int(hotspot.get('total_tokens', 0) or 0):,} tokens)"
+                        )
+                    if recommendations:
+                        recommendation = recommendations[0]
+                        console.print(
+                            "Optimization suggestion: "
+                            f"{recommendation.get('decision_scope')} -> "
+                            f"{recommendation.get('recommended_value')} "
+                            f"({recommendation.get('reason', '')})"
+                        )
 
         if output and result.handoff_plan:
             Path(output).write_text(result.handoff_plan.markdown, encoding="utf-8")
@@ -1899,6 +2494,174 @@ def review(
     except KeyboardInterrupt:
         console.print("\n[yellow]Review interrupted by user[/yellow]")
         sys.exit(130)
+    finally:
+        if telemetry_recorder is not None:
+            telemetry_recorder.close()
+
+
+@cli.group(name="optimize")
+def optimize_group() -> None:
+    """Project-local optimization and token-efficiency commands."""
+
+
+@optimize_group.command(name="status")
+def optimize_status() -> None:
+    """Show optimization status for the current project."""
+    project_root, _ = _resolve_project_context(Path.cwd())
+    project_path = str(project_root)
+    pm = ProjectMemory(project_path)
+    optimizer = WorkflowOptimizer(pm, project_path)
+    status = optimizer.get_status()
+    savings = status["savings"]
+
+    summary = Table(title="Optimization Status")
+    summary.add_column("Metric", style="cyan")
+    summary.add_column("Value", style="white")
+    summary.add_row("Project", project_path)
+    summary.add_row("Net Tokens Saved", f"{int(savings.get('net_tokens_saved', 0) or 0):,}")
+    summary.add_row("Gross Tokens Saved", f"{int(savings.get('gross_tokens_saved', 0) or 0):,}")
+    summary.add_row("Overspend Tokens", f"{int(savings.get('overspend_tokens', 0) or 0):,}")
+    summary.add_row("Confidence", f"{float(savings.get('confidence', 0.0) or 0.0):.0%}")
+    console.print(summary)
+
+    hotspots_table = Table(title="Top Token Hotspots")
+    hotspots_table.add_column("Stage", style="magenta")
+    hotspots_table.add_column("Calls", justify="right")
+    hotspots_table.add_column("Tokens", justify="right")
+    hotspots_table.add_column("Avg Context", justify="right")
+    hotspots = status.get("hotspots", [])
+    if hotspots:
+        for hotspot in hotspots:
+            hotspots_table.add_row(
+                str(hotspot.get("stage", "unknown")),
+                str(hotspot.get("call_count", 0)),
+                f"{int(hotspot.get('total_tokens', 0) or 0):,}",
+                str(int(float(hotspot.get("avg_context_chars", 0) or 0))),
+            )
+    else:
+        hotspots_table.add_row("No telemetry yet", "0", "0", "0")
+    console.print(hotspots_table)
+
+
+@optimize_group.command(name="recommendations")
+def optimize_recommendations() -> None:
+    """Show safe optimization recommendations for the current project."""
+    project_root, _ = _resolve_project_context(Path.cwd())
+    project_path = str(project_root)
+    pm = ProjectMemory(project_path)
+    optimizer = WorkflowOptimizer(pm, project_path)
+    recommendations = optimizer.build_recommendations()
+
+    table = Table(title="Optimization Recommendations")
+    table.add_column("Type", style="cyan")
+    table.add_column("Scope", style="magenta")
+    table.add_column("Current", style="white")
+    table.add_column("Recommended", style="green")
+    table.add_column("Confidence", justify="right")
+    table.add_column("Reason", style="dim")
+
+    if not recommendations:
+        console.print("[yellow]No safe recommendations yet[/yellow]")
+        table.add_row("none", "—", "—", "—", "0%", "No safe recommendations yet")
+    else:
+        for recommendation in recommendations:
+            table.add_row(
+                recommendation.decision_type,
+                recommendation.decision_scope,
+                recommendation.current_value,
+                recommendation.recommended_value,
+                f"{recommendation.confidence:.0%}",
+                recommendation.reason[:80],
+            )
+    console.print(table)
+
+
+@optimize_group.command(name="apply")
+@click.option(
+    "--safe-only/--no-safe-only", default=True, help="Apply only safe runtime optimizations"
+)
+def optimize_apply(safe_only: bool) -> None:
+    """Apply safe project-local optimization recommendations."""
+    project_root, _ = _resolve_project_context(Path.cwd())
+    project_path = str(project_root)
+    pm = ProjectMemory(project_path)
+    optimizer = WorkflowOptimizer(pm, project_path)
+    applied = optimizer.apply_recommendations(safe_only=safe_only)
+    if not applied:
+        console.print("[yellow]No recommendations were applied[/yellow]")
+        return
+
+    table = Table(title="Applied Optimizations")
+    table.add_column("Type", style="cyan")
+    table.add_column("Scope", style="magenta")
+    table.add_column("Value", style="green")
+    for recommendation in applied:
+        table.add_row(
+            recommendation.decision_type,
+            recommendation.decision_scope,
+            recommendation.recommended_value,
+        )
+    console.print(table)
+
+
+@optimize_group.command(name="history")
+def optimize_history() -> None:
+    """Show persisted optimization decisions for the current project."""
+    project_root, _ = _resolve_project_context(Path.cwd())
+    project_path = str(project_root)
+    pm = ProjectMemory(project_path)
+    decisions = pm.list_optimization_decisions(project_path, limit=50)
+
+    table = Table(title="Optimization History")
+    table.add_column("When", style="dim")
+    table.add_column("Type", style="cyan")
+    table.add_column("Scope", style="magenta")
+    table.add_column("Applied", style="green")
+    table.add_column("Confidence", justify="right")
+
+    if not decisions:
+        table.add_row("—", "none", "—", "no", "0%")
+    else:
+        for decision in decisions:
+            table.add_row(
+                str(decision.get("created_at", ""))[:16],
+                str(decision.get("decision_type", "")),
+                str(decision.get("decision_scope", "")),
+                "yes" if int(decision.get("applied", 0) or 0) else "no",
+                f"{float(decision.get('confidence', 0.0) or 0.0):.0%}",
+            )
+    console.print(table)
+
+
+@optimize_group.command(name="import")
+@click.option(
+    "--provider",
+    default="all",
+    type=click.Choice(["claude", "codex", "all"]),
+    help="External transcript provider to import",
+)
+@click.option(
+    "--since", "since_days", default=30, type=int, help="Import sessions from the last N days"
+)
+def optimize_import(provider: str, since_days: int) -> None:
+    """Import external Claude/Codex benchmark sessions for the current project."""
+    project_root, _ = _resolve_project_context(Path.cwd())
+    project_path = str(project_root)
+    pm = ProjectMemory(project_path)
+    importer = ExternalBenchmarkImporter(pm, project_path)
+    summary = importer.import_sessions(provider=provider, since_days=since_days)
+
+    table = Table(title="Imported Benchmark Sessions")
+    table.add_column("Provider", style="cyan")
+    table.add_column("Sessions", justify="right")
+    table.add_column("Turns", justify="right")
+    for provider_name, provider_summary in summary.items():
+        table.add_row(
+            provider_name,
+            str(provider_summary.get("sessions_imported", 0)),
+            str(provider_summary.get("turns_imported", 0)),
+        )
+    console.print(table)
 
 
 @cli.command(name="lifeline")
@@ -2206,6 +2969,31 @@ def long_eval_cleanup(days: int, force: bool) -> None:
     console.print(f"[green]Removed {removed} old reports.[/green]")
 
 
+def _run_benchmark_release_invariants() -> dict[str, Any]:
+    """Run the focused offline guardrail tests used by release-gate mode."""
+    command = [sys.executable, "-m", "pytest", *RELEASE_GATE_TEST_TARGETS, "-q"]
+    result = subprocess.run(
+        command,
+        cwd=str(Path.cwd()),
+        capture_output=True,
+        text=True,
+    )
+    stdout_lines = [line for line in result.stdout.strip().splitlines() if line.strip()]
+    stderr_lines = [line for line in result.stderr.strip().splitlines() if line.strip()]
+    return {
+        "checked": True,
+        "passed": result.returncode == 0,
+        "summary": "Focused offline guardrails for normal run/review paths and installed-pack prompt resolution.",
+        "details": {
+            "command": " ".join(command),
+            "targets": list(RELEASE_GATE_TEST_TARGETS),
+            "returncode": result.returncode,
+            "stdout_tail": stdout_lines[-12:],
+            "stderr_tail": stderr_lines[-12:],
+        },
+    }
+
+
 @long_eval_group.command(name="benchmark")
 @click.option(
     "--baseline",
@@ -2224,19 +3012,54 @@ def long_eval_cleanup(days: int, force: bool) -> None:
     default=True,
     help="Include review_runs/review_findings history replay trends",
 )
-def long_eval_benchmark(baseline: str, candidate: str, history: bool) -> None:
+@click.option(
+    "--suite",
+    default="all",
+    type=click.Choice(
+        [
+            "all",
+            "core-review",
+            "neutral-baseline",
+            "related-project",
+            "unrelated-project",
+            "model-pack",
+        ]
+    ),
+    help="Benchmark fixture suite to run",
+)
+@click.option(
+    "--enforce-gates/--no-enforce-gates",
+    default=False,
+    help="Evaluate release gates, save release evidence, and exit non-zero on failures",
+)
+def long_eval_benchmark(
+    baseline: str,
+    candidate: str,
+    history: bool,
+    suite: str,
+    enforce_gates: bool,
+) -> None:
     """Run the manual review benchmark harness."""
     from .code_review.review_benchmark import ReviewBenchmarkRunner
 
-    console.print(f"[cyan]Running benchmark: baseline={baseline}, candidate={candidate}[/cyan]")
+    if enforce_gates and suite != "all":
+        raise click.ClickException(
+            "Release gate enforcement requires running the full benchmark suite."
+        )
+
+    console.print(
+        f"[cyan]Running benchmark: baseline={baseline}, candidate={candidate}, suite={suite}[/cyan]"
+    )
     runner = ReviewBenchmarkRunner(str(Path.cwd()))
     report = runner.run_benchmark(
         baseline=baseline,
         candidate=candidate,
         include_history=history,
+        suite=suite,
     )
     aggregate = report["aggregate"]
     thresholds = report["thresholds"]
+    benchmark_gates = dict(report.get("benchmark_gates", {}))
     console.print("[bold]Benchmark Complete[/bold]")
     console.print(
         f"High/Critical recall: {aggregate['baseline']['high_critical_recall']:.2%} -> "
@@ -2257,6 +3080,25 @@ def long_eval_benchmark(baseline: str, candidate: str, history: bool) -> None:
         f"fp_not_worse={thresholds['false_positive_rate_not_worse']}, "
         f"token-30%={thresholds['token_cost_down_30pct']}"
     )
+    if benchmark_gates:
+        console.print(f"Benchmark gates overall: {benchmark_gates.get('overall_passed', False)}")
+
+    if enforce_gates:
+        console.print("[cyan]Running focused release invariant checks...[/cyan]")
+        release_evidence = runner.build_release_evidence(
+            report,
+            operational_invariants={"offline_guardrails": _run_benchmark_release_invariants()},
+        )
+        evidence_paths = runner.write_release_evidence(release_evidence)
+        console.print(f"Release evidence: {evidence_paths['json']}")
+        failed_gates = [
+            gate_name
+            for gate_name, gate in release_evidence["release_gates"]["gates"].items()
+            if not gate["passed"]
+        ]
+        if failed_gates:
+            raise click.ClickException("Release gates failed: " + ", ".join(sorted(failed_gates)))
+        console.print("[green]Release gates passed[/green]")
 
 
 def _get_status_color(status: str) -> str:
@@ -2284,10 +3126,18 @@ def memory_group() -> None:
 @memory_group.command(name="status")
 def memory_status() -> None:
     """Show memory database statistics (rules, reviews, decisions)."""
-    project_path = str(Path.cwd())
+    resolved_project_path, _ = _resolve_project_context(Path.cwd())
+    project_path = str(resolved_project_path)
     try:
         pm = ProjectMemory(project_path)
         stats = pm.get_statistics(project_path)
+        recommendations = pm.list_transferred_lesson_recommendations(
+            project_path=project_path,
+            only_candidates=True,
+            limit=500,
+        )
+        promotion_candidates = sum(1 for row in recommendations if row["promotion_candidate"])
+        archive_candidates = sum(1 for row in recommendations if row["archive_candidate"])
 
         db_path = pm._db_path
         schema_version = pm.get_schema_version()
@@ -2302,11 +3152,50 @@ def memory_status() -> None:
         table.add_row("Total Findings", str(stats.get("total_findings", 0)))
         table.add_row("Skills", str(stats.get("total_skills", 0)))
         table.add_row("Agents", str(stats.get("total_agents", 0)))
+        table.add_row("Related Projects", str(stats.get("related_projects", 0)))
+        table.add_row("Transferred Lessons", str(stats.get("transferred_lessons", 0)))
+        table.add_row(
+            "Validated Transferred Lessons",
+            str(stats.get("validated_transferred_lessons", 0)),
+        )
+        table.add_row(
+            "Promoted Transferred Lessons",
+            str(stats.get("promoted_transferred_lessons", 0)),
+        )
+        table.add_row(
+            "Archived Transferred Lessons",
+            str(stats.get("archived_transferred_lessons", 0)),
+        )
+        table.add_row("Promotion Candidates", str(promotion_candidates))
+        table.add_row("Archive Candidates", str(archive_candidates))
         avg_rate = stats.get("avg_rule_success_rate")
         avg_rate_str = f"{avg_rate:.1%}" if avg_rate is not None else "N/A"
         table.add_row("Avg Rule Success Rate", avg_rate_str)
 
         console.print(table)
+
+        external_lessons = pm.list_transferred_lesson_recommendations(
+            project_path=project_path,
+            include_inactive=True,
+            limit=5,
+        )
+        if external_lessons:
+            console.print()
+            lesson_table = Table(title="Transferred Lesson Snapshot")
+            lesson_table.add_column("ID", style="cyan", justify="right")
+            lesson_table.add_column("Source", style="blue")
+            lesson_table.add_column("Status", style="magenta")
+            lesson_table.add_column("Recommendation", style="green")
+            lesson_table.add_column("Why", style="white")
+            for lesson in external_lessons:
+                lesson_table.add_row(
+                    str(int(lesson.get("id", 0) or 0)),
+                    _source_project_name(str(lesson.get("source_project_path", "") or "")),
+                    str(lesson.get("validation_status", "")),
+                    str(lesson.get("recommendation", "")),
+                    _truncate(str(lesson.get("status_explanation", "")), 64),
+                )
+            console.print(lesson_table)
     except Exception as e:
         console.print(f"[red]Failed to get memory status: {e}[/red]")
 
@@ -2315,12 +3204,23 @@ def memory_status() -> None:
 @click.option("--limit", "-n", default=10, help="Number of entries to show")
 def memory_history(limit: int) -> None:
     """Show recent review sessions and memory decisions."""
-    project_path = str(Path.cwd())
+    resolved_project_path, _ = _resolve_project_context(Path.cwd())
+    project_path = str(resolved_project_path)
     try:
         pm = ProjectMemory(project_path)
 
         runs = pm.list_review_runs(project_path=project_path, limit=limit)
         decisions = pm.list_decisions(project_path=project_path, limit=limit)
+        transferred = pm.list_transferred_lesson_recommendations(
+            project_path=project_path,
+            include_inactive=True,
+            limit=limit,
+        )
+        transfer_audit = pm.list_action_logs(
+            project_path=project_path,
+            action_types=TRANSFER_AUDIT_ACTIONS,
+            limit=limit,
+        )
 
         console.print("[bold cyan]Recent Review Runs[/bold cyan]")
         if not runs:
@@ -2353,16 +3253,784 @@ def memory_history(limit: int) -> None:
             dec_table.add_column("Source", style="yellow")
             dec_table.add_column("Reasoning", style="green")
             for d in decisions:
+                source_label = str(d.get("source_table", "") or "")
+                if source_label == "transferred_lessons":
+                    try:
+                        evidence = json.loads(str(d.get("evidence_json", "{}") or "{}"))
+                    except (TypeError, ValueError):
+                        evidence = {}
+                    source_label = f"transferred:{_source_project_name(str(evidence.get('source_project_path', '') or ''))}"
                 reasoning = _truncate(d.get("reasoning", ""), 50)
                 dec_table.add_row(
                     str(d["id"]),
                     d.get("decision_type", "unknown"),
-                    d.get("source_table", ""),
+                    source_label,
                     reasoning,
                 )
             console.print(dec_table)
+
+        console.print()
+        console.print("[bold cyan]Transferred Lesson Lifecycle[/bold cyan]")
+        if not transferred:
+            console.print("[yellow]No transferred lessons recorded.[/yellow]")
+        else:
+            lesson_table = Table()
+            lesson_table.add_column("ID", style="cyan", width=4)
+            lesson_table.add_column("Source", style="blue")
+            lesson_table.add_column("Status", style="magenta")
+            lesson_table.add_column("Evidence", style="yellow")
+            lesson_table.add_column("Why", style="green")
+            for row in transferred:
+                evidence = (
+                    f"{int(row.get('success_count', 0) or 0)}/"
+                    f"{int(row.get('validation_count', 0) or 0)} "
+                    f"({float(row.get('success_rate', 0.0) or 0.0):.0%})"
+                )
+                lesson_table.add_row(
+                    str(int(row.get("id", 0) or 0)),
+                    _source_project_name(str(row.get("source_project_path", "") or "")),
+                    str(row.get("validation_status", "")),
+                    evidence,
+                    _truncate(
+                        str(row.get("status_explanation") or row.get("recommendation_reason", "")),
+                        70,
+                    ),
+                )
+            console.print(lesson_table)
+
+        console.print()
+        console.print("[bold cyan]Transferred Lesson Audit[/bold cyan]")
+        if not transfer_audit:
+            console.print("[yellow]No transferred-lesson audit entries recorded.[/yellow]")
+        else:
+            audit_table = Table()
+            audit_table.add_column("When", style="dim", width=16)
+            audit_table.add_column("Action", style="cyan")
+            audit_table.add_column("Entity", style="yellow")
+            audit_table.add_column("Details", style="white")
+            for entry in transfer_audit:
+                formatted = format_action_log_entry(entry)
+                audit_table.add_row(
+                    formatted["when"],
+                    formatted["action"],
+                    formatted["entity"],
+                    _truncate(formatted["details"], 72),
+                )
+            console.print(audit_table)
+
+        usage_events = pm.list_lesson_usage_events(project_path=project_path, limit=limit)
+        console.print()
+        console.print("[bold cyan]Lesson Usage Events[/bold cyan]")
+        if not usage_events:
+            console.print("[yellow]No lesson-usage events recorded.[/yellow]")
+        else:
+            usage_table = Table()
+            usage_table.add_column("When", style="dim", width=16)
+            usage_table.add_column("Stage", style="cyan")
+            usage_table.add_column("Source", style="magenta")
+            usage_table.add_column("Lesson", style="yellow")
+            usage_table.add_column("Outcome", style="green")
+            usage_table.add_column("Details", style="white")
+            for row in usage_events:
+                metadata = _parse_json_dict(row.get("metadata_json"))
+                details = (
+                    str(metadata.get("reason") or "")
+                    or str(metadata.get("applied_from") or "")
+                    or str(metadata.get("validation_note") or "")
+                )
+                usage_table.add_row(
+                    str(row.get("created_at", ""))[:16],
+                    str(row.get("stage") or "—"),
+                    _truncate(_lesson_usage_source_label(row), 24),
+                    _truncate(str(row.get("lesson_key") or "—"), 24),
+                    str(row.get("outcome") or "pending"),
+                    _truncate(details, 40) if details else "—",
+                )
+            console.print(usage_table)
     except Exception as e:
         console.print(f"[red]Failed to get memory history: {e}[/red]")
+
+
+@memory_group.command(name="related")
+@click.option(
+    "--refresh/--no-refresh",
+    default=True,
+    show_default=True,
+    help="Refresh the current project fingerprint before suggesting overlaps",
+)
+@click.option(
+    "--prune-stale/--no-prune-stale",
+    default=False,
+    show_default=True,
+    help="Prune missing or stale project registrations before suggesting overlaps",
+)
+@click.option(
+    "--stale-days",
+    default=90,
+    show_default=True,
+    help="Treat projects not refreshed within this many days as stale",
+)
+@click.option(
+    "--include-stale/--hide-stale",
+    default=False,
+    show_default=True,
+    help="Include stale registrations in the suggestion table",
+)
+def memory_related(refresh: bool, prune_stale: bool, stale_days: int, include_stale: bool) -> None:
+    """Suggest the most related registered MUSCLE projects."""
+    project_path, project = _resolve_project_context(Path.cwd())
+    from .tui.project_manager import ProjectManager
+
+    if refresh:
+        ProjectManager(base_path=project_path).register_project(project_path)
+
+    if prune_stale:
+        pruned = SystemDatabase().prune_registered_projects(
+            stale_after_days=stale_days,
+            keep_paths=[str(project_path.resolve())],
+        )
+        if pruned["removed"]:
+            console.print(
+                f"[cyan]Pruned[/cyan] {pruned['removed']} stale registrations "
+                f"({pruned['missing_removed']} missing, {pruned['stale_removed']} stale)."
+            )
+
+    suggestions = _suggest_related_projects(
+        project_path,
+        project,
+        refresh_current=False,
+        stale_days=stale_days,
+        include_stale=include_stale,
+    )
+    if not suggestions:
+        console.print(
+            "[yellow]No related MUSCLE projects found above the overlap threshold.[/yellow]"
+        )
+        return
+
+    table = Table(title="Related Projects")
+    table.add_column("Project", style="cyan")
+    table.add_column("Score", style="green")
+    table.add_column("Languages", style="magenta")
+    table.add_column("Frameworks", style="yellow")
+    table.add_column("Why", style="white")
+    table.add_column("State", style="blue")
+    table.add_column("Path", style="dim")
+    for suggestion in suggestions:
+        table.add_row(
+            str(suggestion["display_name"]),
+            f"{float(suggestion['score']):.2f}",
+            ", ".join(suggestion.get("languages", [])) or "-",
+            ", ".join(suggestion.get("frameworks", [])) or "-",
+            str(suggestion.get("why", "")),
+            (
+                f"stale ({suggestion['age_days']}d)"
+                if suggestion.get("stale")
+                else f"fresh ({suggestion['age_days']}d)"
+                if suggestion.get("age_days") is not None
+                else "fresh"
+            ),
+            str(suggestion["project_path"]),
+        )
+    console.print(table)
+
+
+@memory_group.command(name="refresh-catalog")
+@click.option(
+    "--project",
+    "project_arg",
+    default=".",
+    show_default=True,
+    help="Project path to refresh in the global catalog",
+)
+@click.option(
+    "--prune-stale/--no-prune-stale",
+    default=False,
+    show_default=True,
+    help="Prune missing or stale registrations after refreshing the selected project",
+)
+@click.option(
+    "--stale-days",
+    default=90,
+    show_default=True,
+    help="Treat projects not refreshed within this many days as stale",
+)
+@click.option(
+    "--missing-only/--all-stale",
+    default=False,
+    show_default=True,
+    help="Only prune missing paths instead of all stale registrations",
+)
+def memory_refresh_catalog(
+    project_arg: str,
+    prune_stale: bool,
+    stale_days: int,
+    missing_only: bool,
+) -> None:
+    """Refresh the global registered-project catalog for one MUSCLE project."""
+    from .tui.project_manager import ProjectManager
+
+    target_path = Path(project_arg).expanduser().resolve()
+    manager = ProjectManager(base_path=target_path)
+    muscle_dir = manager.get_muscle_dir(target_path)
+    if not muscle_dir:
+        console.print("[red]Target project is not MUSCLE-initialized.[/red]")
+        return
+
+    manager.register_project(target_path)
+    console.print(f"[green]Refreshed[/green] project fingerprint for {target_path}")
+
+    if prune_stale:
+        pruned = SystemDatabase().prune_registered_projects(
+            stale_after_days=stale_days,
+            missing_only=missing_only,
+            keep_paths=[str(target_path)],
+        )
+        console.print(
+            f"[cyan]Pruned[/cyan] {pruned['removed']} registrations "
+            f"({pruned['missing_removed']} missing, {pruned['stale_removed']} stale)."
+        )
+
+
+@memory_group.command(name="import-project")
+@click.option("--project", "source_project", required=True, help="Source project path")
+@click.option(
+    "--mode",
+    type=click.Choice(["snapshot", "attach"]),
+    default="snapshot",
+    show_default=True,
+    help="Transfer mode",
+)
+def memory_import_project(source_project: str, mode: str) -> None:
+    """Import or attach lessons from a related MUSCLE project."""
+    project_path, project = _resolve_project_context(Path.cwd())
+    source_path = Path(source_project).expanduser().resolve()
+    from .tui.project_manager import ProjectManager
+
+    if not (source_path / ".muscle").exists():
+        console.print("[red]Source project is not MUSCLE-initialized.[/red]")
+        return
+
+    current_manager = ProjectManager(base_path=project_path)
+    current_manager.register_project(project_path)
+    ProjectManager(base_path=source_path).register_project(source_path)
+
+    suggestions = _suggest_related_projects(
+        project_path,
+        project,
+        limit=20,
+        threshold=0.0,
+        refresh_current=False,
+    )
+    score = 0.0
+    for suggestion in suggestions:
+        if str(source_path) == str(Path(str(suggestion["project_path"])).resolve()):
+            score = float(suggestion["score"])
+            break
+
+    pm = ProjectMemory(str(project_path))
+    result = pm.import_project_lessons(
+        project_path=str(project_path),
+        source_project_path=str(source_path),
+        link_mode=mode,
+        relatedness_score=score,
+    )
+    if mode == "attach":
+        console.print(f"[green]Attached[/green] related project: {source_path}")
+    else:
+        console.print(
+            f"[green]Imported[/green] {result['imported']} provisional lessons from {source_path}"
+        )
+    if score > 0.0:
+        matched = next(
+            (
+                suggestion
+                for suggestion in suggestions
+                if str(source_path) == str(Path(str(suggestion["project_path"])).resolve())
+            ),
+            None,
+        )
+        if matched is not None:
+            console.print(f"[dim]Overlap:[/dim] {matched['why']}")
+
+
+@memory_group.command(name="linked")
+def memory_linked() -> None:
+    """Show related projects currently attached or imported into this project."""
+    project_path, _ = _resolve_project_context(Path.cwd())
+    pm = ProjectMemory(str(project_path))
+    links = pm.list_related_project_links(project_path=str(project_path))
+    if not links:
+        console.print("[yellow]No related projects are currently linked.[/yellow]")
+        return
+
+    table = Table(title="Linked Projects")
+    table.add_column("Mode", style="cyan")
+    table.add_column("Status", style="green")
+    table.add_column("Score", style="yellow")
+    table.add_column("Source", style="magenta")
+    for link in links:
+        table.add_row(
+            str(link.get("link_mode", "")),
+            str(link.get("status", "")),
+            f"{float(link.get('relatedness_score', 0.0) or 0.0):.2f}",
+            str(link.get("source_project_path", "")),
+        )
+    console.print(table)
+
+
+@memory_group.command(name="unlink")
+@click.option("--project", "source_project", required=True, help="Source project path to unlink")
+def memory_unlink(source_project: str) -> None:
+    """Remove a related-project link from this project."""
+    project_path, _ = _resolve_project_context(Path.cwd())
+    pm = ProjectMemory(str(project_path))
+    pm.unlink_related_project(str(project_path), str(Path(source_project).expanduser().resolve()))
+    console.print("[green]Related project unlinked.[/green]")
+
+
+@memory_group.command(name="lesson-feedback")
+@click.option("--lesson-key", required=True, help="Transferred lesson key to confirm or reject")
+@click.option(
+    "--accept/--reject",
+    "accepted",
+    default=True,
+    show_default=True,
+    help="Record positive confirmation or negative rejection for the lesson",
+)
+@click.option("--note", default="", help="Optional note to record alongside the feedback")
+def memory_lesson_feedback(lesson_key: str, accepted: bool, note: str) -> None:
+    """Record explicit user feedback for a transferred lesson."""
+    project_path, _ = _resolve_project_context(Path.cwd())
+    pm = ProjectMemory(str(project_path))
+    if not pm.record_manual_transferred_lesson_feedback(
+        lesson_key,
+        success=accepted,
+        note=note or None,
+    ):
+        console.print("[red]Transferred lesson not found for this project.[/red]")
+        return
+
+    action = "confirmed" if accepted else "rejected"
+    console.print(f"[green]Lesson {action}.[/green] {lesson_key}")
+
+
+@memory_group.command(name="promotion-candidates")
+@click.option(
+    "--all/--candidates-only",
+    "include_all",
+    default=False,
+    show_default=True,
+    help="Show all active transferred lessons instead of only promotion or archive candidates",
+)
+@click.option(
+    "--limit", default=20, show_default=True, help="Maximum number of transferred lessons to show"
+)
+def memory_promotion_candidates(include_all: bool, limit: int) -> None:
+    """Review transferred lessons and MUSCLE's promote/archive recommendations."""
+    project_path, _ = _resolve_project_context(Path.cwd())
+    pm = ProjectMemory(str(project_path))
+    recommendations = pm.list_transferred_lesson_recommendations(
+        project_path=str(project_path),
+        include_inactive=include_all,
+        only_candidates=not include_all,
+        limit=limit,
+    )
+    if not recommendations:
+        console.print(
+            "[yellow]No transferred-lesson promotion or archive candidates are pending.[/yellow]"
+        )
+        return
+
+    table = Table(title="Transferred Lesson Recommendations")
+    table.add_column("ID", style="cyan", justify="right")
+    table.add_column("Recommendation", style="green")
+    table.add_column("Status", style="magenta")
+    table.add_column("Evidence", style="yellow")
+    table.add_column("Source", style="blue")
+    table.add_column("Why", style="white")
+    for row in recommendations:
+        source_path = str(row.get("source_project_path", "") or "")
+        source_label = Path(source_path).name if source_path else "-"
+        evidence = (
+            f"{int(row.get('success_count', 0) or 0)}/"
+            f"{int(row.get('validation_count', 0) or 0)} "
+            f"({float(row.get('success_rate', 0.0) or 0.0):.0%})"
+        )
+        table.add_row(
+            str(int(row.get("id", 0) or 0)),
+            str(row.get("recommendation", "observe")),
+            str(row.get("validation_status", "")),
+            evidence,
+            source_label,
+            _truncate(str(row.get("recommendation_reason", "")), 72),
+        )
+    console.print(table)
+
+
+@memory_group.command(name="promote-lesson")
+@click.option(
+    "--lesson-id",
+    type=int,
+    required=True,
+    help="Transferred lesson ID to promote into local memory",
+)
+@click.option(
+    "--force/--no-force",
+    default=False,
+    show_default=True,
+    help="Bypass recommendation checks and promote based on explicit user confirmation",
+)
+def memory_promote_lesson(lesson_id: int, force: bool) -> None:
+    """Promote one transferred lesson into project-local learned rules."""
+    project_path, _ = _resolve_project_context(Path.cwd())
+    pm = ProjectMemory(str(project_path))
+    recommendation = pm.get_transferred_lesson_recommendation(lesson_id)
+    if recommendation is None:
+        console.print("[red]Transferred lesson not found for this project.[/red]")
+        return
+
+    local_rule_id = pm.promote_transferred_lesson(lesson_id, force=force)
+    if not local_rule_id:
+        console.print(
+            "[red]Lesson is not ready for promotion.[/red] "
+            f"{recommendation['recommendation_reason']}"
+        )
+        return
+
+    console.print(
+        "[green]Promoted[/green] transferred lesson "
+        f"{lesson_id} into local learned rule {local_rule_id}."
+    )
+
+
+@memory_group.command(name="archive-lesson")
+@click.option("--lesson-id", type=int, required=True, help="Transferred lesson ID to archive")
+@click.option(
+    "--reason",
+    default="Archived after insufficient current-project evidence.",
+    show_default=True,
+    help="Why this external lesson should be archived",
+)
+@click.option(
+    "--force/--no-force",
+    default=False,
+    show_default=True,
+    help="Allow manual archive even when MUSCLE would normally keep observing the lesson",
+)
+def memory_archive_lesson(lesson_id: int, reason: str, force: bool) -> None:
+    """Archive one transferred lesson so it no longer participates in prompt context."""
+    project_path, _ = _resolve_project_context(Path.cwd())
+    pm = ProjectMemory(str(project_path))
+    recommendation = pm.get_transferred_lesson_recommendation(lesson_id)
+    if recommendation is None:
+        console.print("[red]Transferred lesson not found for this project.[/red]")
+        return
+
+    archived = pm.archive_transferred_lesson(lesson_id, reason=reason, force=force)
+    if not archived:
+        console.print(
+            f"[red]Lesson is not ready to archive.[/red] {recommendation['recommendation_reason']}"
+        )
+        return
+
+    console.print(f"[green]Archived[/green] transferred lesson {lesson_id}.")
+
+
+# ---------------------------------------------------------------------------
+# Model identity and model packs
+# ---------------------------------------------------------------------------
+
+
+@cli.group(name="model")
+def model_group() -> None:
+    """Inspect and configure model identity plus model-pack overlays."""
+    pass
+
+
+@model_group.command(name="status")
+def model_status() -> None:
+    """Show resolved model identity and installed pack state."""
+    project_path, project = _resolve_project_context(Path.cwd())
+    pm = ProjectMemory(str(project_path))
+    identity = _resolve_model_identity(str(project_path), project, project_memory=pm)
+    packs = SystemDatabase().list_model_packs()
+    active_packs = [
+        pack
+        for pack in packs
+        if pack.get("canonical_model_key") == identity.get("canonical_model_key")
+    ]
+
+    table = Table(title="Model Status")
+    table.add_column("Setting", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Requested Label", str(identity.get("requested_label") or "Unknown"))
+    table.add_row("Provider Endpoint", str(identity.get("provider_endpoint") or "Unknown"))
+    table.add_row("Canonical Model", str(identity.get("canonical_model_key") or "Unresolved"))
+    table.add_row("Identity Source", str(identity.get("identity_source") or "unresolved"))
+    table.add_row("Confidence", f"{float(identity.get('confidence', 0.0) or 0.0):.2f}")
+    table.add_row(
+        "Manual Override",
+        str(getattr(project, "model_manual_override", None) or "None"),
+    )
+    table.add_row("Pack Mode", str(getattr(project, "model_pack_mode", "suggest")))
+    table.add_row("Active Pack Count", str(len(active_packs)))
+    console.print(table)
+
+
+@model_group.command(name="history")
+@click.option("--limit", "-n", default=10, help="Number of identity events to show")
+def model_history(limit: int) -> None:
+    """Show recent model identity resolution history for this project."""
+    project_path, _ = _resolve_project_context(Path.cwd())
+    pm = ProjectMemory(str(project_path))
+    history = pm.list_model_identity_history(project_path=str(project_path), limit=limit)
+
+    if not history:
+        console.print("[yellow]No model identity history recorded yet.[/yellow]")
+        return
+
+    table = Table(title="Model Identity History")
+    table.add_column("When", style="dim", width=16)
+    table.add_column("Requested", style="cyan")
+    table.add_column("Canonical", style="green")
+    table.add_column("Source", style="magenta")
+    table.add_column("Conf", style="yellow", justify="right")
+    table.add_column("Manual", style="white")
+    table.add_column("Endpoint", style="dim")
+
+    for row in history:
+        table.add_row(
+            str(row.get("created_at", ""))[:16],
+            _truncate(str(row.get("requested_label") or "—"), 22),
+            _truncate(str(row.get("canonical_model_key") or "Unresolved"), 24),
+            _truncate(str(row.get("identity_source") or "unresolved"), 18),
+            f"{float(row.get('confidence', 0.0) or 0.0):.2f}",
+            "yes" if bool(row.get("manual_override")) else "no",
+            _truncate(str(row.get("provider_endpoint") or "—"), 28),
+        )
+
+    console.print(table)
+
+
+@model_group.command(name="select")
+@click.option(
+    "--canonical-model",
+    type=str,
+    help="Canonical model key (for example minimax/m2.7@1)",
+)
+@click.option("--clear", is_flag=True, help="Clear the current manual override")
+@click.option(
+    "--pack-mode",
+    type=click.Choice(["off", "suggest", "auto"]),
+    default=None,
+    help="Project-level model-pack mode",
+)
+def model_select(canonical_model: str | None, clear: bool, pack_mode: str | None) -> None:
+    """Select or clear the canonical model for this project."""
+    from .tui.project_manager import ProjectManager
+
+    project_path, project = _resolve_project_context(Path.cwd())
+    manager = ProjectManager()
+
+    update_kwargs: dict[str, Any] = {}
+    if clear:
+        update_kwargs["model_manual_override"] = ""
+        update_kwargs["canonical_model_key"] = ""
+        update_kwargs["model_identity_source"] = "unresolved"
+    elif canonical_model:
+        update_kwargs["model_manual_override"] = canonical_model
+        update_kwargs["canonical_model_key"] = canonical_model
+        update_kwargs["model_identity_source"] = "manual_override"
+
+    if pack_mode:
+        update_kwargs["model_pack_mode"] = pack_mode
+
+    if not update_kwargs:
+        console.print("Use --canonical-model, --clear, or --pack-mode to update model settings.")
+        return
+
+    manager.update_muscle_config(project_path, **update_kwargs)
+    identity = _resolve_model_identity(str(project_path), project)
+    console.print(
+        f"[green]Model settings updated.[/green] Effective canonical model: "
+        f"{identity.get('canonical_model_key') or 'Unresolved'}"
+    )
+
+
+@model_group.group(name="packs")
+def model_packs_group() -> None:
+    """Manage model-pack overlays."""
+    pass
+
+
+@model_packs_group.command(name="list")
+def model_packs_list() -> None:
+    """List installed model packs."""
+    packs = SystemDatabase().list_model_packs()
+    if not packs:
+        console.print("[yellow]No model packs installed.[/yellow]")
+        return
+
+    table = Table(title="Installed Model Packs")
+    table.add_column("Canonical Model", style="cyan")
+    table.add_column("Version", style="green")
+    table.add_column("Status", style="yellow")
+    table.add_column("Path", style="dim")
+    for pack in packs:
+        table.add_row(
+            str(pack.get("canonical_model_key", "")),
+            str(pack.get("version", "")),
+            str(pack.get("install_status", "")),
+            str(pack.get("pack_path", "") or "-"),
+        )
+    console.print(table)
+
+
+@model_packs_group.command(name="install")
+@click.option("--bundle-path", default=None, help="Path to an exported model-pack bundle")
+@click.option("--canonical-model", default=None, help="Canonical model key to fetch from repo")
+@click.option("--repo", default=DEFAULT_MODEL_PACK_REPO, show_default=True, help="Source repo")
+@click.option("--ref", default=DEFAULT_MODEL_PACK_REF, show_default=True, help="Source ref")
+def model_packs_install(
+    bundle_path: str | None,
+    canonical_model: str | None,
+    repo: str,
+    ref: str,
+) -> None:
+    """Install a model pack from a local bundle or the community repo."""
+    project_path, project = _resolve_project_context(Path.cwd())
+    expected_canonical_model_key = getattr(project, "canonical_model_key", None) or None
+    if bool(bundle_path) == bool(canonical_model):
+        raise click.ClickException(
+            "Provide exactly one of --bundle-path or --canonical-model for model pack install."
+        )
+    manager = ModelPackManager(str(project_path))
+    try:
+        if bundle_path:
+            metadata = manager.install_bundle(
+                bundle_path,
+                expected_canonical_model_key=expected_canonical_model_key,
+            )
+        else:
+            metadata = manager.install_remote_bundle(
+                canonical_model_key=str(canonical_model),
+                repo=repo,
+                ref=ref,
+                expected_canonical_model_key=expected_canonical_model_key,
+            )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    console.print(
+        f"[green]Installed[/green] model pack {metadata.canonical_model_key} "
+        f"version {metadata.version}"
+    )
+
+
+@model_packs_group.command(name="update")
+@click.option("--canonical-model", required=True, help="Canonical model key to refresh")
+@click.option("--bundle-path", default=None, help="Optional explicit bundle path")
+@click.option("--repo", default=None, help="Optional explicit source repo override")
+@click.option("--ref", default=None, help="Optional explicit source ref override")
+def model_packs_update(
+    canonical_model: str,
+    bundle_path: str | None,
+    repo: str | None,
+    ref: str | None,
+) -> None:
+    """Refresh an installed model pack."""
+    project_path, _ = _resolve_project_context(Path.cwd())
+    try:
+        metadata = ModelPackManager(str(project_path)).update_bundle(
+            canonical_model,
+            bundle_path,
+            repo=repo,
+            ref=ref,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    console.print(
+        f"[green]Updated[/green] model pack {metadata.canonical_model_key} "
+        f"to version {metadata.version}"
+    )
+
+
+@model_packs_group.command(name="export-candidate")
+@click.option("--canonical-model", default=None, help="Canonical model key to export for")
+@click.option("--output", default=None, help="Output directory for the candidate bundle")
+@click.option("--rule-id", "rule_ids", multiple=True, type=int, help="Specific learned rule IDs")
+def model_packs_export_candidate(
+    canonical_model: str | None,
+    output: str | None,
+    rule_ids: tuple[int, ...],
+) -> None:
+    """Export a deterministic model-pack candidate bundle from local lessons."""
+    project_path, project = _resolve_project_context(Path.cwd())
+    effective_model = canonical_model or getattr(project, "canonical_model_key", None)
+    if not effective_model:
+        console.print("[red]No canonical model selected. Use `muscle model select` first.[/red]")
+        return
+
+    manager = ModelPackManager(str(project_path))
+    result = manager.export_candidate_bundle(
+        canonical_model_key=effective_model,
+        output_dir=output,
+        rule_ids=list(rule_ids) or None,
+    )
+    console.print(
+        f"[green]Exported[/green] {result.lesson_count} lessons to {result.bundle_dir} "
+        f"(export id: {result.export_id})"
+    )
+    if result.skipped_rule_ids:
+        console.print(
+            f"[yellow]Skipped rule IDs:[/yellow] {', '.join(map(str, result.skipped_rule_ids))}"
+        )
+
+
+@model_packs_group.command(name="scaffold-repo")
+@click.option("--output-dir", required=True, help="Directory for the model-pack repo scaffold")
+def model_packs_scaffold_repo(output_dir: str) -> None:
+    """Scaffold the public model-pack repository standard locally."""
+    project_path, _ = _resolve_project_context(Path.cwd())
+    result = ModelPackManager(str(project_path)).scaffold_repository_standard(output_dir)
+    console.print(f"[green]Scaffolded[/green] model-pack repository standard at {result.root_dir}")
+    console.print(f"Wrote {len(result.files_written)} files.")
+
+
+@model_packs_group.command(name="submit")
+@click.option("--bundle-path", required=True, help="Path to an exported model-pack bundle")
+@click.option("--repo", default=DEFAULT_MODEL_PACK_REPO, show_default=True, help="Target repo")
+@click.option("--base-branch", default="main", show_default=True, help="Base branch")
+@click.option("--draft/--no-draft", default=True, help="Open the PR as draft")
+def model_packs_submit(
+    bundle_path: str,
+    repo: str,
+    base_branch: str,
+    draft: bool,
+) -> None:
+    """Submit an exported model-pack bundle to the community repo as a draft PR."""
+    if not draft:
+        console.print("[red]Only draft PR submission is supported for model packs.[/red]")
+        return
+
+    project_path, _ = _resolve_project_context(Path.cwd())
+    try:
+        result = ModelPackManager(str(project_path)).submit_draft_pr(
+            bundle_path=bundle_path,
+            repo=repo,
+            base_branch=base_branch,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if result.get("status") == "duplicate_existing":
+        console.print(
+            "[yellow]Reused existing draft submission.[/yellow] "
+            f"{result.get('pr_url') or 'No PR URL returned'}"
+        )
+        return
+    console.print(
+        f"[green]Draft submission prepared.[/green] {result.get('pr_url') or 'No PR URL returned'}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2500,6 +4168,7 @@ def backups_list(backup_type: str | None, limit: int) -> None:
 
         if not backups:
             console.print("[yellow]No backups found.[/yellow]")
+            _print_backup_scope_note(bm)
             return
 
         table = Table(title="Backups")
@@ -2514,6 +4183,7 @@ def backups_list(backup_type: str | None, limit: int) -> None:
             table.add_row(str(b.id), b.backup_type, b.created_at, size_str, f"{b.retention_days}d")
 
         console.print(table)
+        _print_backup_scope_note(bm)
     except Exception as e:
         console.print(f"[red]Failed to list backups: {e}[/red]")
 
@@ -2530,6 +4200,7 @@ def backups_show(backup_id: int) -> None:
         info = bm.inspect_backup(backup_id)
         if not info:
             console.print(f"[red]Backup #{backup_id} not found.[/red]")
+            _print_backup_scope_note(bm)
             return
 
         table = Table(title=f"Backup #{backup_id}")
@@ -2557,6 +4228,7 @@ def backups_show(backup_id: int) -> None:
             console.print(contents_table)
         else:
             console.print("[yellow]No contents info available.[/yellow]")
+        _print_backup_scope_note(bm)
 
     except Exception as e:
         console.print(f"[red]Failed to show backup: {e}[/red]")
@@ -2579,10 +4251,12 @@ def backups_restore(backup_id: int, dry_run: bool) -> None:
         result = bm.restore_backup(backup_id, dry_run=dry_run)
         if not result:
             console.print(f"[red]Backup #{backup_id} not found.[/red]")
+            _print_backup_scope_note(bm)
             return
 
         if "error" in result:
             console.print(f"[red]Restore failed: {result['error']}[/red]")
+            _print_backup_scope_note(bm)
             return
 
         console.print(f"[cyan]{result['message']}[/cyan]")
@@ -2595,6 +4269,7 @@ def backups_restore(backup_id: int, dry_run: bool) -> None:
             for f in result["files"]:
                 table.add_row(f["name"], f["destination"], _format_size(f["size"]))
             console.print(table)
+        _print_backup_scope_note(bm)
 
     except Exception as e:
         console.print(f"[red]Failed to restore backup: {e}[/red]")
@@ -2621,6 +4296,13 @@ def audit_group() -> None:
             "skill_archive",
             "agent_create",
             "agent_archive",
+            "related_project_imported",
+            "related_project_attached",
+            "related_project_unlinked",
+            "related_import_scrub",
+            "transferred_lesson_validated",
+            "transferred_lesson_promoted",
+            "transferred_lesson_archived",
         ]
     ),
     default=None,
@@ -2628,7 +4310,8 @@ def audit_group() -> None:
 )
 def audit_list(limit: int, action: str | None) -> None:
     """Show recent audit log entries (publish, backup, restore, skill/agent lifecycle)."""
-    project_path = str(Path.cwd())
+    resolved_project_path, _ = _resolve_project_context(Path.cwd())
+    project_path = str(resolved_project_path)
     try:
         pm = ProjectMemory(project_path)
         entries = pm.list_action_logs(
@@ -2639,8 +4322,8 @@ def audit_list(limit: int, action: str | None) -> None:
 
         table = Table(title=f"Recent Actions (last {len(entries)})")
         table.add_column("When", style="dim", width=16)
-        table.add_column("Action", style="cyan", width=14)
-        table.add_column("Entity", style="yellow", width=14)
+        table.add_column("Action", style="cyan", width=28)
+        table.add_column("Entity", style="yellow", width=28)
         table.add_column("Details", style="white")
 
         if not entries:
@@ -2648,43 +4331,12 @@ def audit_list(limit: int, action: str | None) -> None:
             return
 
         for entry in entries:
-            details = entry.get("details_json", "{}")
-            # Parse details for display
-            try:
-                import json
-
-                details_obj = json.loads(details)
-                if entry.get("entity_type") == "backup":
-                    details_str = details_obj.get("backup_type", "")
-                    if entry.get("action_type") == "restore":
-                        details_str += f", restored={details_obj.get('restored_count', '?')} files"
-                elif entry.get("entity_type") == "skill":
-                    details_str = (
-                        details_obj.get("skill_name", "")
-                        or details_obj.get("trigger_pattern", "")
-                        or details_obj.get("skill_path", "")
-                    )
-                elif entry.get("entity_type") == "agent":
-                    details_str = details_obj.get("agent_name", "") or details_obj.get(
-                        "trigger_pattern", ""
-                    )
-                elif entry.get("entity_type") == "claude_md":
-                    details_str = "CLAUDE.md published"
-                else:
-                    details_str = str(details_obj)
-            except Exception:
-                details_str = details[:50]
-
-            entity_id_str = (
-                f"{entry.get('entity_type', '')}:{entry.get('entity_id', '')}"
-                if entry.get("entity_id")
-                else entry.get("entity_type", "")
-            )
+            formatted = format_action_log_entry(entry)
             table.add_row(
-                entry.get("created_at", "")[:16],
-                entry.get("action_type", ""),
-                entity_id_str,
-                details_str[:60],
+                formatted["when"],
+                formatted["action"],
+                formatted["entity"],
+                formatted["details"][:60],
             )
 
         console.print(table)
@@ -2702,7 +4354,7 @@ def settings_group() -> None:
 @settings_group.command(name="show")
 def settings_show() -> None:
     """Show current MUSCLE settings."""
-    _, project = _resolve_project_context(Path.cwd())
+    project_path, project = _resolve_project_context(Path.cwd())
 
     table = Table(title="MUSCLE Settings")
     table.add_column("Setting", style="cyan")
@@ -2717,6 +4369,19 @@ def settings_show() -> None:
         table.add_row("Review Gate", project.review_gate)
         table.add_row("Review Execution", project.review_execution)
         table.add_row("Automation Level", project.automation_level)
+        table.add_row("Related Project Mode", project.related_project_mode)
+        table.add_row("Model Pack Mode", project.model_pack_mode)
+        table.add_row("Manual Model Override", project.model_manual_override or "None")
+        table.add_row("Canonical Model", project.canonical_model_key or "Unresolved")
+        table.add_row("Model Identity Source", project.model_identity_source)
+
+        try:
+            pm = ProjectMemory(str(project_path))
+            stats = pm.get_statistics(str(project_path))
+            table.add_row("Attached Projects", str(stats.get("attached_projects", 0)))
+            table.add_row("Imported Lessons", str(stats.get("transferred_lessons", 0)))
+        except Exception:
+            table.add_row("Imported Lessons", "N/A")
     else:
         table.add_row("Project", "Not initialized")
         table.add_row("Run 'muscle init'", "to initialize")
@@ -2863,6 +4528,65 @@ def settings_platform(platform: str | None, cli_path: str | None) -> None:
         console.print("Use --platform or --cli-path to configure.")
 
 
+@settings_group.command(name="model")
+@click.option("--canonical-model", default=None, help="Canonical model key override")
+@click.option("--clear", is_flag=True, help="Clear the manual model override")
+@click.option(
+    "--pack-mode",
+    type=click.Choice(["off", "suggest", "auto"]),
+    default=None,
+    help="Project-level model-pack mode",
+)
+@click.option(
+    "--related-mode",
+    type=click.Choice(["off", "suggest"]),
+    default=None,
+    help="Project-level related-project suggestion mode",
+)
+def settings_model(
+    canonical_model: str | None,
+    clear: bool,
+    pack_mode: str | None,
+    related_mode: str | None,
+) -> None:
+    """Configure model identity and overlay settings for the current project."""
+    from .tui.project_manager import ProjectManager
+
+    manager = ProjectManager()
+    project_path, project = _resolve_project_context(Path.cwd())
+
+    updates: dict[str, Any] = {}
+    if clear:
+        updates["model_manual_override"] = ""
+        updates["canonical_model_key"] = ""
+        updates["model_identity_source"] = "unresolved"
+    elif canonical_model:
+        updates["model_manual_override"] = canonical_model
+        updates["canonical_model_key"] = canonical_model
+        updates["model_identity_source"] = "manual_override"
+
+    if pack_mode:
+        updates["model_pack_mode"] = pack_mode
+    if related_mode:
+        updates["related_project_mode"] = related_mode
+
+    if not updates:
+        current = _resolve_model_identity(str(project_path), project)
+        console.print(
+            f"Current canonical model: {current.get('canonical_model_key') or 'Unresolved'}"
+        )
+        console.print(
+            f"Pack mode: {getattr(project, 'model_pack_mode', 'suggest') if project else 'suggest'}"
+        )
+        console.print(
+            f"Related-project mode: {getattr(project, 'related_project_mode', 'suggest') if project else 'suggest'}"
+        )
+        return
+
+    manager.update_muscle_config(project_path, **updates)
+    console.print("[green]Model settings updated.[/green]")
+
+
 @settings_group.command(name="reset")
 @click.option("--force", is_flag=True, help="Skip confirmation prompts")
 @click.option("--keep-data", is_flag=True, help="Keep .muscle/ project data")
@@ -2890,6 +4614,11 @@ def settings_reset(force: bool, keep_data: bool, keep_config: bool) -> None:
         review_execution="local",
         platform="auto",
         api_key_source="env",
+        related_project_mode="suggest",
+        model_pack_mode="suggest",
+        canonical_model_key="",
+        model_identity_source="unresolved",
+        model_manual_override="",
     )
     console.print("[green]Settings reset to defaults.[/green]")
 

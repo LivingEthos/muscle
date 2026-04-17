@@ -9,6 +9,7 @@ Architecture Decision Record (ADR):
 
 from __future__ import annotations
 
+import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -16,6 +17,8 @@ from threading import Lock
 
 from .code_reviewer import CodeReviewer
 from .types import IssueCategory, PressureFocus, ReviewIssue, ReviewScope, Severity
+
+logger = logging.getLogger(__name__)
 
 AGENT_CORRECTNESS = "correctness_security"
 AGENT_ERROR_HANDLING = "error_handling_concurrency"
@@ -44,6 +47,11 @@ class CommitteeReviewer:
         static_issues: list[dict],
         scope: ReviewScope,
         pressure_focus: PressureFocus | None = None,
+        telemetry_session_id: str | None = None,
+        workflow_name: str | None = None,
+        review_mode: str | None = None,
+        language: str | None = None,
+        target_type: str | None = None,
     ) -> dict[str, list[ReviewIssue]]:
         """Run the selected review agents in parallel."""
         agent_findings: dict[str, list[ReviewIssue]] = {}
@@ -56,6 +64,12 @@ class CommitteeReviewer:
                     static_issues,
                     scope,
                     pressure_focus,
+                    telemetry_session_id,
+                    workflow_name,
+                    review_mode,
+                    language,
+                    scope.complexity,
+                    target_type,
                 ): agent_name
                 for agent_name in scope.review_agents
             }
@@ -74,10 +88,26 @@ class CommitteeReviewer:
         static_issues: list[dict],
         scope: ReviewScope,
         pressure_focus: PressureFocus | None = None,
+        telemetry_session_id: str | None = None,
+        workflow_name: str | None = None,
+        review_mode: str | None = None,
+        language: str | None = None,
+        complexity: str | None = None,
+        target_type: str | None = None,
     ) -> list[ReviewIssue]:
         """Run a single review agent."""
         if agent_name == AGENT_CORRECTNESS:
-            issues, summary = self.code_reviewer.review(target_path, static_issues)
+            issues, summary = self.code_reviewer.review(
+                target_path,
+                static_issues,
+                telemetry_session_id=telemetry_session_id,
+                telemetry_stage="committee_review",
+                workflow_name=workflow_name,
+                review_mode=review_mode,
+                language=language,
+                complexity=complexity,
+                target_type=target_type,
+            )
             if isinstance(summary, dict):
                 self._record_agent_tokens(agent_name, int(summary.get("token_usage", 0)))
             return [self._tag_issue(issue, agent_name) for issue in issues]
@@ -99,15 +129,28 @@ class CommitteeReviewer:
         self,
         agent_findings: dict[str, list[ReviewIssue]],
     ) -> list[ReviewIssue]:
-        """Deduplicate and merge committee findings into a final issue set."""
+        """Deduplicate and merge committee findings into a final issue set.
+
+        Fix: CM-01. Titles are fuzzy-matched (token-set Jaccard similarity) so
+        near-duplicate findings like "Missing request timeout" and "Request
+        missing timeout" collapse into a single synthesized issue instead of
+        being surfaced twice to reviewers.
+        """
         grouped: dict[tuple[str, int, str], list[ReviewIssue]] = {}
+        # Track representative normalized titles per (file, line) so we can
+        # fuzzy-bucket near-duplicates without quadratic cost on large inputs.
+        bucket_titles: dict[tuple[str, int], list[str]] = {}
         for issues in agent_findings.values():
             for issue in issues:
-                key = (
-                    issue.file_path,
-                    issue.line_number,
-                    self._normalize_title(issue.title),
+                normalized = self._normalize_title(issue.title)
+                location = (issue.file_path, issue.line_number)
+                representative = self._find_similar_title(
+                    normalized, bucket_titles.get(location, [])
                 )
+                if representative is None:
+                    bucket_titles.setdefault(location, []).append(normalized)
+                    representative = normalized
+                key = (issue.file_path, issue.line_number, representative)
                 grouped.setdefault(key, []).append(issue)
 
         synthesized: list[ReviewIssue] = []
@@ -358,11 +401,41 @@ class CommitteeReviewer:
     def _normalize_title(title: str) -> str:
         return " ".join(title.lower().split())
 
+    # Jaccard similarity threshold above which two normalized titles are
+    # considered duplicates (Fix: CM-01). 0.7 chosen empirically: "missing
+    # request timeout" vs "request missing timeout" -> 1.0; "null pointer in X"
+    # vs "unused import in X" -> 0.25. Tune via regression if needed.
+    _TITLE_DEDUP_THRESHOLD = 0.7
+
+    @classmethod
+    def _find_similar_title(cls, candidate: str, existing: list[str]) -> str | None:
+        """Return the first existing title that fuzzy-matches ``candidate``."""
+        if not candidate or not existing:
+            return None
+        cand_tokens = set(candidate.split())
+        if not cand_tokens:
+            return None
+        for representative in existing:
+            rep_tokens = set(representative.split())
+            if not rep_tokens:
+                continue
+            intersection = cand_tokens & rep_tokens
+            union = cand_tokens | rep_tokens
+            if union and len(intersection) / len(union) >= cls._TITLE_DEDUP_THRESHOLD:
+                return representative
+        return None
+
     @staticmethod
     def _read_file(path: Path) -> str:
         try:
             return path.read_text(encoding="utf-8")
-        except Exception:
+        except OSError as exc:
+            # Fix: CM-02. Surface skipped files in the log so operators can
+            # distinguish a missing-file path from an accidentally-empty one.
+            logger.info("Committee reviewer skipping %s: %s", path, exc)
+            return ""
+        except UnicodeDecodeError as exc:
+            logger.info("Committee reviewer skipping %s (non-utf8): %s", path, exc)
             return ""
 
     @staticmethod

@@ -23,6 +23,8 @@ class TestProjectConfig:
         assert config.automation_level == "auto-fix"
         assert config.github_enabled is False
         assert config.review_execution == "local"
+        assert config.related_project_mode == "suggest"
+        assert config.model_pack_mode == "suggest"
 
 
 class TestProjectManager:
@@ -51,6 +53,8 @@ class TestProjectManager:
         loaded = manager.load_config(tmp_path)
         assert loaded is not None
         assert loaded.review_execution == "local"
+        assert loaded.related_project_mode == "suggest"
+        assert loaded.model_pack_mode == "suggest"
 
     def test_create_memory_files(self, manager, tmp_path):
         muscle_dir = tmp_path / ".muscle"

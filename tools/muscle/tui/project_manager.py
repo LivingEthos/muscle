@@ -46,6 +46,11 @@ class ProjectConfig:
     api_key_source: str = "env"
     hooks_enabled: bool = True
     cli_path: str | None = None
+    related_project_mode: str = "suggest"
+    model_pack_mode: str = "suggest"
+    canonical_model_key: str | None = None
+    model_identity_source: str = "unresolved"
+    model_manual_override: str | None = None
 
 
 class ProjectManager:
@@ -117,6 +122,7 @@ class ProjectManager:
             self._write_config(config, muscle_dir)
             self._create_memory_files(muscle_dir)
             self._init_knowledge_base(muscle_dir)
+            self.register_project(config.path)
 
             config.initialized = True
             self._current_project = config
@@ -141,6 +147,11 @@ class ProjectManager:
                 "api_key_source": config.api_key_source,
                 "hooks_enabled": config.hooks_enabled,
                 "cli_path": config.cli_path,
+                "related_project_mode": config.related_project_mode,
+                "model_pack_mode": config.model_pack_mode,
+                "canonical_model_key": config.canonical_model_key,
+                "model_identity_source": config.model_identity_source,
+                "model_manual_override": config.model_manual_override,
             }
         }
         with open(config_path, "w") as f:
@@ -238,6 +249,11 @@ class ProjectManager:
             api_key_source=data.get("api_key_source", "env"),
             hooks_enabled=data.get("hooks_enabled", True),
             cli_path=data.get("cli_path"),
+            related_project_mode=data.get("related_project_mode", "suggest"),
+            model_pack_mode=data.get("model_pack_mode", "suggest"),
+            canonical_model_key=data.get("canonical_model_key") or None,
+            model_identity_source=data.get("model_identity_source", "unresolved"),
+            model_manual_override=data.get("model_manual_override") or None,
         )
 
     def load_nearest_config(self, start_path: Path | None = None) -> ProjectConfig | None:
@@ -247,7 +263,21 @@ class ProjectManager:
         return self.load_config(project_path)
 
     def find_all_projects(self) -> list[ProjectConfig]:
+        from ..system_db import SystemDatabase
+
         projects = []
+        system_db = SystemDatabase()
+        for row in system_db.list_registered_projects():
+            project_path = Path(str(row.get("project_path", "")))
+            if not project_path.exists():
+                continue
+            project = self.load_config(project_path)
+            if project:
+                projects.append(project)
+
+        if projects:
+            return projects
+
         home = Path.home()
         for muscle_dir in home.rglob(DEFAULT_MUSCLE_DIR):
             project_path = muscle_dir.parent
@@ -357,6 +387,11 @@ class ProjectManager:
         platform: str | None = None,
         cli_path: str | None = None,
         api_key_source: str | None = None,
+        related_project_mode: str | None = None,
+        model_pack_mode: str | None = None,
+        canonical_model_key: str | None = None,
+        model_identity_source: str | None = None,
+        model_manual_override: str | None = None,
     ) -> bool:
         muscle_dir = project_path / DEFAULT_MUSCLE_DIR
         config_path = muscle_dir / CONFIG_FILE
@@ -384,11 +419,34 @@ class ProjectManager:
             data["project"]["cli_path"] = cli_path
         if api_key_source is not None:
             data["project"]["api_key_source"] = api_key_source
+        if related_project_mode is not None:
+            data["project"]["related_project_mode"] = related_project_mode
+        if model_pack_mode is not None:
+            data["project"]["model_pack_mode"] = model_pack_mode
+        if canonical_model_key is not None:
+            data["project"]["canonical_model_key"] = canonical_model_key
+        if model_identity_source is not None:
+            data["project"]["model_identity_source"] = model_identity_source
+        if model_manual_override is not None:
+            data["project"]["model_manual_override"] = model_manual_override
 
         with open(config_path, "w") as f:
             json.dump(data, f, indent=2)
 
         return True
+
+    def register_project(self, project_path: Path) -> None:
+        """Register the project in the global system database."""
+        from ..project_fingerprint import build_project_fingerprint
+        from ..system_db import SystemDatabase
+
+        config = self.load_config(project_path)
+        fingerprint = build_project_fingerprint(
+            project_path,
+            display_name=config.name if config else project_path.name,
+            languages=config.languages if config else None,
+        )
+        SystemDatabase().register_project(fingerprint)
 
     def is_project_enabled(self, project_path: Path) -> bool:
         """Check if MUSCLE is enabled for a project.
@@ -403,7 +461,7 @@ class ProjectManager:
 
         try:
             pm = ProjectMemory(str(project_path))
-            state = pm.get_automation_state("project_enabled")
+            state = pm.get_automation_state(str(project_path), "project_enabled")
             if state and state.get("state_value"):
                 state_val = state["state_value"]
                 return str(state_val) == "true"

@@ -1,11 +1,24 @@
 # MUSCLE Architecture and Runtime Guide
 
-Last updated: 2026-04-02
+Last updated: 2026-04-16
 
 This document explains how the active MUSCLE application works today based on the
 implemented `tools/muscle/` package. It is intended to be the source-of-truth
 architecture explainer for contributors and users who want to understand the
 runtime flow, storage model, and subsystem boundaries.
+
+### Status Legend
+
+Subsystems in this document are annotated with one of:
+
+- ✅ **Implemented** — wired into the CLI and exercised by the default flows
+- 🚧 **In progress** — module exists and partially wired, but not every path is
+  exercised by default commands (see `MUSCLE_PLAN.md` for active phases)
+- 💡 **Planned** — designed or referenced but not yet implemented
+
+When the same subsystem appears under multiple status buckets, that means the
+base capability is real today and only the deeper refinements are still in
+progress; the subsection text calls out the boundary explicitly.
 
 ## What MUSCLE Is
 
@@ -16,6 +29,13 @@ MUSCLE has two primary runtime loops:
 
 Both loops are powered by the MiniMax M2.7 API through an Anthropic-compatible
 client and both persist state so the project can compound over time.
+
+MUSCLE is now explicitly project-first:
+
+- the current project's local memory remains authoritative
+- related-project lessons are optional provisional overlays
+- model-pack lessons are optional canonical-model overlays
+- shared global state is stored separately from project-owned state
 
 `tools/muscle/` is the active package tree.
 
@@ -29,20 +49,30 @@ flowchart TD
     User["User or plugin command"]
     CLI["tools/muscle/cli.py"]
     Init["muscle init"]
+    ProjectCtl["status/settings/memory/model"]
     Run["muscle run"]
     Review["muscle review"]
     Check["muscle check"]
     TUI["muscle tui"]
+    Bench["long-eval benchmark"]
     Plugin["tools/muscle/plugin"]
 
     User --> CLI
     Plugin --> CLI
 
     CLI --> Init
+    CLI --> ProjectCtl
     CLI --> Run
     CLI --> Review
     CLI --> Check
     CLI --> TUI
+    CLI --> Bench
+
+    ProjectCtl --> PM["ProjectManager"]
+    ProjectCtl --> LocalDB["ProjectMemory"]
+    ProjectCtl --> SystemDB["SystemDatabase"]
+    ProjectCtl --> Resolver["LessonResolver + ModelIdentityResolver"]
+    ProjectCtl --> Packs["ModelPackManager"]
 
     Run --> Loop["LoopController"]
     Loop --> Generator["CodeGenerator"]
@@ -70,15 +100,17 @@ flowchart TD
 
 ## Primary Entry Points
 
-### `muscle init`
+### `muscle init` ✅
 
 `muscle init` uses `tui/project_manager.py` to detect the current project and
-create the local `.muscle/` workspace. It writes the initial project config and
-creates the memory files that MUSCLE later updates.
+create the local `.muscle/` workspace. It writes the initial project config,
+creates the memory files that MUSCLE later updates, registers the project
+fingerprint, and can capture the initial related-project and model-pack policy.
 
 What it creates immediately:
 
 - `.muscle/config.yaml`
+- `.muscle/project_memory.db`
 - `.muscle/strategy_kb.json`
 - `.muscle/CLAUDE.md`
 - `.muscle/AGENT.md`
@@ -90,23 +122,102 @@ Important implementation detail:
 
 - `config.yaml` is currently written with JSON content even though the filename
   ends in `.yaml`
+- setup can now persist related-project suggestion mode, model-pack mode, and a
+  manual canonical-model override when provided
 
-### `muscle run`
+### `muscle run` ✅
 
 `muscle run` is the autonomous generation loop. It optionally scaffolds a
 project, generates code, evaluates the output, and evolves the next strategy
 until success, budget exhaustion, timeout, abort, or max iterations.
 
-### `muscle review`
+### `muscle review` ✅
 
 `muscle review` is the code review workflow. It combines local static analysis,
 M2.7 semantic review, optional fix application, and post-review learning.
 
-### `muscle tui`
+### `muscle tui` 🚧
 
 `muscle tui` launches the Rich-based terminal UI scaffold in `tools/muscle/tui/`.
-It is a real entry point and navigation shell, but many views still render
-placeholder/sample data rather than fully live project state.
+It is a real entry point and navigation shell. The `History` view now shows live
+review runs, model identity history, and lesson-usage history, and the
+knowledge/audit surfaces reflect transferred-lesson provenance. Some screens are
+still lighter-weight than the CLI, but the TUI is no longer just a placeholder shell.
+
+### Project-First Control Surfaces ✅
+
+The project-first learning stack is now exposed through first-class commands in
+addition to `init`, `run`, and `review`.
+
+- `muscle status` shows project enablement, storage location, counts, and the
+  active project context
+- `muscle settings show` and `muscle settings model` expose related-project
+  mode, model-pack mode, canonical model, and manual override settings
+- `muscle memory related`, `import-project`, `linked`, `history`,
+  `promotion-candidates`, and related commands manage provisional external lessons
+- `muscle model status`, `history`, `select`, and `packs ...` manage resolved
+  model identity and model-pack overlays
+- `muscle long-eval benchmark --enforce-gates` validates that overlays improve
+  behavior without regressing the default project-only path
+
+### Resolver Subsystems ✅
+
+Two small resolver subsystems sit behind the project-first control surfaces and
+decide, at call time, *which* model identity and *which* lessons should apply
+to the current invocation.
+
+#### `LessonResolver`
+
+`LessonResolver` composes the effective lesson set for a given review or run
+in a deterministic priority order:
+
+1. **Project-local lessons** — `project_memory.db` (authoritative)
+2. **Related-project provisional overlays** — lessons imported from linked
+   projects and still in validation (mode-gated)
+3. **Model-pack canonical overlays** — lessons shipped by a registered pack
+   and scoped to the resolved canonical model (mode-gated)
+
+Resolution example (settings: related=suggest, pack=apply):
+
+```
+request → LessonResolver.resolve(project_id, canonical_model)
+       → [local rule: "avoid bare except"]  (authoritative)
+       → [related rule: "lock before DB write"]  (suggestion, tagged)
+       → [pack rule: "use typed error classes"]  (applied, tagged)
+       → MergedLessonSet (dedup by rule_id, project rules win ties)
+```
+
+Callers receive a `MergedLessonSet` that preserves per-lesson provenance so
+telemetry and the TUI knowledge view can distinguish project-owned vs
+provisional vs canonical entries, and `muscle memory promotion-candidates`
+can propose validated provisional rules for promotion into the project layer.
+
+#### `ModelIdentityResolver`
+
+`ModelIdentityResolver` maps the raw API model string returned by M2.7 (or
+the user-supplied override) to a stable *canonical model identity* that the
+rest of MUSCLE uses for pack scoping, memory keying, and history tracking.
+
+Resolution example:
+
+```
+api returns: "MiniMax-M2.7-2026-03-preview"
+ModelIdentityResolver.resolve(raw="MiniMax-M2.7-2026-03-preview")
+  → lookup alias table in system.db
+  → canonical = "minimax-m2.7"
+  → persist identity event in project_memory.db
+```
+
+The resolver exposes:
+
+- `resolve(raw)` — returns `ModelIdentity(canonical, raw, alias_source)`
+- `override(canonical)` — force a specific canonical identity for a run
+- `history(project_id)` — prior identities observed for the project
+
+Both resolvers are invoked from `muscle status`, `muscle settings model`, and
+the run/review entrypoints. They also participate in the
+`muscle long-eval benchmark --enforce-gates` overlay validation so we never
+accept a pack change that regresses the default project-only path.
 
 ## The `muscle run` Flow
 
@@ -278,7 +389,7 @@ If there are no static findings, `CodeReviewer` can still do a proactive file re
 with a temporary backup during the write. `HandoffGenerator` is used when the
 selected mode needs a markdown plan for human follow-up.
 
-## Learning and Memory Flow
+## Learning and Memory Flow ✅ / 🚧
 
 The review command calls `LearningPipeline.learn_from_review()` after a review
 completes.
@@ -321,7 +432,7 @@ pattern/skill ecosystem still maturing.
 
 ## Shadow Reviews and Long Evaluations
 
-### Shadow Mode
+### Shadow Mode ✅
 
 `muscle review --shadow` uses:
 
@@ -331,7 +442,7 @@ pattern/skill ecosystem still maturing.
 The worker runs review jobs in-process and updates status for `muscle probe` and
 `muscle diagnosis`.
 
-### Long Evaluation Mode
+### Long Evaluation Mode ✅
 
 Long evaluation is a manual deep-review workflow:
 
@@ -352,6 +463,7 @@ These files and directories live under the target project:
 ```text
 .muscle/
   config.yaml                 # JSON content written by ProjectManager
+  project_memory.db           # Authoritative per-project memory and telemetry DB
   strategy_kb.json            # Initial project bootstrap file
   CLAUDE.md
   AGENT.md
@@ -373,8 +485,22 @@ These files and directories live under the target project:
   reports/
     long_eval_YYYY-MM-DD.json
     long_eval_YYYY-MM-DD.md
+    release_evidence/
   budget.json                 # Optional auto-budget state
 ```
+
+`project_memory.db` is the authoritative per-project store for:
+
+- learned rules and notes
+- review/run histories
+- lesson usage events
+- transferred-lesson validation and promotion state
+- model identity history
+- backup metadata and optimization telemetry
+
+Older adjacent stores such as `knowledge/strategies.db` and
+`review_kb/review_kb.db` still exist, but the project-first learning surfaces
+are centered on `project_memory.db`.
 
 ### Global State
 
@@ -382,6 +508,8 @@ These files and directories live under the user home directory:
 
 ```text
 ~/.muscle/
+  system.db                  # Shared project fingerprints, aliases, packs, submissions
+  model-pack-cache/
   cache/cache.db
   shadow_jobs.json
   improvement_log.json
@@ -391,9 +519,21 @@ These files and directories live under the user home directory:
   global_review/review_kb.db
 ```
 
+The shared `system.db` is intentionally separate from project-local state. It
+stores cross-project metadata that is not owned by a single repo, including:
+
+- registered project fingerprints
+- model alias mappings
+- installed model packs
+- pack submission history
+
+Normal `muscle review` and `muscle run` do not fetch from the network to refresh
+these overlays. Remote pack access is restricted to explicit install/update/submit
+commands.
+
 ## Integrations and Their Maturity
 
-### Fully Wired From The CLI
+### Fully Wired From The CLI ✅
 
 - MiniMax M2.7 API client
 - session persistence and resume
@@ -405,9 +545,10 @@ These files and directories live under the user home directory:
 - webhook notifications for run sessions
 - learning pipeline memory updates
 
-### Present As Subsystems Or Partial Surfaces
+### Present As Subsystems Or Partial Surfaces 🚧
 
-- TUI is navigable but still uses placeholder/sample view data in several screens
+- TUI history, knowledge, and audit surfaces now reflect live project state, but
+  some settings and management screens are still lighter than the CLI
 - GitHub, GitLab, Jenkins, and MCP adapters exist as implementation modules
 - `adapters/github_integration.py` provides a higher-level GitHub workflow layer,
   but it is not yet a major first-class CLI command family
@@ -423,7 +564,7 @@ The architecture deliberately separates:
 - semantic review from static analysis
 - generation from evaluation
 - review findings from memory persistence
-- project-local learning from global caches
+- project-local authoritative memory from optional overlays and shared caches
 
 That separation keeps the CLI composable, makes subsystems independently testable,
 and lets MUSCLE evolve from a simple code-review companion into a broader

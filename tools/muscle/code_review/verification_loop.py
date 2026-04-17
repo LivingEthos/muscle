@@ -48,6 +48,28 @@ class VerificationLoop:
     auto_revert: bool = True
     _verified_fixes: list[VerificationResult] = field(default_factory=list)
     _failed_fixes: list[VerificationResult] = field(default_factory=list)
+    _runtime_context: dict[str, str | None] = field(default_factory=dict)
+
+    def configure_runtime(
+        self,
+        project_path: str,
+        session_id: str,
+        workflow_name: str | None = None,
+        review_mode: str | None = None,
+        language: str | None = None,
+        complexity: str | None = None,
+        target_type: str | None = None,
+    ) -> None:
+        """Attach runtime metadata used for telemetry on verification calls."""
+        self._runtime_context = {
+            "project_path": project_path,
+            "session_id": session_id,
+            "workflow_name": workflow_name,
+            "review_mode": review_mode,
+            "language": language,
+            "complexity": complexity,
+            "target_type": target_type,
+        }
 
     def verify_fix(self, issue: ReviewIssue, fixed_content: str) -> VerificationResult:
         """Verify a fix is valid before learning from it."""
@@ -63,10 +85,12 @@ class VerificationLoop:
         )
 
         original_content = file_path.read_text(encoding="utf-8")
+        fix_already_applied = original_content == fixed_content
 
         try:
-            shutil.copy2(file_path, backup_path)
-            file_path.write_text(fixed_content, encoding="utf-8")
+            if not fix_already_applied:
+                shutil.copy2(file_path, backup_path)
+                file_path.write_text(fixed_content, encoding="utf-8")
             result.fix_applied = True
 
             if self.m27_client:
@@ -75,7 +99,7 @@ class VerificationLoop:
                 result.tokens_spent = usage.total if usage else 0
 
                 if "BREAKS" in verification_text or "FAILS" in verification_text:
-                    if self.auto_revert:
+                    if self.auto_revert and not fix_already_applied:
                         self._revert_fix(file_path, backup_path, original_content)
                         result.reverted = True
                         result.fix_verified = False
@@ -88,17 +112,19 @@ class VerificationLoop:
             result.fix_verified = verification_passed
 
             if not verification_passed:
-                if self.auto_revert:
+                if self.auto_revert and not fix_already_applied:
                     self._revert_fix(file_path, backup_path, original_content)
                     result.reverted = True
                     result.verification_details += "\nValidation failed - reverted"
+                else:
+                    result.verification_details += "\nValidation failed"
             else:
                 result.verification_details += "\nAll validations passed"
 
         except Exception as e:
             logger.error(f"Verification failed: {e}")
             result.verification_details = f"Exception during verification: {e}"
-            if self.auto_revert and backup_path.exists():
+            if self.auto_revert and not fix_already_applied and backup_path.exists():
                 self._revert_fix(file_path, backup_path, original_content)
                 result.reverted = True
         finally:
@@ -148,13 +174,39 @@ Respond with:
 
 Be conservative - if you're not sure, say NEEDS_WORK."""
 
+        telemetry_context = None
+        if self._runtime_context.get("session_id"):
+            from ..optimization.types import TelemetryContext
+
+            telemetry_context = TelemetryContext(
+                project_path=str(self._runtime_context.get("project_path") or Path.cwd()),
+                session_id=str(self._runtime_context.get("session_id")),
+                stage="verification",
+                workflow_name=self._runtime_context.get("workflow_name"),
+                review_mode=self._runtime_context.get("review_mode"),
+                language=self._runtime_context.get("language"),
+                complexity=self._runtime_context.get("complexity"),
+                target_type=self._runtime_context.get("target_type"),
+                context_chars=len(prompt),
+                context_strategy="verification_issue_context",
+                metadata={"file_path": issue.file_path, "line_number": issue.line_number},
+            )
+
         try:
             response_text, usage = self.m27_client.chat(
                 messages=[{"role": "user", "content": prompt}],
                 system="You are a code verification expert. Be thorough and conservative.",
                 max_tokens=1024,
                 temperature=0.3,
+                telemetry_context=telemetry_context,
             )
+            if telemetry_context:
+                self.m27_client.update_telemetry_call(
+                    telemetry_context.call_id,
+                    parse_success=bool(response_text.strip()),
+                    validation_success="BREAKS" not in response_text
+                    and "FAILS" not in response_text,
+                )
             return response_text.strip(), usage
         except Exception as e:
             logger.warning(f"M27 verification failed: {e}")
@@ -189,13 +241,37 @@ Why did the fix fail? What should be done differently?
 
 Return a brief analysis (2-3 sentences)."""
 
+        telemetry_context = None
+        if self._runtime_context.get("session_id"):
+            from ..optimization.types import TelemetryContext
+
+            telemetry_context = TelemetryContext(
+                project_path=str(self._runtime_context.get("project_path") or Path.cwd()),
+                session_id=str(self._runtime_context.get("session_id")),
+                stage="verification",
+                workflow_name=self._runtime_context.get("workflow_name"),
+                review_mode=self._runtime_context.get("review_mode"),
+                language=self._runtime_context.get("language"),
+                complexity=self._runtime_context.get("complexity"),
+                target_type=self._runtime_context.get("target_type"),
+                context_chars=len(prompt),
+                context_strategy="verification_failure_analysis",
+                metadata={"file_path": issue.file_path, "line_number": issue.line_number},
+            )
+
         try:
             response_text, _ = self.m27_client.chat(
                 messages=[{"role": "user", "content": prompt}],
                 system="You are a code debugging expert.",
                 max_tokens=512,
                 temperature=0.5,
+                telemetry_context=telemetry_context,
             )
+            if telemetry_context:
+                self.m27_client.update_telemetry_call(
+                    telemetry_context.call_id,
+                    parse_success=bool(response_text.strip()),
+                )
             return response_text.strip()
         except Exception as e:
             logger.warning(f"M27 analysis failed: {e}")
@@ -247,7 +323,10 @@ Return a brief analysis (2-3 sentences)."""
             return True
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            # Fix: VL-01. 10s per step keeps the global verification loop
+            # responsive. Large codebases that legitimately need longer should
+            # override via config rather than block the review loop.
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
                 logger.warning(f"Compilation check failed: {result.stderr}")
                 return False
@@ -270,7 +349,10 @@ Return a brief analysis (2-3 sentences)."""
             return True
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            # Fix: VL-01. 10s per step keeps the global verification loop
+            # responsive. Large codebases that legitimately need longer should
+            # override via config rather than block the review loop.
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
                 logger.warning(f"Linter check failed: {result.stderr}")
                 return False
@@ -291,7 +373,9 @@ Return a brief analysis (2-3 sentences)."""
             return True
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            # Fix: VL-01. Cap test check at 15s to avoid blocking the loop on
+            # a single slow test; dedicated test runs belong in ``muscle run``.
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
             if result.returncode != 0:
                 logger.warning(f"Test check failed: {result.stderr}")
                 return False
