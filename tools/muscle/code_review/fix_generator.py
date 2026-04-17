@@ -17,6 +17,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -213,8 +214,31 @@ Provide the JSON output with the fixed code."""
                 error="Failed to parse fix response",
             )
 
+    @staticmethod
+    def _sweep_stale_baks(directory: Path) -> None:
+        """Delete ``*.muscle.bak`` files older than 1 hour in *directory*.
+
+        Called at the start of :meth:`apply_fix` so that bak files left by
+        previously interrupted apply operations are cleaned up before the next
+        fix attempt.  Errors are logged but never raised — the sweep is
+        best-effort.
+        """
+        stale_cutoff = time.time() - 3600
+        try:
+            for bak in directory.glob("*.muscle.bak"):
+                try:
+                    if bak.stat().st_mtime < stale_cutoff:
+                        bak.unlink(missing_ok=True)
+                        logger.debug("Removed stale bak file: %s", bak)
+                except Exception as exc:
+                    logger.debug("Could not remove stale bak file %s: %s", bak, exc)
+        except Exception as exc:
+            logger.debug("Stale-bak sweep failed for %s: %s", directory, exc)
+
     def apply_fix(self, issue: ReviewIssue, fixed_code: str) -> FixResult:
         file_path = Path(issue.file_path)
+
+        self._sweep_stale_baks(file_path.parent)
 
         if not file_path.exists():
             return FixResult(
@@ -363,7 +387,7 @@ Provide the JSON output with the fixed code."""
         original_content: str,
         fixed_content: str,
     ) -> FixResult:
-        backup_path = file_path.with_suffix(file_path.suffix + ".bak")
+        backup_path = file_path.with_suffix(file_path.suffix + ".muscle.bak")
         staged_path = file_path.with_suffix(file_path.suffix + ".muscle.tmp")
         safe_content = fixed_content.encode("utf-8", errors="replace").decode("utf-8")
         backup_created = False
@@ -398,7 +422,10 @@ Provide the JSON output with the fixed code."""
             )
         except Exception as e:
             if backup_created and backup_path.exists():
-                shutil.move(backup_path, file_path)
+                try:
+                    shutil.move(str(backup_path), str(file_path))
+                except Exception as restore_exc:
+                    logger.error("Failed to restore %s from backup: %s", file_path, restore_exc)
             return FixResult(
                 success=False,
                 file_path=str(file_path),

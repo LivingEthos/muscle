@@ -181,6 +181,7 @@ class ReviewController:
         self._fix_locks_guard = Lock()
 
         self._review_context: ReviewContext | None = None
+        self._worktree_cleanup_failures: int = 0
 
     def _record_external_lesson_outcome(
         self,
@@ -354,6 +355,7 @@ class ReviewController:
             try:
                 manager.cleanup(session)
             except Exception:
+                self._worktree_cleanup_failures += 1
                 logger.warning("Failed to clean up review worktree", exc_info=True)
 
     def _remap_context_from_worktree(

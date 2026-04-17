@@ -3,8 +3,9 @@ Unit tests for FixGenerator.
 """
 
 import tempfile
+import time
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -562,3 +563,105 @@ class TestFixResultDataclass:
 
         assert result.success is False
         assert result.error == "File not found"
+
+
+class TestFG02BakCleanup:
+    """Acceptance tests for FG-02: .muscle.bak cleanup is exception-safe."""
+
+    def test_no_bak_remains_after_exception_mid_apply(self, tmp_path):
+        """FG-02: When an exception occurs during apply, no .muscle.bak remains
+        and the source file is intact with the original content."""
+        original_content = "original line\n"
+        test_file = tmp_path / "sample.py"
+        test_file.write_text(original_content)
+
+        mock_client = MagicMock()
+        generator = FixGenerator(mock_client, verify_compile=False)
+
+        issue = ReviewIssue(
+            file_path=str(test_file),
+            line_number=1,
+            severity=Severity.MEDIUM,
+            category=IssueCategory.STYLE,
+            cwe_id=None,
+            title="Test",
+            description="Test",
+            code_snippet="original line",
+            suggested_fix=None,
+            auto_fixable=True,
+        )
+
+        # Force an exception after the backup is created but during the write.
+        # We patch os.replace to raise after the backup has been made.
+        import os as _os
+
+        original_replace = _os.replace
+
+        def raise_after_backup(src: str, dst: str) -> None:  # type: ignore[return]
+            raise OSError("Simulated write failure mid-apply")
+
+        with patch("tools.muscle.code_review.fix_generator.os.replace", side_effect=raise_after_backup):
+            result = generator.apply_fix(issue, "new content\n")
+
+        # The apply must have failed
+        assert result.success is False
+
+        # No .muscle.bak file should remain
+        bak_files = list(tmp_path.glob("*.muscle.bak"))
+        assert bak_files == [], f"Orphaned bak files found: {bak_files}"
+
+        # Source file must be intact with original content
+        assert test_file.read_text() == original_content
+
+    def test_sweep_stale_baks_removes_old_files(self, tmp_path):
+        """FG-02: _sweep_stale_baks removes *.muscle.bak files older than 1 hour."""
+        old_bak = tmp_path / "old.py.muscle.bak"
+        old_bak.write_text("old backup")
+        # Set mtime to 2 hours ago
+        old_time = time.time() - 7200
+        import os as _os
+        _os.utime(old_bak, (old_time, old_time))
+
+        fresh_bak = tmp_path / "fresh.py.muscle.bak"
+        fresh_bak.write_text("fresh backup")
+        # fresh_bak has current mtime — should not be removed
+
+        FixGenerator._sweep_stale_baks(tmp_path)
+
+        assert not old_bak.exists(), "Old .muscle.bak should have been removed"
+        assert fresh_bak.exists(), "Fresh .muscle.bak should not be removed"
+
+    def test_sweep_stale_baks_called_at_apply_fix_start(self, tmp_path):
+        """FG-02: apply_fix calls _sweep_stale_baks before attempting the fix."""
+        test_file = tmp_path / "sample.py"
+        test_file.write_text("content\n")
+
+        mock_client = MagicMock()
+        generator = FixGenerator(mock_client, verify_compile=False)
+
+        issue = ReviewIssue(
+            file_path=str(test_file),
+            line_number=1,
+            severity=Severity.MEDIUM,
+            category=IssueCategory.STYLE,
+            cwe_id=None,
+            title="Test",
+            description="Test",
+            code_snippet="content",
+            suggested_fix=None,
+            auto_fixable=True,
+        )
+
+        sweep_called_with: list[Path] = []
+
+        original_sweep = FixGenerator._sweep_stale_baks
+
+        def tracking_sweep(directory: Path) -> None:
+            sweep_called_with.append(directory)
+            original_sweep(directory)
+
+        with patch.object(FixGenerator, "_sweep_stale_baks", staticmethod(tracking_sweep)):
+            generator.apply_fix(issue, "new content\n")
+
+        assert len(sweep_called_with) >= 1
+        assert sweep_called_with[0] == test_file.parent
