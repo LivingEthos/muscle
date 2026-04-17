@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .adapters.git_adapter import GitAdapter
+from .delegation_metrics import DelegationEvent, DelegationMetrics
 from .interactive import InteractiveChoice, InteractiveHandler
 from .m27_client import TokenUsage
 from .self_improver import SelfImprover
@@ -125,6 +126,30 @@ class LoopController:
         if self.event_callback:
             self.event_callback(event, data)
         logger.debug(f"Event: {event.value} - {data}")
+
+    def _record_delegation_event(self, ctx: LoopContext) -> None:
+        """Record a delegation event for observability (Phase B.6)."""
+        try:
+            project_path = (
+                str(
+                    getattr(
+                        self._project_memory, "project_path", Path(ctx.config.output_dir).resolve()
+                    )
+                )
+                if self._project_memory
+                else ctx.config.output_dir
+            )
+            metrics = DelegationMetrics(project_path)
+            metrics.record(
+                DelegationEvent(
+                    session_id=ctx.session_id,
+                    entry_point="run",
+                    m27_tokens_in=ctx.stats.total_tokens,
+                    m27_tokens_out=0,
+                )
+            )
+        except Exception as exc:
+            logger.debug("Failed to record delegation event: %s", exc)
 
     def _record_external_lesson_outcome(
         self,
@@ -663,6 +688,8 @@ class LoopController:
                 f"iterations={ctx.stats.total_iterations}, "
                 f"tokens={ctx.stats.total_tokens}"
             )
+
+            self._record_delegation_event(ctx)
 
             self._build_session_report(ctx)
 

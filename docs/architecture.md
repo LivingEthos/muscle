@@ -569,29 +569,3 @@ The architecture deliberately separates:
 That separation keeps the CLI composable, makes subsystems independently testable,
 and lets MUSCLE evolve from a simple code-review companion into a broader
 self-improving automation loop without collapsing everything into one monolith.
-
-## Host Memory Contract (Plugin → Host CLI)
-
-MUSCLE's plugin publishes structured content to the **host CLI**'s memory files (Claude Code → `CLAUDE.md`, Codex/cross-tool → `AGENTS.md`) at the root of every reviewed project. The publisher (`tools/muscle/claude_publisher.py`) writes identical content to both files inside the `MUSCLE_PUBLISHED_START` / `MUSCLE_PUBLISHED_END` marker region.
-
-### Section types
-
-**Pinned** — always present, byte-identical across consolidation cycles, exempt from the 50-line section cap:
-- `### Methodology` — four-principle design guide (think / simplicity / surgical / goal-driven).
-- `### Delegation Protocol` — plan-then-hand-off posture directing the host model to delegate bulk execution to MUSCLE's M2.7 agents.
-- `### Effort & Tool Guidance` — Opus 4.7 effort hints (`xhigh` for coding) and auto-mode guidance.
-
-All pinned content is sourced from `tools/muscle/code_review/host_memory_templates.py` (constant strings; no dynamic rendering).
-
-**Dynamic** — populated from `project_memory.db` via `LearningPipeline` → `MemoryDecisionEngine` → `ClaudePublisher.publish()`. Subject to the 50-line section cap and M2.7 consolidation when caps are exceeded:
-- `### Critical Rules`, `### Frequent Mistakes`, `### Active Agent Calls`, `### Active Skill Calls`, `### Tooling Notes`.
-
-### Optimizer flow
-
-`tools/muscle/code_review/host_memory_optimizer.py` provides a non-destructive rewriter for pre-existing `CLAUDE.md` / `AGENTS.md` files that predate the MUSCLE plugin. Exposed as `muscle optimize-host-docs`. It wraps user content in `MUSCLE_PUBLISHED` markers (if absent) and injects the pinned block. Content outside the markers is never reordered, rewritten, or deleted. Pure and deterministic — no M2.7 calls.
-
-### File map
-
-- `tools/muscle/code_review/host_memory_templates.py` — pinned content constants.
-- `tools/muscle/code_review/host_memory_optimizer.py` — non-destructive optimizer.
-- `tools/muscle/claude_publisher.py` — marker-bounded dynamic publisher (now multi-target).

@@ -2,8 +2,6 @@
 description: Validates fixes by running tests, linters, and type checks to ensure changes don't break functionality
 ---
 
-> **Plan-then-hand-off:** Use MUSCLE for bulk execution; you retain planning and synthesis. Pass a focused scope — don't ask MUSCLE to plan the work.
-
 # MUSCLE Verification Agent
 
 Specialized sub-agent for validating fixes and running targeted tests.

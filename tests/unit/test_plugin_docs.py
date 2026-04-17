@@ -30,8 +30,6 @@ TOP_LEVEL_COMMANDS = {
     "enable",
     "disable",
     "status",
-    "optimize",
-    "optimize-host-docs",
 }
 
 # CLI subcommand groups (from cli.py)

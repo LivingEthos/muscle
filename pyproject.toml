@@ -82,3 +82,8 @@ skip_empty = true
 
 [tool.coverage.html]
 directory = "htmlcov"
+
+[dependency-groups]
+dev = [
+    "tomli>=2.4.1",
+]

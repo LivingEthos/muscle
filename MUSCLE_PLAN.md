@@ -1,9 +1,7 @@
 # MUSCLE Master Plan
 
-Last updated: 2026-04-17
-Status: **Superseded by `MUSCLE_ROADMAP.md`** as of 2026-04-17.
-
-> **Active roadmap:** [`MUSCLE_ROADMAP.md`](./MUSCLE_ROADMAP.md) is the singular living plan — order of execution, priorities, and definition of done live there. This file is retained for its historical phase descriptions and product-goal framing.
+Last updated: 2026-04-02
+Status: Active
 
 This is the high-level product plan for MUSCLE.
 
@@ -19,16 +17,6 @@ MUSCLE should become a per-project Claude Code companion that uses MiniMax M2.7
 to capture evidence from work, compress it into durable project memory, safely
 publish the right rules into the real root `CLAUDE.md`, and gradually create
 useful project-specific skills and agents.
-
-## Dual-Host Delegation Posture
-
-MUSCLE's plugin is consumed by two expensive host CLIs — Claude Code (Opus 4.7, ~$5/$25 per MTok) and Codex. MUSCLE's internal workhorse, MiniMax M2.7, does equivalent review-scoped reasoning at ~5–10× lower token cost.
-
-The plugin now writes a pinned **Methodology + Delegation Protocol + Effort & Tool Guidance** block into every reviewed project's root `CLAUDE.md` and `AGENTS.md`, via `claude_publisher.py`. The host model keeps planning, synthesis, and user interaction; MUSCLE's M2.7 agents handle bulk mechanical execution (multi-file review, test/lint sweeps, fix-candidate generation, pattern scans).
-
-This posture complements — does not replace — the dynamic rule-learning pipeline. `LearningPipeline` continues to promote rules from `project_memory.db` into the dynamic sections alongside the pinned block. Pinned sections are exempt from M2.7 consolidation and from the 50-line section cap.
-
-See `PLAN_OPUS_4_7_DELEGATION_OVERHAUL.md` for the implementation plan.
 
 ## Verified Current State
 
@@ -68,7 +56,6 @@ Current stop point:
 - `docs/project-first-growth-model-pack-roadmap.md`
 - `Forsight-plan.md`
 - `GroupTink-collab.md`
-- `PLAN_OPUS_4_7_DELEGATION_OVERHAUL.md`
 
 `docs/project-first-growth-model-pack-roadmap.md` is the detailed living
 execution plan for the project-first growth, related-project transfer,

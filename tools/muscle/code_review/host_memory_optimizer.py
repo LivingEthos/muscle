@@ -107,7 +107,12 @@ class HostMemoryOptimizer:
 
     def _render_new_file(self) -> str:
         """Content for a freshly-created target."""
-        return f"# Host Memory\n\n{PUBLISHED_START}\n{render_pinned_block()}{PUBLISHED_END}\n"
+        return (
+            f"# Host Memory\n\n"
+            f"{PUBLISHED_START}\n"
+            f"{render_pinned_block()}"
+            f"{PUBLISHED_END}\n"
+        )
 
     def _rewrite_region(self, original: str) -> str:
         """Rewrite only the region inside PUBLISHED_START/END.
@@ -121,19 +126,29 @@ class HostMemoryOptimizer:
         if start_idx == -1 or end_idx == -1 or end_idx < start_idx:
             # No markers: append a new managed region at end of file.
             sep = "" if original.endswith("\n") else "\n"
-            return f"{original}{sep}\n{PUBLISHED_START}\n{render_pinned_block()}{PUBLISHED_END}\n"
+            return (
+                f"{original}{sep}\n"
+                f"{PUBLISHED_START}\n"
+                f"{render_pinned_block()}"
+                f"{PUBLISHED_END}\n"
+            )
 
         # Markers present: extract dynamic body (anything after the pinned
         # sections, if pinned is already there) and reassemble.
         before = original[:start_idx]
-        after = original[end_idx + len(PUBLISHED_END) :]
+        after = original[end_idx + len(PUBLISHED_END):]
 
         body_start = start_idx + len(PUBLISHED_START)
         body = original[body_start:end_idx]
 
         dynamic_tail = self._strip_pinned_from_body(body)
 
-        new_region = f"{PUBLISHED_START}\n{render_pinned_block()}{dynamic_tail}{PUBLISHED_END}"
+        new_region = (
+            f"{PUBLISHED_START}\n"
+            f"{render_pinned_block()}"
+            f"{dynamic_tail}"
+            f"{PUBLISHED_END}"
+        )
         return f"{before}{new_region}{after}"
 
     def _strip_pinned_from_body(self, body: str) -> str:

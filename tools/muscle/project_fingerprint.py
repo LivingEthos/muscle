@@ -18,8 +18,11 @@ from typing import Any, cast
 
 try:
     import tomllib  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover - fallback for older runtimes
-    tomllib = None
+except ImportError:
+    try:
+        import tomli as tomllib  # type: ignore[no-redef, import-not-found]
+    except ImportError:  # pragma: no cover
+        tomllib = None
 
 from .project_memory_types import ProjectFingerprint
 

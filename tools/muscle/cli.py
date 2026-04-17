@@ -737,48 +737,6 @@ def init(
         console.print("[red]Failed to initialize project[/red]")
 
 
-@cli.command(name="optimize-host-docs")
-@click.option("--dry-run", is_flag=True, help="Print a unified diff; do not write.")
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt (required in auto mode).")
-@click.option(
-    "--only",
-    type=click.Choice(["CLAUDE.md", "AGENTS.md"]),
-    default=None,
-    help="Restrict to a single target file.",
-)
-@click.option("--skip-agents", is_flag=True, help="Do not touch AGENTS.md.")
-def optimize_host_docs(dry_run: bool, yes: bool, only: str | None, skip_agents: bool) -> None:
-    """Non-destructively optimize root CLAUDE.md / AGENTS.md into the MUSCLE-preferred format."""
-    import sys
-    from pathlib import Path
-
-    from tools.muscle.code_review.host_memory_optimizer import run_optimizer
-
-    results = run_optimizer(
-        project_path=Path.cwd(),
-        only=only,
-        skip_agents=skip_agents,
-        dry_run=dry_run,
-    )
-
-    any_changed = False
-    for r in results:
-        click.echo(f"\n=== {r.filename} ===")
-        click.echo(r.reason)
-        if r.changed and r.diff:
-            click.echo(r.diff)
-            any_changed = True
-
-    if dry_run:
-        sys.exit(1 if any_changed else 0)
-
-    if any_changed and not yes:
-        if not click.confirm("Apply these changes?", default=False):
-            click.echo("Aborted.")
-            sys.exit(1)
-    click.echo("Done." if any_changed else "No changes needed.")
-
-
 @cli.command()
 def enable() -> None:
     """Enable MUSCLE for the current project.
@@ -1743,6 +1701,39 @@ def cost_clear(path: str | None, force: bool) -> None:
     cost_optimizer = CostOptimizer(cache_dir=path)
     count = cost_optimizer.clear_cache()
     console.print(f"[green]Cleared {count} cached items[/green]")
+
+
+def _parse_since(since_str: str):
+    """Parse a human-friendly duration like '7d', '14d', '30d'."""
+    from datetime import timedelta
+
+    unit = since_str[-1].lower()
+    value = int(since_str[:-1])
+    if unit == "d":
+        return timedelta(days=value)
+    if unit == "h":
+        return timedelta(hours=value)
+    raise click.BadParameter(f"Unsupported duration unit '{unit}'. Use 'd' (days) or 'h' (hours).")
+
+
+@cost_group.command(name="delegation-report")
+@click.option("--since", "since_str", default="7d", help="Lookback window (e.g. 7d, 14d, 30d)")
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]), default="text")
+@click.option(
+    "--host-model", default="claude-opus-4-7", help="Host model for token-avoidance estimate"
+)
+def cost_delegation_report(since_str: str, fmt: str, host_model: str) -> None:
+    """Show cost-delegation observability report."""
+    from .delegation_metrics import DelegationMetrics
+
+    since_td = _parse_since(since_str)
+    metrics = DelegationMetrics(Path.cwd())
+    rpt = metrics.report(since=since_td, host_model=host_model)
+
+    if fmt == "json":
+        click.echo(metrics.format_json(rpt))
+    else:
+        click.echo(metrics.format_text(rpt))
 
 
 @cli.group(name="improve")

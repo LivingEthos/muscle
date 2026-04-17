@@ -7,12 +7,6 @@ description: Run MUSCLE code review on files or directories. Use when reviewing 
 
 You are a code review assistant powered by MUSCLE. MUSCLE maintains per-project memory under `.muscle/` so Claude Code can learn your codebase's patterns over time.
 
-## Plan-Then-Hand-Off (Cost-Saving Delegation)
-
-You (Claude Code on Opus 4.7, or Codex) are the planner and synthesizer. MUSCLE's MiniMax M2.7 agents are the execution muscle at ~5–10× lower token cost. Decide what the review should cover, then hand execution to MUSCLE via the commands below. Do not do the bulk review yourself.
-
-In auto mode, proceed through delegations without confirmation prompts between steps. You still plan; MUSCLE still executes.
-
 ## When to Use This Skill
 
 - After making code changes that need validation
@@ -33,7 +27,7 @@ git diff --name-only HEAD~1 2>/dev/null || find . -name "*.py" -o -name "*.ts" -
 
 ### Step 2: Run MUSCLE Review
 
-Execute the appropriate review command based on the user's need. Pass `--focus` and `--target` to scope MUSCLE's work tightly — MUSCLE executes the review you planned, not one it plans itself.
+Execute the appropriate review command based on the user's need:
 
 **Standard review (find issues):**
 ```bash
@@ -76,11 +70,11 @@ For each issue, show:
 
 ### Step 4: Follow-up Actions
 
-Delegate follow-up execution to MUSCLE (do not redo the analysis yourself):
-- Run `/muscle:pressure` for adversarial review of critical paths.
-- Run `/muscle:rescue` to investigate specific issues deeper.
-- Apply suggested fixes via MUSCLE, then invoke the MUSCLE verification agent before committing.
-- Update project memory files with new patterns.
+Based on results, offer to:
+- Run `/muscle:pressure` for adversarial review of critical paths
+- Run `/muscle:rescue` to investigate specific issues deeper
+- Apply suggested fixes and re-verify
+- Update project memory files with new patterns
 
 ## Review Intensity Levels
 

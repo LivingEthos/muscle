@@ -28,6 +28,7 @@ from threading import Lock
 from time import perf_counter
 from typing import TYPE_CHECKING, cast
 
+from ..delegation_metrics import DelegationEvent, DelegationMetrics
 from ..m27_client import M27Client
 from ..project_memory import ProjectMemory
 from .code_reviewer import CodeReviewer, _read_file_cached
@@ -212,6 +213,23 @@ class ReviewController:
             self.event_callback(event, data)
         logger.debug(f"Review Event: {event.value} - {data}")
 
+    def _record_delegation_event(self, ctx: ReviewContext) -> None:
+        """Record a delegation event for observability (Phase B.6)."""
+        try:
+            metrics = DelegationMetrics(self.project_path)
+            metrics.record(
+                DelegationEvent(
+                    session_id=ctx.session_id,
+                    entry_point=f"review:{self.config.mode.value}",
+                    m27_tokens_in=ctx.stats.tokens_used,
+                    m27_tokens_out=0,
+                    verifications_run=ctx.stats.auto_fixed + ctx.stats.failed_fixes,
+                    verifications_failed=ctx.stats.failed_fixes,
+                )
+            )
+        except Exception as exc:
+            logger.debug("Failed to record delegation event: %s", exc)
+
     def _get_fix_lock(self, file_path: str) -> Lock:
         with self._fix_locks_guard:
             return self._fix_locks.setdefault(str(Path(file_path).resolve()), Lock())
@@ -239,6 +257,7 @@ class ReviewController:
             try:
                 result = self._run_structured_workflow(ctx, workflow_name)
                 result.stats.duration_seconds = perf_counter() - started_at
+                self._record_delegation_event(result)
                 return result
             except Exception as e:
                 logger.warning(f"Structured review workflow failed, falling back: {e}")
@@ -246,25 +265,30 @@ class ReviewController:
         if self.config.mode == ReviewMode.REVIEW:
             result = self._run_review_mode(ctx)
             result.stats.duration_seconds = perf_counter() - started_at
+            self._record_delegation_event(result)
             return result
 
         if self.config.mode == ReviewMode.AUTO_FIX:
             result = self._run_auto_fix_mode(ctx)
             result.stats.duration_seconds = perf_counter() - started_at
+            self._record_delegation_event(result)
             return result
 
         if self.config.mode == ReviewMode.PLAN:
             result = self._run_plan_mode(ctx)
             result.stats.duration_seconds = perf_counter() - started_at
+            self._record_delegation_event(result)
             return result
 
         if self.config.mode == ReviewMode.PRESSURE:
             result = self._run_pressure_mode(ctx)
             result.stats.duration_seconds = perf_counter() - started_at
+            self._record_delegation_event(result)
             return result
 
         result = self._run_hybrid_mode(ctx)
         result.stats.duration_seconds = perf_counter() - started_at
+        self._record_delegation_event(result)
         return result
 
     @staticmethod
