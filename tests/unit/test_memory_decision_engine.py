@@ -4,7 +4,6 @@ Unit tests for MemoryDecisionEngine.
 
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -12,8 +11,8 @@ from tools.muscle.memory_decision_engine import (
     DecisionThresholds,
     DecisionType,
     MemoryDecisionEngine,
-    ScoringWeights,
     ScoreBreakdown,
+    ScoringWeights,
 )
 from tools.muscle.project_memory import ProjectMemory
 

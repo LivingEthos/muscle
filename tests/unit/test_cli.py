@@ -548,9 +548,12 @@ class TestTuiCommand:
         return CliRunner()
 
     def test_tui_runs(self, runner):
-        # TUI requires a real TTY; just verify it doesn't crash unexpectedly.
-        result = runner.invoke(tui, [])
-        # UnsupportedOperation / no stdin is expected in CI
+        # TEST-09: patch readchar.readkey at its source module so tui.views
+        # picks up the mock on its local ``from readchar import readkey`` line.
+        # Returning "q" causes the event loop in views.py to exit cleanly
+        # instead of hitting ``io.UnsupportedOperation: fileno`` in CI.
+        with patch("readchar.readkey", return_value="q"):
+            result = runner.invoke(tui, [], catch_exceptions=False)
         assert result is not None
 
 
@@ -1087,7 +1090,10 @@ class TestProbeCommand:
         broker.get_recent_jobs.return_value = []
         return broker
 
-    def test_probe_no_job_id(self, runner, mock_broker):
+    def test_probe_no_job_id(self, runner, mock_broker, tmp_path, monkeypatch):
+        # TEST-07: isolate CWD so the test never depends on a writable
+        # .muscle/project_memory.db in the caller's working directory.
+        monkeypatch.chdir(tmp_path)
         with patch(
             "tools.muscle.code_review.shadow_broker.ShadowBroker",
             return_value=mock_broker,
@@ -1095,7 +1101,8 @@ class TestProbeCommand:
             result = runner.invoke(probe, [], catch_exceptions=False)
         assert result.exit_code == 0
 
-    def test_probe_nonexistent_job(self, runner, mock_broker):
+    def test_probe_nonexistent_job(self, runner, mock_broker, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
         with patch(
             "tools.muscle.code_review.shadow_broker.ShadowBroker",
             return_value=mock_broker,
@@ -1121,7 +1128,8 @@ class TestDiagnosisCommand:
         broker.get_recent_jobs.return_value = []
         return broker
 
-    def test_diagnosis_no_job_id(self, runner, mock_broker):
+    def test_diagnosis_no_job_id(self, runner, mock_broker, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
         with patch(
             "tools.muscle.code_review.shadow_broker.ShadowBroker",
             return_value=mock_broker,
@@ -1129,7 +1137,8 @@ class TestDiagnosisCommand:
             result = runner.invoke(diagnosis, [], catch_exceptions=False)
         assert result.exit_code == 1
 
-    def test_diagnosis_nonexistent_job(self, runner, mock_broker):
+    def test_diagnosis_nonexistent_job(self, runner, mock_broker, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
         with patch(
             "tools.muscle.code_review.shadow_broker.ShadowBroker",
             return_value=mock_broker,
@@ -1355,15 +1364,21 @@ class TestMemoryGroup:
         pm.list_action_logs.return_value = []
         return pm
 
-    def test_memory_status_empty(self, runner, mock_project_memory):
+    def test_memory_status_empty(self, runner, mock_project_memory, tmp_path, monkeypatch):
         """memory status should succeed even with empty DB."""
+        # TEST-07: isolate CWD so the command never falls back to the caller's
+        # .muscle/project_memory.db.
+        monkeypatch.chdir(tmp_path)
         with patch("tools.muscle.cli.ProjectMemory", return_value=mock_project_memory):
             result = runner.invoke(memory_status, [], catch_exceptions=False)
         assert result.exit_code == 0
         assert "Memory Status" in result.output
 
-    def test_memory_status_shows_db_path(self, runner, mock_project_memory):
+    def test_memory_status_shows_db_path(
+        self, runner, mock_project_memory, tmp_path, monkeypatch
+    ):
         """memory status shows database path."""
+        monkeypatch.chdir(tmp_path)
         with patch("tools.muscle.cli.ProjectMemory", return_value=mock_project_memory):
             result = runner.invoke(memory_status, [], catch_exceptions=False)
         assert result.exit_code == 0
@@ -1371,14 +1386,18 @@ class TestMemoryGroup:
         assert "Memory Status" in result.output
         assert "Database" in result.output
 
-    def test_memory_history_empty(self, runner, mock_project_memory):
+    def test_memory_history_empty(self, runner, mock_project_memory, tmp_path, monkeypatch):
         """memory history should succeed even with no data."""
+        monkeypatch.chdir(tmp_path)
         with patch("tools.muscle.cli.ProjectMemory", return_value=mock_project_memory):
             result = runner.invoke(memory_history, [], catch_exceptions=False)
         assert result.exit_code == 0
 
-    def test_memory_history_with_limit(self, runner, mock_project_memory):
+    def test_memory_history_with_limit(
+        self, runner, mock_project_memory, tmp_path, monkeypatch
+    ):
         """memory history accepts --limit flag."""
+        monkeypatch.chdir(tmp_path)
         with patch("tools.muscle.cli.ProjectMemory", return_value=mock_project_memory):
             result = runner.invoke(memory_history, ["--limit", "5"], catch_exceptions=False)
         assert result.exit_code == 0
@@ -1427,12 +1446,19 @@ class TestAgentsGroup:
     def runner(self):
         return CliRunner()
 
-    def test_agents_list_no_dir(self, runner, tmp_path, monkeypatch):
-        """agents list handles missing agents directory gracefully."""
-        monkeypatch.chdir(tmp_path)
-        result = runner.invoke(agents_list, [], catch_exceptions=False)
-        assert result.exit_code == 0
-        assert "not found" in result.output.lower() or "no agents" in result.output.lower()
+    def test_agents_list_no_dir(self, runner):
+        """agents list handles missing agents directory gracefully.
+
+        TEST-08: use ``CliRunner.isolated_filesystem()`` so the test does
+        not pick up the real repo's ``.muscle/agents/`` directory.
+        """
+        with runner.isolated_filesystem():
+            result = runner.invoke(agents_list, [], catch_exceptions=False)
+            assert result.exit_code == 0
+            assert (
+                "not found" in result.output.lower()
+                or "no agents" in result.output.lower()
+            )
 
     def test_agents_list_empty_dir(self, runner):
         """agents list handles empty agents directory."""

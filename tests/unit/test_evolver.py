@@ -2,12 +2,31 @@
 Unit tests for evolver.py
 """
 
+from __future__ import annotations
+
+import os
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
 from tools.muscle.evolver import Evolver, _build_evolver_prompt, _sanitize_for_prompt
 from tools.muscle.m27_client import TokenUsage
+
+
+@pytest.fixture(autouse=True)
+def _isolate_home(tmp_path, monkeypatch):
+    """TEST-06: redirect $HOME to a tmp_path so Evolver cannot reach the real
+    ``~/.muscle/knowledge/strategies.db`` even if ``use_kb`` is ever flipped."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # Assertion guard: if any test in this module constructs Evolver() without
+    # ``use_kb=False`` it must not touch the real home.
+    real_home = str(Path.home())
+    # Path.home resolves HOME on POSIX so this should now point at tmp_path.
+    assert real_home == str(tmp_path), (
+        f"HOME isolation failed: Path.home()={real_home} tmp_path={tmp_path}"
+    )
+    assert os.environ["HOME"] == str(tmp_path)
 
 
 class TestSanitizeForPrompt:

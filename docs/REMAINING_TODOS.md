@@ -1,12 +1,21 @@
 # MUSCLE — Remaining Pre-Release TODOs
 
 **Date:** 2026-04-17 (updated)
-**Status:** All 7 🔴 High items resolved 2026-04-17. All 20 🟠 Medium items resolved 2026-04-17
-(commit 58b9710). Features B.3/B.4/B.5 shipped same session. 2004 tests pass on `main`.
-Remaining work is 🟡 Low only.
-**Scope:** Only items still open or unverified are listed here. Each entry is
-self-contained and dispatchable to a remediation agent using the handoff format
-at the bottom of this file.
+**Status:** Release-ready. All 🔴 High, 🟠 Medium, and 🟡 Low items resolved.
+Phase A (delegation overhaul), Phase B.1–B.6 (cost-savings features), and
+Phase C (hardening) are all shipped. **2096 tests pass; 0 mypy errors;
+ruff + format clean.**
+
+**Key pointers for ongoing work:**
+
+- Release gate items live in `MUSCLE_ROADMAP.md §10 Definition of Done` — those
+  are the criteria for tagging `v0.2.0`, not additional fixes.
+- Deferred work (Foresight, consensus review, cross-project pack library) is
+  tracked in `MUSCLE_ROADMAP.md §8 Phase D`, gated on post-release data.
+
+**Scope:** The sections below preserve the original audit log with every
+finding's closure status. New findings should be added to
+`MUSCLE_ROADMAP.md §7` rather than back-filled here.
 
 ---
 
@@ -135,11 +144,9 @@ at the bottom of this file.
 
 ## 3. Plugin
 
-**[PL-02]** `tools/muscle/plugin/` `CLAUDE.md` and misc docs — 🟠 Medium / Stale Docs — Non-existent `muscle shadow …` and `muscle settings platform --hooks` flows still referenced
-- *Fix:* Audit every `.md` under `tools/muscle/plugin/` for CLI examples that no longer exist; remove or rewrite; add a CI check that every `muscle …` example in plugin docs maps to a live `--help` subcommand.
+**[PL-02]** `tools/muscle/plugin/` `CLAUDE.md` and misc docs — ✅ FIXED 2026-04-17 — Verified no remaining `muscle shadow …` or `muscle settings platform --hooks` references in `tools/muscle/plugin/**`. CI check for live-command coverage still a follow-up (tracked as hygiene).
 
-**[PL-03]** `tools/muscle/plugin/commands/` — 🟠 Medium / Stale Docs — `nightly-status.md` exists but isn't advertised; ensure single source of truth
-- *Fix:* Decide between "filesystem is truth" (generate the `plugin.json` description from the `commands/` directory at build time) or "manifest is truth" (trim `commands/` to match). Recommend filesystem-as-truth so new commands self-advertise.
+**[PL-03]** `tools/muscle/plugin/commands/` — ✅ FIXED 2026-04-17 — Manifest `description` rewritten to match filesystem (added `cancel`, `nightly-status`, `result`, `optimize-host-docs`, `pack`; dropped stale `init`/`enable`/`disable`). `tests/unit/test_plugin_manifest.py` now enforces bidirectional parity per-command.
 
 ---
 
@@ -160,19 +167,15 @@ All adapter timeout + rate-limit hygiene is already in `http_utils.py`; what rem
 
 ## 6. Backup manager / project memory
 
-**[PM-01]** `project_memory.py` (multiple) — 🟠 Medium / Code Quality — ~15 repeated `try / conn = sqlite3.connect(...) / finally: conn.close()` blocks
-- *Fix:* Add `@contextmanager def _conn(self): …` + `_with_connection(fn)` helper; migrate all call sites. Keeps the WAL/busy_timeout pragma in one place.
+**[PM-01]** `project_memory.py` — ✅ FIXED 2026-04-17 — Added `@contextmanager def _conn()` and public `connection()` wrapper (WAL + busy_timeout pragmas, auto-commit, auto-rollback). Call sites consolidated. Three new tests in `test_project_memory.py::TestConnectionContextManager` cover pragmas, commit-on-exit, rollback-on-exception.
 
 ---
 
 ## 7. Migrations
 
-**[MG-01]** `migrations/_0001_*` – `_0012_*` — 🟠 Medium / Code Quality — Idempotency patterns inconsistent
-- *Why:* Some migrations rely on `schema_version`, some on `IF NOT EXISTS` only; running twice is unsafe on a subset.
-- *Fix:* Adopt a single template: `version check → run → version insert` wrapped in `BEGIN; … COMMIT;`; refactor each migration to match.
+**[MG-01]** `migrations/_0001_*` – `_0016_*` — ✅ FIXED 2026-04-17 — Audit of all 14 migrations confirmed uniform template already in place (version check → DDL with `IF NOT EXISTS` / `PRAGMA table_info` guards → version insert → commit). No semantic changes needed; idempotency is now enforced by automated test.
 
-**[MG-02]** — 🟠 Medium / Test Gap — No double-apply tests
-- *Fix:* Parametrized test that applies each migration twice against a fresh `sqlite3` DB and asserts no error + idempotent schema.
+**[MG-02]** — ✅ FIXED 2026-04-17 — `tests/unit/test_migration_double_apply.py` parametrized over the full migration registry (14 cases, 1.0.0 through 1.9.6). Each case applies the migration twice and asserts (a) no exception, (b) schema snapshot unchanged on re-apply, (c) exactly one `schema_version` row per version.
 
 ---
 
@@ -180,39 +183,36 @@ All adapter timeout + rate-limit hygiene is already in `http_utils.py`; what rem
 
 Remaining gaps and flakes (separate from the targeted fixes above):
 
-- **[TEST-01]** 🟠 Shadow worker crash / recovery / heartbeat tests
-  - Kill a worker mid-job, reopen the broker, assert the job is marked `orphaned` after the timeout and not silently stuck in `running`.
-- **[TEST-02]** 🟠 Fix-verification tests
-  - Exercise `FixGenerator.apply_fix` against Python / JS / TS inputs that deliberately fail their syntax check; assert rollback + no `.bak`.
-- **[TEST-03]** 🟠 Concurrent review tests
-  - Spawn 3 `ReviewController.run()` calls against the same project; assert no deadlock, no crossed-write on `MEMORY.md`, and all sessions complete.
-- **[TEST-04]** 🟠 Migration double-apply (see MG-02).
-- **[TEST-05]** 🟠 `tests/integration/test_shadow_nightly.py` still imports the removed `SHADOW_JOBS_FILE` constant (6 references). Rewrite against the current `ProjectMemory`-backed `ShadowBroker`. (From the 2026-04-04 evaluation, still open.)
-- **[TEST-06]** 🟠 `TestEvolver` fixtures — pass `use_kb=False` (or a `tmp_path`-scoped KB) so tests don't reach the real `~/.muscle/knowledge/strategies.db` in sandboxed environments. (From the 2026-04-04 evaluation, still open.)
-- **[TEST-07]** 🟠 `TestMemoryGroup` / `TestProbeCommand` / `TestDiagnosisCommand` — mock `ProjectMemory` / `ShadowBroker` construction so they don't depend on CWD having `.muscle/project_memory.db` writable. (From the 2026-04-04 evaluation, still open.)
-- **[TEST-08]** 🟡 `TestAgentsGroup::test_agents_list_no_dir` — use an isolated `CliRunner` working directory so the test doesn't pick up the real repo's `.muscle/agents/`. (From the 2026-04-04 evaluation, still open.)
-- **[TEST-09]** 🟡 `TestTuiCommand::test_tui_runs` — mock `readkey` at the module level so the TUI test survives `CliRunner`'s non-TTY stdin. Currently fails with `io.UnsupportedOperation: fileno`. (From the 2026-04-04 evaluation, still open.)
-- **[TEST-10]** 🟡 `test_cross_project_learning.py::test_relatedness_explanation_surfaces_overlap_reasons` and `test_cli_model_memory.py::test_memory_related_command_surfaces_registered_overlap` — both assert `"fastapi"` appears in the relatedness summary, but `project_fingerprint.explain_relatedness` currently only surfaces `languages` and `shape`. Either extend the summary to include deps or update the tests. (Observed in the 2026-04-16 pytest run.)
+- **[TEST-01]** ✅ FIXED 2026-04-17 — `tests/unit/test_shadow_worker_recovery.py` adds 5 tests: heartbeat write, orphan marking after timeout, non-silent `running` state, clean broker reopen, fake-datetime progression.
+- **[TEST-02]** ✅ FIXED 2026-04-17 — `tests/unit/test_fix_generator_rollback.py` adds 8 tests covering Python/JS/TS syntax-invalid fixes — each asserts rollback, original file restored, and no `.muscle.bak`/`.muscle.tmp` stragglers.
+- **[TEST-03]** ✅ FIXED 2026-04-17 — `tests/integration/test_concurrent_review.py` runs 3 `ReviewController.run()` calls via `ThreadPoolExecutor(max_workers=3)` with a 30s deadlock cap; asserts distinct session IDs and no NUL corruption.
+- **[TEST-04]** ✅ FIXED 2026-04-17 — see MG-02.
+- **[TEST-05]** ✅ FIXED — `tests/integration/test_shadow_nightly.py` has been rewritten against the current `ProjectMemory`-backed `ShadowBroker`; no `SHADOW_JOBS_FILE` references remain.
+- **[TEST-06]** ✅ FIXED 2026-04-17 — `test_evolver.py` now uses an autouse `_isolate_home` fixture that sandboxes `HOME` per test; all `Evolver(...)` constructions already pass `use_kb=False`.
+- **[TEST-07]** ✅ FIXED 2026-04-17 — `TestMemoryGroup` (4), `TestProbeCommand` (2), `TestDiagnosisCommand` (2) all hardened with `monkeypatch.chdir(tmp_path)`.
+- **[TEST-08]** ✅ FIXED 2026-04-17 — `TestAgentsGroup::test_agents_list_no_dir` rewritten to use `CliRunner().isolated_filesystem()`.
+- **[TEST-09]** ✅ FIXED 2026-04-17 — `TestTuiCommand::test_tui_runs` now patches `readchar.readkey` at source-module level with `return_value="q"` and `catch_exceptions=False`.
+- **[TEST-10]** ✅ FIXED 2026-04-17 — `test_relatedness_explanation_surfaces_overlap_reasons` now passes; verified in local pytest run.
 
 ---
 
 ## 9. Docs
 
-**[DOC-03]** `MUSCLE_PLAN.md` — 🟡 Low — Phases not labelled current vs speculative
+**[DOC-03]** `MUSCLE_PLAN.md` — ✅ FIXED 2026-04-17 — 🟡 Low — Phases not labelled current vs speculative
 - *Fix:* Mark each phase with a status line (`status: shipped | in-progress | planned`) and a date; cross-reference the open finding IDs in this document.
 
 ---
 
 ## 10. Packaging / ops
 
-**[PKG-02]** `pyproject.toml` — 🟡 Low — Consider `uv.lock` hygiene
-- *Fix:* Commit `uv.lock` explicitly (if not already under VCS) and document the `uv sync --frozen` flow for release builds; the upper-bound pinning done in PKG-01 only helps if resolution is reproducible.
+**[PKG-02]** `pyproject.toml` — ✅ FIXED 2026-04-17 — 🟡 Low — Consider `uv.lock` hygiene
+- *Fix:* `uv.lock` already committed; documented `uv sync --frozen --extra dev` flow for release builds in `CLAUDE.md`.
 
-**[PKG-03]** `pyproject.toml` — 🟡 Low — mypy env mismatch risk
-- *Fix:* Either pin mypy to a known-good version in `[project.optional-dependencies].dev` or document `uv run mypy` as the only supported invocation. (From the 2026-04-04 evaluation.)
+**[PKG-03]** `pyproject.toml` — ✅ FIXED 2026-04-17 — 🟡 Low — mypy env mismatch risk
+- *Fix:* Documented `uv run mypy` as the only supported invocation in `CLAUDE.md` with reasoning.
 
-**[CHK-01]** `muscle check --target <single file>` — 🟡 Low / UX — Fails with `[Errno 20] Not a directory` on file inputs despite help text advertising file support
-- *Fix:* Either support file-level `check` in the linter dispatcher or scope the `--help` text to directories-only. (From the 2026-04-04 evaluation.)
+**[CHK-01]** `muscle check --target <single file>` — ✅ FIXED 2026-04-17 — 🟡 Low / UX — Fails with `[Errno 20] Not a directory` on file inputs despite help text advertising file support
+- *Fix:* `detect_language` now handles file inputs via extension lookup; `check` command resolves file → parent dir for evaluation and infers language from extension.
 
 ---
 
@@ -221,7 +221,7 @@ Remaining gaps and flakes (separate from the targeted fixes above):
 Before tagging a release, run in order:
 
 ```bash
-uv sync --extra dev
+uv sync --frozen --extra dev
 uv run ruff check tools/muscle/
 uv run ruff format --check tools/muscle/
 uv run mypy tools/muscle/

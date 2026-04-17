@@ -5,8 +5,6 @@ Tests for claude_publisher.py
 import tempfile
 from pathlib import Path
 
-import pytest
-
 
 class TestClaudePublisher:
     """Tests for ClaudePublisher class."""
@@ -126,10 +124,7 @@ class TestClaudePublisher:
             claude_md.write_text("# CLAUDE.md\n")
 
             # Create 60 rules (should be capped at 50)
-            rules = [
-                {"text": f"Rule {i}", "score": 0.5, "validated_count": 1}
-                for i in range(60)
-            ]
+            rules = [{"text": f"Rule {i}", "score": 0.5, "validated_count": 1} for i in range(60)]
 
             publisher = ClaudePublisher(tmpdir)
             publisher.publish(critical_rules=rules)
@@ -137,6 +132,7 @@ class TestClaudePublisher:
             content = claude_md.read_text()
             # Count lines in critical rules section
             import re
+
             match = re.search(
                 r"### Critical Rules\n(.*?)(?:\n###|\n<!-- MUSCLE_PUBLISHED_END)",
                 content,
@@ -318,3 +314,92 @@ class TestClaudePublisher:
             tooling_idx = content.find("### Tooling Notes")
 
             assert rules_idx < mistakes_idx < agents_idx < skills_idx < tooling_idx
+
+
+class TestMultiTargetPublish:
+    """Tests for multi-target publishing (CLAUDE.md + AGENTS.md) and pinned sections."""
+
+    def test_publish_writes_to_agents_md_when_present(self):
+        """Both CLAUDE.md and AGENTS.md should receive identical published content."""
+        from tools.muscle.claude_publisher import ClaudePublisher
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            claude_md = project / "CLAUDE.md"
+            agents_md = project / "AGENTS.md"
+            claude_md.write_text("# CLAUDE.md\n")
+            agents_md.write_text("# AGENTS.md\n")
+
+            publisher = ClaudePublisher(tmpdir)
+            result = publisher.publish(
+                critical_rules=[{"text": "Use type hints", "score": 0.8, "validated_count": 3}],
+            )
+
+            assert result is True
+            claude_content = claude_md.read_text()
+            agents_content = agents_md.read_text()
+            assert "Use type hints" in claude_content
+            assert "Use type hints" in agents_content
+            # Both files should carry the pinned Methodology header.
+            assert "### Methodology" in claude_content
+            assert "### Methodology" in agents_content
+
+    def test_publish_skips_agents_md_when_absent(self):
+        """If AGENTS.md is absent, publish() still succeeds for CLAUDE.md only."""
+        from tools.muscle.claude_publisher import ClaudePublisher
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            claude_md = project / "CLAUDE.md"
+            agents_md = project / "AGENTS.md"
+            claude_md.write_text("# CLAUDE.md\n")
+            # AGENTS.md intentionally absent.
+
+            publisher = ClaudePublisher(tmpdir)
+            result = publisher.publish(
+                critical_rules=[{"text": "Rule", "score": 0.8, "validated_count": 1}],
+            )
+
+            assert result is True
+            assert not agents_md.exists()
+
+    def test_pinned_sections_never_consolidated(self):
+        """_m27_summarize_entries must NOT invoke the M2.7 client for pinned sections."""
+        from unittest.mock import MagicMock
+
+        from tools.muscle.claude_publisher import ClaudePublisher
+        from tools.muscle.code_review.host_memory_templates import SECTION_METHODOLOGY
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_m27 = MagicMock()
+            publisher = ClaudePublisher(tmpdir, m27_client=mock_m27)
+
+            entries = [{"text": "some pinned content"}]
+            result = publisher._m27_summarize_entries(entries, SECTION_METHODOLOGY)
+
+            # Entries returned unchanged.
+            assert result == entries
+            # M2.7 client must not have been called.
+            mock_m27.chat.assert_not_called()
+
+    def test_publish_idempotent(self):
+        """Publishing twice with identical inputs yields byte-identical output."""
+        from tools.muscle.claude_publisher import ClaudePublisher
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            claude_md = project / "CLAUDE.md"
+            claude_md.write_text("# CLAUDE.md\n")
+
+            publisher = ClaudePublisher(tmpdir)
+            rules = [{"text": "Stable rule", "score": 0.8, "validated_count": 3}]
+
+            publisher.publish(critical_rules=rules)
+            first = claude_md.read_text()
+
+            publisher.publish(critical_rules=rules)
+            second = claude_md.read_text()
+
+            assert first == second
+            # Pinned section appears exactly once, not duplicated.
+            assert first.count("### Methodology") == 1

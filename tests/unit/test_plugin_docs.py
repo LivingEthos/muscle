@@ -31,9 +31,15 @@ TOP_LEVEL_COMMANDS = {
     "disable",
     "status",
     "route",
+    "optimize-host-docs",
+    "pack",
 }
 
 # CLI subcommand groups (from cli.py)
+# Note: `pack` is registered as a top-level command (above) rather than here
+# because it is invokable without a subcommand via `invoke_without_command=True`.
+# The docstring-parser can't distinguish `muscle pack --task ...` (valid) from
+# a missing subcommand without this carve-out.
 CLI_GROUPS = {
     "kb",
     "cost",

@@ -933,3 +933,88 @@ class TestObservabilityHelpers:
         assert len(history) == 2
         assert history[0]["canonical_model_key"] == "openai/gpt-5-mini@1"
         assert history[1]["identity_source"] == "unresolved"
+
+
+class TestConnectionContextManager:
+    """Tests for the ``connection()`` / ``_conn()`` context manager (PM-01)."""
+
+    def test_connection_context_manager_sets_pragmas(self, pm):
+        """WAL journal_mode and busy_timeout pragmas are active in the block."""
+        with pm.connection() as conn:
+            journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+
+        assert str(journal_mode).lower() == "wal"
+        # SQLITE_BUSY_TIMEOUT_MS = 5000 per project_memory.py
+        assert int(busy_timeout) == 5000
+
+    def test_connection_commits_on_exit(self, pm, temp_project_dir):
+        """A write performed inside the ``with`` block is committed on exit."""
+        import sqlite3
+
+        with pm.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO tasks
+                (project_path, created_at, title, description, status,
+                 outcome, token_cost, duration_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(temp_project_dir),
+                    datetime.now().isoformat(),
+                    "ctx-commit",
+                    "should persist",
+                    "pending",
+                    None,
+                    0,
+                    0,
+                ),
+            )
+
+        # Fresh connection must see the row.
+        db_path = temp_project_dir / ".muscle" / "project_memory.db"
+        with sqlite3.connect(str(db_path)) as verify:
+            verify.row_factory = sqlite3.Row
+            row = verify.execute(
+                "SELECT title FROM tasks WHERE title = ?", ("ctx-commit",)
+            ).fetchone()
+        assert row is not None
+        assert row["title"] == "ctx-commit"
+
+    def test_connection_rolls_back_on_exception(self, pm, temp_project_dir):
+        """If an exception propagates out of the block, writes are rolled back."""
+        import sqlite3
+
+        class _SentinelError(RuntimeError):
+            pass
+
+        with pytest.raises(_SentinelError):
+            with pm.connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO tasks
+                    (project_path, created_at, title, description, status,
+                     outcome, token_cost, duration_ms)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(temp_project_dir),
+                        datetime.now().isoformat(),
+                        "ctx-rollback",
+                        "should NOT persist",
+                        "pending",
+                        None,
+                        0,
+                        0,
+                    ),
+                )
+                raise _SentinelError("boom")
+
+        db_path = temp_project_dir / ".muscle" / "project_memory.db"
+        with sqlite3.connect(str(db_path)) as verify:
+            verify.row_factory = sqlite3.Row
+            row = verify.execute(
+                "SELECT title FROM tasks WHERE title = ?", ("ctx-rollback",)
+            ).fetchone()
+        assert row is None

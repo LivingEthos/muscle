@@ -55,3 +55,7 @@ Thumbs.db
 .opencode/
 .serena/
 EVALUATION_REPORT.md
+
+# Claude Code / assistant working artifacts (per-session, not project state)
+.claude/
+docs/superpowers/

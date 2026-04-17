@@ -12,6 +12,8 @@ args:
     required: false
 ---
 
+> **Plan-then-hand-off:** Use MUSCLE for bulk execution; you retain planning and synthesis. Pass a focused scope — don't ask MUSCLE to plan the work.
+
 Run an adversarial MUSCLE pressure review. Execute:
 
 ```bash

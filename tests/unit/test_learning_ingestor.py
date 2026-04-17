@@ -3,10 +3,7 @@ Tests for learning_ingestor.py — LearningIngestor service for structured DB ev
 """
 
 import tempfile
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from tools.muscle.code_review.types import (
     IssueCategory,
@@ -59,7 +56,6 @@ class TestLearningIngestorWriteTaskRun:
     """Tests for write_task_run()."""
 
     def test_write_task_run_success(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -86,7 +82,6 @@ class TestLearningIngestorWriteTaskRun:
             assert call_kwargs.kwargs["duration_ms"] == 5000
 
     def test_write_task_run_with_outcome(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -108,7 +103,6 @@ class TestLearningIngestorWriteTaskRun:
             assert call_kwargs.kwargs["outcome"] == "RuntimeError: out of memory"
 
     def test_write_task_run_optional_fields_missing(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -130,7 +124,6 @@ class TestLearningIngestorWriteTaskRun:
             assert call_kwargs.kwargs["outcome"] is None
 
     def test_write_task_run_db_error(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -151,7 +144,6 @@ class TestLearningIngestorWriteReviewRun:
     """Tests for write_review_run()."""
 
     def test_write_review_run_success(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -175,7 +167,6 @@ class TestLearningIngestorWriteReviewRun:
             assert call_kwargs.kwargs["findings_count"] == 5
 
     def test_write_review_run_zero_findings(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -194,7 +185,6 @@ class TestLearningIngestorWriteReviewRun:
             assert call_kwargs.kwargs["findings_count"] == 0
 
     def test_write_review_run_db_error(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -214,7 +204,6 @@ class TestLearningIngestorWriteFindings:
     """Tests for write_findings()."""
 
     def test_write_findings_single_issue(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -234,7 +223,6 @@ class TestLearningIngestorWriteFindings:
             assert "SQL injection" in call_kwargs.kwargs["message"]
 
     def test_write_findings_multiple_issues(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -252,7 +240,6 @@ class TestLearningIngestorWriteFindings:
             assert mock_pm.insert_review_finding.call_count == 3
 
     def test_write_findings_with_fix_results(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -274,7 +261,6 @@ class TestLearningIngestorWriteFindings:
             assert calls[1].kwargs["fix_applied"] is False
 
     def test_write_findings_empty_list(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -286,7 +272,6 @@ class TestLearningIngestorWriteFindings:
             mock_pm.insert_review_finding.assert_not_called()
 
     def test_write_findings_db_error_continues(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -305,7 +290,6 @@ class TestLearningIngestorWriteFindings:
             assert count == 2
 
     def test_write_findings_with_ids_preserves_issue_order(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -327,7 +311,6 @@ class TestLearningIngestorIssueToRuleId:
     """Tests for _issue_to_rule_id()."""
 
     def test_cwe_id_used_when_present(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -339,7 +322,6 @@ class TestLearningIngestorIssueToRuleId:
             assert rule_id == "CWE-89"
 
     def test_generated_id_from_title(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -357,7 +339,6 @@ class TestLearningIngestorLinkSessionOutcome:
     """Tests for link_session_outcome()."""
 
     def test_link_outcome_success(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -374,7 +355,6 @@ class TestLearningIngestorLinkSessionOutcome:
             mock_pm.update_task_outcome.assert_called_once_with(5, "success")
 
     def test_link_outcome_failure(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -392,7 +372,6 @@ class TestLearningIngestorLinkSessionOutcome:
             mock_pm.update_task_outcome.assert_called_once_with(5, "failed: Segmentation fault")
 
     def test_link_outcome_failure_no_message(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -409,7 +388,6 @@ class TestLearningIngestorLinkSessionOutcome:
             mock_pm.update_task_outcome.assert_called_once_with(5, "failed")
 
     def test_link_outcome_no_task_id(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -430,7 +408,6 @@ class TestLearningIngestorIngestReviewResult:
     """Tests for ingest_review_result()."""
 
     def test_ingest_review_result_with_issues(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -459,7 +436,6 @@ class TestLearningIngestorIngestReviewResult:
             assert mock_pm.insert_review_finding.call_count == 2
 
     def test_ingest_review_result_no_issues(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -479,7 +455,6 @@ class TestLearningIngestorIngestReviewResult:
             mock_pm.insert_review_finding.assert_not_called()
 
     def test_ingest_review_result_db_error_on_review_run(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -504,7 +479,6 @@ class TestLearningIngestorIngestFailedReview:
     """Tests for ingest_failed_review()."""
 
     def test_ingest_failed_review(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -531,7 +505,6 @@ class TestLearningIngestorBuildFixResults:
     """Tests for _build_fix_results()."""
 
     def test_build_fix_results_mixed(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -549,7 +522,6 @@ class TestLearningIngestorBuildFixResults:
             assert fix_results == {0: True, 1: False, 2: True}
 
     def test_build_fix_results_none_fixed(self):
-        from tools.muscle.learning_ingestor import LearningIngestor
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_pm = MagicMock()
@@ -569,7 +541,6 @@ class TestLearningIngestorIntegration:
 
     def test_full_review_ingestion_cycle(self, tmp_path):
         """Test complete review ingestion with real ProjectMemory."""
-        from tools.muscle.learning_ingestor import LearningIngestor
         from tools.muscle.project_memory import ProjectMemory
 
         project_path = str(tmp_path)
@@ -621,7 +592,6 @@ class TestLearningIngestorIntegration:
 
     def test_full_task_ingestion_cycle(self, tmp_path):
         """Test complete task ingestion with real ProjectMemory."""
-        from tools.muscle.learning_ingestor import LearningIngestor
         from tools.muscle.project_memory import ProjectMemory
 
         project_path = str(tmp_path)
@@ -652,7 +622,6 @@ class TestLearningIngestorIntegration:
 
     def test_failed_task_ingestion(self, tmp_path):
         """Test failed task ingestion with real ProjectMemory."""
-        from tools.muscle.learning_ingestor import LearningIngestor
         from tools.muscle.project_memory import ProjectMemory
 
         project_path = str(tmp_path)
@@ -678,7 +647,6 @@ class TestLearningIngestorIntegration:
 
     def test_review_with_zero_findings(self, tmp_path):
         """Test review ingestion when no issues are found."""
-        from tools.muscle.learning_ingestor import LearningIngestor
         from tools.muscle.project_memory import ProjectMemory
 
         project_path = str(tmp_path)
@@ -703,7 +671,6 @@ class TestLearningIngestorIntegration:
 
     def test_multiple_reviews_accumulate(self, tmp_path):
         """Test that multiple reviews create multiple review_run rows."""
-        from tools.muscle.learning_ingestor import LearningIngestor
         from tools.muscle.project_memory import ProjectMemory
 
         project_path = str(tmp_path)

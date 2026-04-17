@@ -8,7 +8,6 @@ Tests LearningPipeline -> MemoryManager -> PatternDetector -> SkillGenerator
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -924,8 +923,8 @@ class TestSkillAgentIntegration:
                 project_path=str(project_with_muscle_dir),
                 agent_id=0,
                 decision_type="agent_candidate",
-                reasoning=f"Agent candidate for security pattern - occurrence {i+1}",
-                evidence_json=f'{{"occurrences": {i+1}}}',
+                reasoning=f"Agent candidate for security pattern - occurrence {i + 1}",
+                evidence_json=f'{{"occurrences": {i + 1}}}',
             )
 
         from tools.muscle.code_review.agent_generator import AgentGenerator
@@ -1038,4 +1037,3 @@ class TestSkillAgentIntegration:
         decision = decisions[0]
         assert "rejected" in decision["reasoning"]
         assert "capacity" in decision["reasoning"].lower() or "10" in decision["reasoning"]
-

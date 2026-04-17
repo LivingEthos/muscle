@@ -52,11 +52,7 @@ class TestCommitteeReviewer:
     def test_error_handling_agent_detects_swallowed_exception(self, tmp_path: Path):
         source = tmp_path / "service.py"
         source.write_text(
-            "def run():\n"
-            "    try:\n"
-            "        return 1\n"
-            "    except Exception:\n"
-            "        pass\n",
+            "def run():\n    try:\n        return 1\n    except Exception:\n        pass\n",
             encoding="utf-8",
         )
         reviewer = CommitteeReviewer(CodeReviewer(DummyM27()))

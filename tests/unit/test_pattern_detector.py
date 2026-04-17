@@ -4,7 +4,7 @@ Tests for pattern_detector.py
 
 from unittest.mock import MagicMock, patch
 
-from tools.muscle.code_review.pattern_detector import PatternDetector, PatternCluster, PatternInfo
+from tools.muscle.code_review.pattern_detector import PatternDetector, PatternInfo
 
 
 class TestPatternDetector:

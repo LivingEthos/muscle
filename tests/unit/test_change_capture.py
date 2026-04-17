@@ -2,10 +2,9 @@
 Unit tests for change_capture.py (MUS-021).
 """
 
-from unittest.mock import Mock, patch, MagicMock
-from pathlib import Path
+from unittest.mock import Mock
 
-from tools.muscle.change_capture import ChangeCapture, ChangeEvent
+from tools.muscle.change_capture import ChangeCapture
 
 
 class TestChangeCapture:

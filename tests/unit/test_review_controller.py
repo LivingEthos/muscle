@@ -480,8 +480,12 @@ def test_review_controller_records_positive_external_lesson_outcome(tmp_path):
     source = tmp_path / "source"
     current.mkdir()
     source.mkdir()
-    ProjectManager(current).init_project(ProjectConfig(name="current", path=current, languages=["Python"]))
-    ProjectManager(source).init_project(ProjectConfig(name="source", path=source, languages=["Python"]))
+    ProjectManager(current).init_project(
+        ProjectConfig(name="current", path=current, languages=["Python"])
+    )
+    ProjectManager(source).init_project(
+        ProjectConfig(name="source", path=source, languages=["Python"])
+    )
 
     file_path = current / "module.py"
     file_path.write_text("x = 1\n", encoding="utf-8")
@@ -489,7 +493,9 @@ def test_review_controller_records_positive_external_lesson_outcome(tmp_path):
     current_pm = ProjectMemory(str(current))
     source_pm = ProjectMemory(str(source))
     source_pm.insert_learned_rule(str(source), "Prefer schema-first review retries", "json")
-    current_pm.import_project_lessons(str(current), str(source), link_mode="snapshot", relatedness_score=0.8)
+    current_pm.import_project_lessons(
+        str(current), str(source), link_mode="snapshot", relatedness_score=0.8
+    )
     lesson = current_pm.list_transferred_lessons(project_path=str(current))[0]
     current_pm.insert_lesson_usage_event(
         project_path=str(current),
@@ -552,7 +558,9 @@ def test_review_controller_records_positive_external_lesson_outcome(tmp_path):
                 success, _ = controller._apply_fix_with_verification(ctx, issue)
 
     updated_lesson = current_pm.list_transferred_lessons(project_path=str(current))[0]
-    usage_events = current_pm.list_lesson_usage_events(project_path=str(current), session_id="review-session")
+    usage_events = current_pm.list_lesson_usage_events(
+        project_path=str(current), session_id="review-session"
+    )
 
     assert success is True
     assert usage_events[0]["outcome"] == "positive_fix_verification"
@@ -565,8 +573,12 @@ def test_review_controller_records_negative_external_lesson_outcome(tmp_path):
     source = tmp_path / "source"
     current.mkdir()
     source.mkdir()
-    ProjectManager(current).init_project(ProjectConfig(name="current", path=current, languages=["Python"]))
-    ProjectManager(source).init_project(ProjectConfig(name="source", path=source, languages=["Python"]))
+    ProjectManager(current).init_project(
+        ProjectConfig(name="current", path=current, languages=["Python"])
+    )
+    ProjectManager(source).init_project(
+        ProjectConfig(name="source", path=source, languages=["Python"])
+    )
 
     file_path = current / "module.py"
     file_path.write_text("x = 1\n", encoding="utf-8")
@@ -574,7 +586,9 @@ def test_review_controller_records_negative_external_lesson_outcome(tmp_path):
     current_pm = ProjectMemory(str(current))
     source_pm = ProjectMemory(str(source))
     source_pm.insert_learned_rule(str(source), "Prefer schema-first review retries", "json")
-    current_pm.import_project_lessons(str(current), str(source), link_mode="snapshot", relatedness_score=0.8)
+    current_pm.import_project_lessons(
+        str(current), str(source), link_mode="snapshot", relatedness_score=0.8
+    )
     lesson = current_pm.list_transferred_lessons(project_path=str(current))[0]
     current_pm.insert_lesson_usage_event(
         project_path=str(current),
@@ -639,7 +653,9 @@ def test_review_controller_records_negative_external_lesson_outcome(tmp_path):
                     success, _ = controller._apply_fix_with_verification(ctx, issue)
 
     updated_lesson = current_pm.list_transferred_lessons(project_path=str(current))[0]
-    usage_events = current_pm.list_lesson_usage_events(project_path=str(current), session_id="review-session")
+    usage_events = current_pm.list_lesson_usage_events(
+        project_path=str(current), session_id="review-session"
+    )
 
     assert success is False
     assert usage_events[0]["outcome"] == "negative_fix_verification"
@@ -670,15 +686,13 @@ class TestRC02WorktreeCleanupFailureCounter:
         assert controller._worktree_cleanup_failures == 0
 
         # Simulate a cleanup failure by patching GitWorktreeManager
-        from tools.muscle.code_review.worktree_manager import GitWorktreeManager, WorktreeSession
+        from tools.muscle.code_review.worktree_manager import WorktreeSession
 
         fake_session = MagicMock(spec=WorktreeSession)
         fake_session.worktree_path = str(tmp_path / "wt")
         fake_session.base_branch = "main"
 
-        with patch(
-            "tools.muscle.code_review.review_controller.GitWorktreeManager"
-        ) as mock_mgr_cls:
+        with patch("tools.muscle.code_review.review_controller.GitWorktreeManager") as mock_mgr_cls:
             mock_mgr = mock_mgr_cls.return_value
             mock_mgr.is_available.return_value = True
             mock_mgr.create.return_value = fake_session
@@ -694,7 +708,7 @@ class TestRC02WorktreeCleanupFailureCounter:
         """RC-02: A cleanup failure must not propagate as an exception."""
         controller = self._make_controller(tmp_path)
 
-        from tools.muscle.code_review.worktree_manager import GitWorktreeManager, WorktreeSession
+        from tools.muscle.code_review.worktree_manager import WorktreeSession
 
         fake_session = MagicMock(spec=WorktreeSession)
         fake_session.worktree_path = str(tmp_path / "wt")
@@ -702,9 +716,7 @@ class TestRC02WorktreeCleanupFailureCounter:
 
         raised_exception: list[Exception] = []
 
-        with patch(
-            "tools.muscle.code_review.review_controller.GitWorktreeManager"
-        ) as mock_mgr_cls:
+        with patch("tools.muscle.code_review.review_controller.GitWorktreeManager") as mock_mgr_cls:
             mock_mgr = mock_mgr_cls.return_value
             mock_mgr.is_available.return_value = True
             mock_mgr.create.return_value = fake_session
@@ -784,9 +796,9 @@ class TestRC03FixLockReleasedOnException:
             return lk
 
         with patch.object(controller.static_analyzer, "analyze", return_value=[]):
-        # _run_review_mode will produce no issues from static analysis;
-        # we inject the issue via ctx directly.
-        # Patch _apply_fix_with_verification to raise inside the future.
+            # _run_review_mode will produce no issues from static analysis;
+            # we inject the issue via ctx directly.
+            # Patch _apply_fix_with_verification to raise inside the future.
             with patch.object(
                 controller,
                 "_apply_fix_with_verification",

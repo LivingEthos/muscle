@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    import orjson
+    import orjson  # type: ignore[import-not-found]
 
     _HAS_ORJSON = True
 except ImportError:
@@ -736,6 +736,73 @@ def init(
             console.print("[dim]For OpenCode, use the muscle_* tools directly[/dim]")
     else:
         console.print("[red]Failed to initialize project[/red]")
+
+
+@cli.command(name="optimize-host-docs")
+@click.option("--dry-run", is_flag=True, help="Print a unified diff; do not write.")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip confirmation prompt (required in auto mode).",
+)
+@click.option(
+    "--only",
+    type=click.Choice(["CLAUDE.md", "AGENTS.md"]),
+    default=None,
+    help="Restrict to a single target file.",
+)
+@click.option("--skip-agents", is_flag=True, help="Do not touch AGENTS.md.")
+@click.option(
+    "--target",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True),
+    default=None,
+    help="Project root to optimize (defaults to current working directory).",
+)
+@click.option(
+    "--agents/--no-agents",
+    default=True,
+    help="Include AGENTS.md (alias of --skip-agents). Default: true.",
+)
+def optimize_host_docs(
+    dry_run: bool,
+    yes: bool,
+    only: str | None,
+    skip_agents: bool,
+    target: str | None,
+    agents: bool,
+) -> None:
+    """Non-destructively optimize root CLAUDE.md / AGENTS.md into the MUSCLE-preferred format."""
+    from .code_review.host_memory_optimizer import run_optimizer
+
+    project_root = Path(target).resolve() if target else Path.cwd()
+
+    # --no-agents is a shorthand alias for --skip-agents.
+    effective_skip_agents = skip_agents or (not agents)
+
+    results = run_optimizer(
+        project_path=project_root,
+        only=only,
+        skip_agents=effective_skip_agents,
+        dry_run=dry_run,
+    )
+
+    any_changed = False
+    for r in results:
+        click.echo(f"\n=== {r.filename} ===")
+        click.echo(r.reason)
+        if r.changed and r.diff:
+            click.echo(r.diff)
+            any_changed = True
+
+    if dry_run:
+        sys.exit(1 if any_changed else 0)
+
+    if any_changed and not yes:
+        if not click.confirm("Apply these changes?", default=False):
+            click.echo("Aborted.")
+            sys.exit(1)
+    click.echo("Done." if any_changed else "No changes needed.")
 
 
 @cli.command()
@@ -1508,18 +1575,28 @@ def check(target: str, language: str | None, format: str) -> None:
 
         muscle check --target ./src
 
+        muscle check --target ./src/utils.py
+
         muscle check --target ./src --language python --format json
 
         muscle check --target ./tests --format text
     """
-    from .evaluator_registry import EvaluatorRegistry
+    from .evaluator_registry import LANGUAGE_EVALUATORS, EvaluatorRegistry
 
     target_path = Path(target)
     if not target_path.exists():
         console.print(f"[red]Error: Target does not exist: {target}[/red]")
         sys.exit(1)
 
-    eval_target = str(target_path)
+    # Evaluators scan directories; for a single file, infer language from its
+    # extension and run checks against the parent directory.
+    if target_path.is_file():
+        if not language:
+            language = target_path.suffix if target_path.suffix in LANGUAGE_EVALUATORS else None
+        eval_target = str(target_path.parent)
+    else:
+        eval_target = str(target_path)
+
     registry = EvaluatorRegistry()
     result = registry.evaluate(eval_target, language=language)
 
@@ -4791,6 +4868,91 @@ def cache_clear_cmd(older_than: str | None) -> None:
     td = _parse_since(older_than) if older_than else None
     count = cache.clear(older_than=td)
     click.echo(f"Cleared {count} cached entries")
+
+
+@cli.group(name="pack", invoke_without_command=True)
+@click.option("--task", default=None, help="Task description (required when building).")
+@click.option(
+    "--scope",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Scope file or directory to include in the pack.",
+)
+@click.option("--acceptance", default="", help="Acceptance criteria from host planner.")
+@click.option(
+    "--out",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Optional path to copy the rendered pack markdown to.",
+)
+@click.pass_context
+def pack_group(
+    ctx: click.Context,
+    task: str | None,
+    scope: Path | None,
+    acceptance: str,
+    out: Path | None,
+) -> None:
+    """Build a content-addressed context pack for reuse across MUSCLE subtasks."""
+    if ctx.invoked_subcommand is not None:
+        return
+    if not task or scope is None:
+        click.echo("Error: --task and --scope are required to build a pack.", err=True)
+        click.echo(
+            "Run `muscle pack list` or `muscle pack gc --older-than <dur>` otherwise.", err=True
+        )
+        ctx.exit(2)
+        return  # pragma: no cover - ctx.exit raises
+
+    from .packs import PackBuilder
+
+    budgeter = _build_context_budgeter({})
+    builder = PackBuilder(Path.cwd(), budgeter)
+    pack = builder.build(task=task, scope=scope, acceptance=acceptance)
+    click.echo(f"Pack id: {pack.id}")
+    click.echo(f"Pack path: {pack.path}")
+    click.echo(f"Content sha: {pack.content_sha}")
+    if out is not None:
+        Path(out).write_text(pack.path.read_text(encoding="utf-8"), encoding="utf-8")
+        click.echo(f"Copied to: {out}")
+
+
+@pack_group.command(name="list")
+def pack_list_cmd() -> None:
+    """List packs stored under ``.muscle/packs/``."""
+    from .packs import PackStore
+
+    store = PackStore(Path.cwd())
+    packs = store.list()
+    if not packs:
+        click.echo("No packs found.")
+        return
+
+    table = Table(title="Context Packs")
+    table.add_column("ID", style="cyan")
+    table.add_column("Task", style="green")
+    table.add_column("Created", style="dim")
+    table.add_column("Path", style="magenta")
+    for p in packs:
+        task_preview = (p.task[:60] + "...") if len(p.task) > 60 else p.task
+        table.add_row(p.id, task_preview, p.created_at.isoformat(), str(p.path))
+    console.print(table)
+
+
+@pack_group.command(name="gc")
+@click.option(
+    "--older-than",
+    required=True,
+    help="Remove packs older than this (e.g. '7d', '30d', '1h').",
+)
+def pack_gc_cmd(older_than: str) -> None:
+    """Remove packs older than the given duration."""
+    from .packs import PackStore
+
+    store = PackStore(Path.cwd())
+    td = _parse_since(older_than)
+    removed = store.gc(older_than=td)
+    click.echo(f"Removed {removed} pack(s) older than {older_than}.")
 
 
 @cli.command(name="route")

@@ -341,7 +341,10 @@ class TestLearningPipelineValidation:
             assert rules[0]["confidence"] == "high"
 
     def test_stale_rule_archived_after_threshold(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline, ARCHIVE_VALIDATED_THRESHOLD
+        from tools.muscle.code_review.learning_pipeline import (
+            ARCHIVE_VALIDATED_THRESHOLD,
+            LearningPipeline,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -603,7 +606,7 @@ class TestLearningPipelineEndToEnd:
     def test_outside_markers_untouched(self, tmp_path):
         """Verify that content outside MUSCLE markers is never modified."""
         from tools.muscle.code_review.learning_pipeline import LearningPipeline
-        from tools.muscle.code_review.memory_manager import RULES_START, RULES_END
+        from tools.muscle.code_review.memory_manager import RULES_END, RULES_START
 
         muscle_dir = tmp_path / ".muscle"
         muscle_dir.mkdir(parents=True, exist_ok=True)
@@ -633,11 +636,15 @@ class TestLearningPipelineEndToEnd:
         pipeline = LearningPipeline(str(tmp_path))
 
         # Review 1
-        result1 = _make_review_result([_make_issue(title="SQL injection risk", severity=Severity.CRITICAL)])
+        result1 = _make_review_result(
+            [_make_issue(title="SQL injection risk", severity=Severity.CRITICAL)]
+        )
         pipeline.learn_from_review(result1)
 
         # Review 2 (different issue)
-        result2 = _make_review_result([_make_issue(title="Hardcoded secrets", severity=Severity.HIGH)])
+        result2 = _make_review_result(
+            [_make_issue(title="Hardcoded secrets", severity=Severity.HIGH)]
+        )
         pipeline.learn_from_review(result2)
 
         rules = pipeline.memory_manager.read_rules()
@@ -903,7 +910,6 @@ class TestSkillLifecycleDB:
     def test_pattern_detector_queries_memory_decisions(self, tmp_path):
         """PatternDetector uses memory_decisions for evidence_count when project_memory provided."""
         from tools.muscle.code_review.learning_pipeline import LearningPipeline
-        from tools.muscle.code_review.pattern_detector import PatternCluster
         from tools.muscle.code_review.pattern_detector import PatternDetector
 
         pipeline = LearningPipeline(str(tmp_path))
@@ -1086,8 +1092,8 @@ class TestAgentLifecycleDB:
                     project_path=str(tmp_path),
                     agent_id=0,
                     decision_type="agent_candidate",
-                    reasoning=f"Agent candidate for auth_bypass pattern - occurrence {i+1}",
-                    evidence_json=f'{{"occurrences": {i+1}}}',
+                    reasoning=f"Agent candidate for auth_bypass pattern - occurrence {i + 1}",
+                    evidence_json=f'{{"occurrences": {i + 1}}}',
                 )
 
             from tools.muscle.code_review.agent_generator import AgentGenerator
@@ -1109,7 +1115,7 @@ class TestAgentLifecycleDB:
 
     def test_can_create_agent_checks_cap(self, tmp_path):
         """can_create_agent returns False when MAX_ACTIVE_AGENTS is reached."""
-        from tools.muscle.code_review.agent_generator import AgentGenerator, MAX_ACTIVE_AGENTS
+        from tools.muscle.code_review.agent_generator import MAX_ACTIVE_AGENTS, AgentGenerator
 
         mock_m27 = MagicMock()
         pm = MagicMock()
@@ -1124,7 +1130,7 @@ class TestAgentLifecycleDB:
 
     def test_can_create_agent_checks_evidence_threshold(self, tmp_path):
         """can_create_agent returns False when evidence threshold not met."""
-        from tools.muscle.code_review.agent_generator import AgentGenerator, MIN_EVIDENCE_COUNT
+        from tools.muscle.code_review.agent_generator import MIN_EVIDENCE_COUNT, AgentGenerator
 
         mock_m27 = MagicMock()
         pm = MagicMock()
@@ -1139,7 +1145,7 @@ class TestAgentLifecycleDB:
 
     def test_can_create_agent_returns_true_when_checks_pass(self, tmp_path):
         """can_create_agent returns True when cap and evidence checks both pass."""
-        from tools.muscle.code_review.agent_generator import AgentGenerator, MIN_EVIDENCE_COUNT
+        from tools.muscle.code_review.agent_generator import MIN_EVIDENCE_COUNT, AgentGenerator
 
         mock_m27 = MagicMock()
         pm = MagicMock()
@@ -1193,7 +1199,9 @@ class TestLearningPipelineSpecializations:
 
         pipeline = LearningPipeline(str(tmp_path))
 
-        with patch("tools.muscle.code_review.learning_pipeline.PatternDetector") as mock_detector_cls:
+        with patch(
+            "tools.muscle.code_review.learning_pipeline.PatternDetector"
+        ) as mock_detector_cls:
             mock_detector = MagicMock()
             mock_detector.detect_patterns.return_value = []
             mock_detector.get_skill_candidates.return_value = []
@@ -1211,7 +1219,9 @@ class TestLearningPipelineSpecializations:
 
         pipeline = LearningPipeline(str(tmp_path))
 
-        with patch("tools.muscle.code_review.learning_pipeline.PatternDetector") as mock_detector_cls:
+        with patch(
+            "tools.muscle.code_review.learning_pipeline.PatternDetector"
+        ) as mock_detector_cls:
             mock_detector = MagicMock()
             mock_detector.detect_patterns.return_value = []
             mock_detector.get_skill_candidates.return_value = []

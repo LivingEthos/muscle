@@ -9,6 +9,8 @@ args:
     required: false
 ---
 
+> **Plan-then-hand-off:** Use MUSCLE for bulk execution; you retain planning and synthesis. Pass a focused scope — don't ask MUSCLE to plan the work.
+
 Classify a task and decide whether MUSCLE's M2.7 agents should handle it directly or escalate to the host model. Execute:
 
 ```bash

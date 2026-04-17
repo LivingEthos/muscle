@@ -84,17 +84,19 @@ class TestReviewFinding:
 
 class TestReviewFindings:
     def test_wraps_list(self) -> None:
-        findings = ReviewFindings(reviews=[
-            ReviewFinding(
-                file_path="a.py",
-                line_number=1,
-                severity="low",
-                category="style",
-                title="t",
-                description="d",
-                reasoning="r",
-            ),
-        ])
+        findings = ReviewFindings(
+            reviews=[
+                ReviewFinding(
+                    file_path="a.py",
+                    line_number=1,
+                    severity="low",
+                    category="style",
+                    title="t",
+                    description="d",
+                    reasoning="r",
+                ),
+            ]
+        )
         assert len(findings.reviews) == 1
 
     def test_empty_reviews_valid(self) -> None:

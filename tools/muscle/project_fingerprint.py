@@ -20,7 +20,7 @@ try:
     import tomllib  # type: ignore[import-not-found]
 except ImportError:
     try:
-        import tomli as tomllib  # type: ignore[no-redef, import-not-found]
+        import tomli as tomllib
     except ImportError:  # pragma: no cover
         tomllib = None
 

@@ -20,6 +20,9 @@ Current reality in this repo:
 # Install dependencies (uses uv package manager)
 uv sync --dev
 
+# Release / CI builds — use frozen lockfile for reproducible installs (PKG-02)
+uv sync --frozen --extra dev
+
 # Run all tests
 uv run pytest tests/ -v
 
@@ -30,6 +33,8 @@ uv run pytest tests/unit/test_cli.py -v
 uv run pytest tests/unit/test_cli.py -k "test_review_command" -v
 
 # Quality gates (ALL must pass before merging)
+# IMPORTANT: always invoke mypy via `uv run` — running a globally installed mypy
+# can produce false positives/negatives due to stub version mismatches (PKG-03)
 uv run mypy tools/muscle/
 uv run ruff check tools/muscle/
 uv run ruff format --check tools/muscle/

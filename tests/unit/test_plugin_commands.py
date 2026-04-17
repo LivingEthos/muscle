@@ -65,12 +65,14 @@ class TestPluginJson:
         assert plugin_json["name"] == "muscle"
 
     def test_plugin_description_lists_real_commands(self, plugin_json: dict):
-        """The plugin description must not list non-existent commands."""
+        """The plugin description must not list non-existent command groups.
+
+        Command-level checks (cancel, result, etc.) are handled by
+        test_plugin_manifest.py which enforces filesystem-truth — every
+        /muscle:<name> in the manifest must have a matching .md file and
+        vice versa.
+        """
         desc = plugin_json["description"]
-        # cancel and result do not exist
-        assert "cancel" not in desc.lower() or "muscle:cancel" not in desc, (
-            "plugin.json description must not list non-existent `muscle cancel` command"
-        )
         # shadow group does not exist
         assert "muscle shadow" not in desc, (
             "plugin.json description must not list non-existent `muscle shadow` group"

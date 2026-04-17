@@ -15,6 +15,8 @@ import json
 import logging
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -72,12 +74,53 @@ class ProjectMemory:
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        """Return a connection with row factory enabled."""
+        """Return a connection with row factory enabled.
+
+        Note: Prefer :meth:`_conn` / :meth:`connection` (context-managed)
+        for new code so the connection is always closed and the transaction
+        is committed or rolled back automatically.
+        """
         conn = sqlite3.connect(str(self._db_path), timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
         return conn
+
+    @contextmanager
+    def _conn(self) -> Iterator[sqlite3.Connection]:
+        """Yield a configured sqlite3 connection with WAL + busy_timeout pragmas.
+
+        Semantics:
+        - On clean exit, the transaction is committed and the connection closed.
+        - On exception, the transaction is rolled back and the connection closed
+          before the exception propagates.
+
+        This is the canonical way to get a DB handle from ``ProjectMemory``; use
+        it (via :meth:`connection`) anywhere you would previously have called
+        :meth:`_get_connection` and then written a try/finally block.
+        """
+        conn = self._get_connection()
+        try:
+            yield conn
+            conn.commit()
+        except BaseException:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                logger.debug("rollback failed on context exit", exc_info=True)
+            raise
+        finally:
+            conn.close()
+
+    @contextmanager
+    def connection(self) -> Iterator[sqlite3.Connection]:
+        """Public context manager yielding a configured sqlite3 connection.
+
+        Thin public wrapper around :meth:`_conn` used by B.6 call-sites
+        (``delegation_metrics``, ``escalation``, ``response_cache``, tests).
+        """
+        with self._conn() as conn:
+            yield conn
 
     @staticmethod
     def _is_locked_error(exc: sqlite3.Error) -> bool:

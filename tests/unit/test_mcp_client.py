@@ -11,9 +11,10 @@ import pytest
 class TestMCPClient:
     @pytest.fixture
     def mock_popen(self):
-        with patch("subprocess.Popen") as mock, patch(
-            "tools.muscle.adapters.mcp_client.select.select"
-        ) as mock_select:
+        with (
+            patch("subprocess.Popen") as mock,
+            patch("tools.muscle.adapters.mcp_client.select.select") as mock_select,
+        ):
             process_mock = MagicMock()
             process_mock.stdin = MagicMock()
             process_mock.stdout = MagicMock()

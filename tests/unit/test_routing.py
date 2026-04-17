@@ -119,9 +119,7 @@ class TestTaskRouter:
         decision = router.route("write tests for the parser module")
         assert decision.recommended == Recommendation.M27_WITH_VERIFY
 
-    def test_cache_hit_skips_m27_call(
-        self, router: TaskRouter, mock_client: MagicMock
-    ) -> None:
+    def test_cache_hit_skips_m27_call(self, router: TaskRouter, mock_client: MagicMock) -> None:
         mock_client.chat.return_value = (
             '{"tier": "mechanical", "recommended": "m27", '
             '"confidence": 0.9, "rationale": "cache test"}',

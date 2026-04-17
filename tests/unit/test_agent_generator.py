@@ -348,11 +348,15 @@ class TestBuildPatternFromEvidence:
         mock_pm.list_decisions.return_value = [
             {
                 "id": 1,
-                "evidence_json": json.dumps({"trigger": "test_trigger", "issues": [{"severity": "high"}]}),
+                "evidence_json": json.dumps(
+                    {"trigger": "test_trigger", "issues": [{"severity": "high"}]}
+                ),
             },
             {
                 "id": 2,
-                "evidence_json": json.dumps({"trigger": "test_trigger", "issues": [{"severity": "medium"}]}),
+                "evidence_json": json.dumps(
+                    {"trigger": "test_trigger", "issues": [{"severity": "medium"}]}
+                ),
             },
         ]
 
@@ -368,10 +372,12 @@ class TestFetchReviewedIssues:
         mock_pm.list_decisions.return_value = [
             {
                 "id": 1,
-                "evidence_json": json.dumps({
-                    "trigger": "test_trigger",
-                    "issues": [{"severity": "high", "description": "Issue 1"}],
-                }),
+                "evidence_json": json.dumps(
+                    {
+                        "trigger": "test_trigger",
+                        "issues": [{"severity": "high", "description": "Issue 1"}],
+                    }
+                ),
             },
         ]
 

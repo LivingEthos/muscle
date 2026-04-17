@@ -2,7 +2,6 @@
 Tests for memory_manager.py
 """
 
-import re
 import tempfile
 from pathlib import Path
 
@@ -62,6 +61,24 @@ class TestMemoryManager:
             result = manager.update_memory_md("Same entry", "test")
 
             assert result is False
+
+    def test_seed_contains_methodology(self):
+        """Test that freshly-created .muscle/CLAUDE.md is seeded with Methodology section."""
+        from tools.muscle.code_review.memory_manager import MemoryManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = MemoryManager(tmpdir)
+            manager.update_claude_md("First entry", "general")
+
+            content = (manager.muscle_dir / "CLAUDE.md").read_text()
+            assert "### Methodology" in content
+            for bullet in (
+                "Think before coding",
+                "Simplicity first",
+                "Surgical changes",
+                "Goal-driven execution",
+            ):
+                assert bullet in content
 
     def test_add_skill_reference(self):
         """Test adding skill reference."""
@@ -202,9 +219,7 @@ class TestStructuredClaudeMd:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
-            result = manager.write_skill_ref(
-                "Auth Patterns", ".muscle/skills/auth_patterns.md"
-            )
+            result = manager.write_skill_ref("Auth Patterns", ".muscle/skills/auth_patterns.md")
 
             assert result is True
             content = (manager.muscle_dir / "CLAUDE.md").read_text()
@@ -331,7 +346,10 @@ class TestStructuredClaudeMd:
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
             result = manager.log_review_session(
-                critical=1, high=3, medium=5, low=2,
+                critical=1,
+                high=3,
+                medium=5,
+                low=2,
                 actions=["Fixed SQL injection", "Added input validation"],
             )
 

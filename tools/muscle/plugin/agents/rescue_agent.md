@@ -2,6 +2,8 @@
 description: Deep-dive investigation of complex issues including root cause analysis, race conditions, and memory leaks
 ---
 
+> **Plan-then-hand-off:** Use MUSCLE for bulk execution; you retain planning and synthesis. Pass a focused scope — don't ask MUSCLE to plan the work.
+
 # MUSCLE Rescue Agent
 
 Specialized sub-agent for deep-dive investigation of complex issues.

@@ -6,8 +6,6 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from tools.muscle.code_review.source_context import (
     SourceContextBuilder,
     _normalize_package,
@@ -153,14 +151,13 @@ class TestPackageSelectionAndCapping:
     def test_cap_at_three_packages(self, tmp_path: Path) -> None:
         (tmp_path / "package.json").write_text("{}")
         f = tmp_path / "index.ts"
-        f.write_text(
-            "import a from 'a'\nimport b from 'b'\n"
-            "import c from 'c'\nimport d from 'd'"
-        )
+        f.write_text("import a from 'a'\nimport b from 'b'\nimport c from 'c'\nimport d from 'd'")
         builder = SourceContextBuilder(tmp_path)
-        with patch.object(builder, "_opensrc_available", return_value=True), \
-             patch.object(builder, "_fetch_packages", return_value=True), \
-             patch.object(builder, "_list_fetched", return_value=[]):
+        with (
+            patch.object(builder, "_opensrc_available", return_value=True),
+            patch.object(builder, "_fetch_packages", return_value=True),
+            patch.object(builder, "_list_fetched", return_value=[]),
+        ):
             builder.build()
         # Just verifying no exception and cap logic runs — context empty since listing is empty
 
@@ -179,8 +176,10 @@ class TestOpensrcUnavailable:
         (tmp_path / "package.json").write_text("{}")
         (tmp_path / "index.ts").write_text("import x from 'lodash'")
         builder = SourceContextBuilder(tmp_path)
-        with patch.object(builder, "_opensrc_available", return_value=True), \
-             patch.object(builder, "_fetch_packages", return_value=False):
+        with (
+            patch.object(builder, "_opensrc_available", return_value=True),
+            patch.object(builder, "_fetch_packages", return_value=False),
+        ):
             result = builder.build()
         assert result.is_empty
         assert "Failed to fetch" in result.skip_reason
@@ -189,9 +188,11 @@ class TestOpensrcUnavailable:
         (tmp_path / "package.json").write_text("{}")
         (tmp_path / "index.ts").write_text("import x from 'lodash'")
         builder = SourceContextBuilder(tmp_path)
-        with patch.object(builder, "_opensrc_available", return_value=True), \
-             patch.object(builder, "_fetch_packages", return_value=True), \
-             patch.object(builder, "_list_fetched", return_value=None):
+        with (
+            patch.object(builder, "_opensrc_available", return_value=True),
+            patch.object(builder, "_fetch_packages", return_value=True),
+            patch.object(builder, "_list_fetched", return_value=None),
+        ):
             result = builder.build()
         assert result.is_empty
 

@@ -12,9 +12,8 @@ import pytest
 from tools.muscle.delegation_metrics import (
     DelegationEvent,
     DelegationMetrics,
-    DelegationReport,
 )
-from tools.muscle.migrations._0013_delegation_events import migrate, MIGRATION_SQL
+from tools.muscle.migrations._0013_delegation_events import MIGRATION_SQL
 
 
 @pytest.fixture()
@@ -71,14 +70,16 @@ def _insert_event(
 class TestRecordAndRetrieve:
     def test_record_and_retrieve_single_event(self, project_db: Path) -> None:
         metrics = DelegationMetrics(project_db)
-        metrics.record(DelegationEvent(
-            session_id="sess-001",
-            entry_point="review:review",
-            task_tier="mechanical",
-            m27_tokens_in=1000,
-            m27_tokens_out=500,
-            m27_usd_cents=5,
-        ))
+        metrics.record(
+            DelegationEvent(
+                session_id="sess-001",
+                entry_point="review:review",
+                task_tier="mechanical",
+                m27_tokens_in=1000,
+                m27_tokens_out=500,
+                m27_usd_cents=5,
+            )
+        )
 
         rpt = metrics.report(since=timedelta(days=1))
         assert rpt.total_events == 1
@@ -86,16 +87,34 @@ class TestRecordAndRetrieve:
         assert rpt.m27_usd_cents == 5
 
     def test_report_aggregates_by_tier(self, project_db: Path) -> None:
-        _insert_event(project_db, session_id="s1", task_tier="mechanical", m27_tokens_in=100, m27_tokens_out=50)
-        _insert_event(project_db, session_id="s2", task_tier="mechanical", m27_tokens_in=200, m27_tokens_out=100)
-        _insert_event(project_db, session_id="s3", task_tier="reasoning", m27_tokens_in=500, m27_tokens_out=250)
+        _insert_event(
+            project_db,
+            session_id="s1",
+            task_tier="mechanical",
+            m27_tokens_in=100,
+            m27_tokens_out=50,
+        )
+        _insert_event(
+            project_db,
+            session_id="s2",
+            task_tier="mechanical",
+            m27_tokens_in=200,
+            m27_tokens_out=100,
+        )
+        _insert_event(
+            project_db,
+            session_id="s3",
+            task_tier="reasoning",
+            m27_tokens_in=500,
+            m27_tokens_out=250,
+        )
 
         metrics = DelegationMetrics(project_db)
         rpt = metrics.report(since=timedelta(days=1))
 
         assert rpt.total_events == 3
         assert rpt.m27_tokens_by_tier["mechanical"] == 450  # 150 + 300
-        assert rpt.m27_tokens_by_tier["reasoning"] == 750   # 500 + 250
+        assert rpt.m27_tokens_by_tier["reasoning"] == 750  # 500 + 250
 
     def test_report_since_window_excludes_old_events(self, project_db: Path) -> None:
         # Insert an event from 30 days ago
@@ -118,7 +137,9 @@ class TestRecordAndRetrieve:
 
 class TestReportFormatting:
     def test_text_format_contains_required_fields(self, project_db: Path) -> None:
-        _insert_event(project_db, session_id="s1", m27_usd_cents=42, cache_hits=1, escalations_emitted=0)
+        _insert_event(
+            project_db, session_id="s1", m27_usd_cents=42, cache_hits=1, escalations_emitted=0
+        )
 
         metrics = DelegationMetrics(project_db)
         rpt = metrics.report(since=timedelta(days=1))

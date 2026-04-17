@@ -42,6 +42,14 @@ def detect_language(output_dir: str) -> str | None:
     if not path.exists():
         path = Path.cwd()
 
+    if path.is_file():
+        ext = path.suffix
+        if ext in LANGUAGE_EVALUATORS:
+            logger.info(f"Detected {ext} language from file extension")
+            return ext
+        logger.warning("Could not auto-detect language from file extension: %s", ext)
+        return None
+
     for ext in LANGUAGE_EVALUATORS.keys():
         files = list(path.rglob(f"*{ext}"))
         if files:

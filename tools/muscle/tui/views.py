@@ -930,7 +930,7 @@ class TUI:
         return True
 
     def run(self) -> None:
-        from readchar import readkey  # type: ignore
+        from readchar import readkey
 
         with Live(self.render(), refresh_per_second=10, screen=True) as live:
             running = True

@@ -292,6 +292,7 @@ class TestStrategyKBIntegration:
 # -----------------------------------------------------------------------------
 
 from datetime import datetime
+
 from tools.muscle.legacy_importer import LegacyImporter
 from tools.muscle.project_memory import ProjectMemory
 
@@ -324,6 +325,7 @@ class TestLegacyImporterReviewKB:
         legacy_db = review_kb_dir / "review_kb.db"
         # Move legacy db to expected location
         import sqlite3
+
         src_conn = sqlite3.connect(str(tmp_path / "legacy_review_kb" / "review_kb.db"))
         src_conn.backup(sqlite3.connect(str(legacy_db)))
         src_conn.close()
@@ -353,6 +355,7 @@ class TestLegacyImporterReviewKB:
         review_kb_dir.mkdir()
 
         import sqlite3
+
         legacy_kb = ReviewKB(str(tmp_path / "legacy_review_kb"))
         legacy_kb.add_reviewed_issue(
             file_path="src/main.py",
@@ -423,7 +426,6 @@ class TestLegacyImporterStrategies:
         )
 
         # Force the DB to be at the expected path
-        import sqlite3
         # The StrategyKB already created the db at kb_dir / "strategies.db"
         assert (kb_dir / "strategies.db").exists()
 
@@ -444,6 +446,7 @@ class TestLegacyImporterStrategies:
         kb_dir.mkdir()
 
         import sqlite3
+
         conn = sqlite3.connect(str(kb_dir / "strategies.db"))
         cursor = conn.cursor()
         cursor.execute("""
@@ -459,11 +462,20 @@ class TestLegacyImporterStrategies:
                 updated_at TEXT NOT NULL
             )
         """)
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO strategies (error_pattern, root_cause, solution_strategy, language, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, ("duplicate pattern test", "cause", "solution", "python",
-              datetime.now().isoformat(), datetime.now().isoformat()))
+        """,
+            (
+                "duplicate pattern test",
+                "cause",
+                "solution",
+                "python",
+                datetime.now().isoformat(),
+                datetime.now().isoformat(),
+            ),
+        )
         conn.commit()
         conn.close()
 
@@ -552,9 +564,7 @@ class TestLegacyImporterSessions:
             "created_at": datetime.now().isoformat(),
             "max_iterations": 5,
         }
-        (session_path / "meta.json").write_text(
-            json.dumps(meta), encoding="utf-8"
-        )
+        (session_path / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
         (session_path / "iterations.jsonl").write_text("", encoding="utf-8")
 
         memory = ProjectMemory(str(tmp_path))
@@ -577,13 +587,15 @@ class TestLegacyImporterSessions:
         session_path = sessions_dir / session_id
         session_path.mkdir()
         (session_path / "meta.json").write_text(
-            json.dumps({
-                "session_id": session_id,
-                "task": "Duplicate test",
-                "language": "python",
-                "status": "completed",
-                "created_at": datetime.now().isoformat(),
-            }),
+            json.dumps(
+                {
+                    "session_id": session_id,
+                    "task": "Duplicate test",
+                    "language": "python",
+                    "status": "completed",
+                    "created_at": datetime.now().isoformat(),
+                }
+            ),
             encoding="utf-8",
         )
         (session_path / "iterations.jsonl").write_text("", encoding="utf-8")
@@ -613,7 +625,8 @@ class TestLegacyImporterMarkdownFiles:
         muscle_dir.mkdir()
 
         claude_md = muscle_dir / "CLAUDE.md"
-        claude_md.write_text("""
+        claude_md.write_text(
+            """
 # CLAUDE.md
 
 ## Learned Rules
@@ -623,7 +636,9 @@ class TestLegacyImporterMarkdownFiles:
 - Never trust raw user input in SQL queries
 
 Some other content.
-""", encoding="utf-8")
+""",
+            encoding="utf-8",
+        )
 
         memory = ProjectMemory(str(tmp_path))
         importer = LegacyImporter(memory, str(tmp_path))
@@ -652,7 +667,8 @@ Some other content.
         muscle_dir.mkdir()
 
         agent_md = muscle_dir / "AGENT.md"
-        agent_md.write_text("""
+        agent_md.write_text(
+            """
 # Test Agent
 
 ## Metadata
@@ -661,7 +677,9 @@ Some other content.
 - trigger: src/test_*.py
 
 Agent content here.
-""", encoding="utf-8")
+""",
+            encoding="utf-8",
+        )
 
         memory = ProjectMemory(str(tmp_path))
         importer = LegacyImporter(memory, str(tmp_path))
@@ -678,7 +696,8 @@ Agent content here.
         muscle_dir.mkdir()
 
         memory_md = muscle_dir / "MEMORY.md"
-        memory_md.write_text("""
+        memory_md.write_text(
+            """
 # MEMORY.md
 
 ## Architecture
@@ -688,7 +707,9 @@ This project uses a layered architecture with the following components...
 ## Important Notes
 
 Remember to always run tests before committing.
-""", encoding="utf-8")
+""",
+            encoding="utf-8",
+        )
 
         memory = ProjectMemory(str(tmp_path))
         importer = LegacyImporter(memory, str(tmp_path))
@@ -713,6 +734,7 @@ class TestLegacyImporterFullRun:
         review_kb_dir = muscle_dir / "review_kb"
         review_kb_dir.mkdir()
         import sqlite3
+
         conn = sqlite3.connect(str(review_kb_dir / "review_kb.db"))
         conn.execute("""
             CREATE TABLE IF NOT EXISTS reviewed_issues (
@@ -730,11 +752,14 @@ class TestLegacyImporterFullRun:
                 created_at TEXT NOT NULL
             )
         """)
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO reviewed_issues
             (file_path, line_number, severity, category, title, code_pattern, was_valid, was_fixed, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, ("src/main.py", 10, "HIGH", "style", "Test", "test", 1, 0, datetime.now().isoformat()))
+        """,
+            ("src/main.py", 10, "HIGH", "style", "Test", "test", 1, 0, datetime.now().isoformat()),
+        )
         conn.commit()
         conn.close()
 
@@ -755,11 +780,20 @@ class TestLegacyImporterFullRun:
                 updated_at TEXT NOT NULL
             )
         """)
-        conn2.execute("""
+        conn2.execute(
+            """
             INSERT INTO strategies (error_pattern, root_cause, solution_strategy, language, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, ("Test error", "Test cause", "Test solution", "python",
-              datetime.now().isoformat(), datetime.now().isoformat()))
+        """,
+            (
+                "Test error",
+                "Test cause",
+                "Test solution",
+                "python",
+                datetime.now().isoformat(),
+                datetime.now().isoformat(),
+            ),
+        )
         conn2.commit()
         conn2.close()
 
@@ -780,33 +814,45 @@ class TestLegacyImporterFullRun:
                 created_at TEXT NOT NULL
             )
         """)
-        conn3.execute("""
+        conn3.execute(
+            """
             INSERT INTO fix_attempts (pattern, file_path, fix_description, was_applied, was_successful, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, ("test pattern", "src/main.py", "Test fix", 1, 1, datetime.now().isoformat()))
+        """,
+            ("test pattern", "src/main.py", "Test fix", 1, 1, datetime.now().isoformat()),
+        )
         conn3.commit()
         conn3.close()
 
         # CLAUDE.md
-        (muscle_dir / "CLAUDE.md").write_text("""
+        (muscle_dir / "CLAUDE.md").write_text(
+            """
 # CLAUDE.md
 - **Rule: Test rule from CLAUDE.md**
-""", encoding="utf-8")
+""",
+            encoding="utf-8",
+        )
 
         # AGENT.md
-        (muscle_dir / "AGENT.md").write_text("""
+        (muscle_dir / "AGENT.md").write_text(
+            """
 # TestAgent
 - name: TestAgentImporter
 - description: Test agent
-""", encoding="utf-8")
+""",
+            encoding="utf-8",
+        )
 
         # MEMORY.md
-        (muscle_dir / "MEMORY.md").write_text("""
+        (muscle_dir / "MEMORY.md").write_text(
+            """
 # MEMORY.md
 ## Test Section
 
 Test content here.
-""", encoding="utf-8")
+""",
+            encoding="utf-8",
+        )
 
         memory = ProjectMemory(str(tmp_path))
         importer = LegacyImporter(memory, str(tmp_path))

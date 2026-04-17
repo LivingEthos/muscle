@@ -89,8 +89,7 @@ class TestEscalationRecorder:
             db_path = project_path / ".muscle" / "project_memory.db"
             with sqlite3.connect(db_path) as conn:
                 row = conn.execute(
-                    "SELECT session_id, reason, source_module, attempt_count "
-                    "FROM escalations"
+                    "SELECT session_id, reason, source_module, attempt_count FROM escalations"
                 ).fetchone()
             assert row is not None
             assert row[0] == "test-session-1"

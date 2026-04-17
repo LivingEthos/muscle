@@ -2,8 +2,8 @@
 Sample utility module with common code quality issues.
 """
 
-import subprocess
 import re
+import subprocess
 
 
 def run_command(cmd: str) -> str:

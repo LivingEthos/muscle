@@ -42,9 +42,7 @@ class TestLongEvalRunner:
                 "high_issues": [],
                 "total_issues": 0,
             }
-            with patch(
-                "tools.muscle.code_review.long_eval_runner.LearningPipeline"
-            ) as mock_pl:
+            with patch("tools.muscle.code_review.long_eval_runner.LearningPipeline") as mock_pl:
                 mock_pipeline = MagicMock()
                 mock_pipeline.learn_from_review.return_value = {}
                 mock_pl.return_value = mock_pipeline
@@ -74,16 +72,22 @@ class TestLongEvalRunner:
         assert result["total_issues"] == 0
 
     def test_parse_review_output_json(self, runner):
-        json_output = json.dumps({
-            "session_id": "long_eval-20260402",
-            "target_path": "/fake",
-            "issues": [
-                {"severity": "CRITICAL", "title": "SQL injection in query", "auto_fixable": False},
-                {"severity": "HIGH", "title": "Missing null check", "auto_fixable": False},
-                {"severity": "MEDIUM", "title": "Unused variable", "auto_fixable": True},
-            ],
-            "summary": {"critical": 1, "high": 1, "medium": 1, "low": 0, "info": 0},
-        })
+        json_output = json.dumps(
+            {
+                "session_id": "long_eval-20260402",
+                "target_path": "/fake",
+                "issues": [
+                    {
+                        "severity": "CRITICAL",
+                        "title": "SQL injection in query",
+                        "auto_fixable": False,
+                    },
+                    {"severity": "HIGH", "title": "Missing null check", "auto_fixable": False},
+                    {"severity": "MEDIUM", "title": "Unused variable", "auto_fixable": True},
+                ],
+                "summary": {"critical": 1, "high": 1, "medium": 1, "low": 0, "info": 0},
+            }
+        )
         result = runner._parse_review_output(json_output, "/fake")
         assert result["total_issues"] == 3  # Sum of all summary values
         assert len(result["critical_issues"]) == 1
@@ -183,9 +187,7 @@ class TestLongEvalLearningIntegration:
                 "high_issues": [],
                 "total_issues": 0,
             }
-            with patch(
-                "tools.muscle.code_review.long_eval_runner.LearningPipeline"
-            ) as mock_pl:
+            with patch("tools.muscle.code_review.long_eval_runner.LearningPipeline") as mock_pl:
                 mock_pipeline = MagicMock()
                 mock_pipeline.learn_from_review.return_value = {}
                 mock_pl.return_value = mock_pipeline
@@ -204,9 +206,7 @@ class TestLongEvalLearningIntegration:
                 "high_issues": [],
                 "total_issues": 0,
             }
-            with patch(
-                "tools.muscle.code_review.long_eval_runner.LearningPipeline"
-            ) as mock_pl:
+            with patch("tools.muscle.code_review.long_eval_runner.LearningPipeline") as mock_pl:
                 mock_pl.side_effect = Exception("Pipeline init failed")
                 result = runner.run_long_eval()
                 # Should still return results despite learning failure

@@ -5,7 +5,6 @@ from pathlib import Path
 
 from tools.muscle.code_review.host_memory_optimizer import (
     HostMemoryOptimizer,
-    OptimizeResult,
     run_optimizer,
 )
 
@@ -22,6 +21,7 @@ class TestHostMemoryOptimizer:
         with tempfile.TemporaryDirectory() as tmpdir:
             # Need project_memory.db for BackupManager.
             from tools.muscle.project_memory import ProjectMemory
+
             pm = ProjectMemory(tmpdir)
             pm._init_db()
 
@@ -37,6 +37,7 @@ class TestHostMemoryOptimizer:
     def test_idempotent_on_optimal_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             from tools.muscle.project_memory import ProjectMemory
+
             pm = ProjectMemory(tmpdir)
             pm._init_db()
 
@@ -49,6 +50,7 @@ class TestHostMemoryOptimizer:
     def test_preserves_user_content_outside_markers(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             from tools.muscle.project_memory import ProjectMemory
+
             pm = ProjectMemory(tmpdir)
             pm._init_db()
 
@@ -71,6 +73,7 @@ class TestHostMemoryOptimizer:
     def test_preserves_existing_dynamic_sections(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             from tools.muscle.project_memory import ProjectMemory
+
             pm = ProjectMemory(tmpdir)
             pm._init_db()
 

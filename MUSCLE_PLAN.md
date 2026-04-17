@@ -1,7 +1,7 @@
 # MUSCLE Master Plan
 
-Last updated: 2026-04-02
-Status: Active
+Last updated: 2026-04-17
+Status: Active — Phase 5 in progress
 
 This is the high-level product plan for MUSCLE.
 
@@ -67,6 +67,8 @@ These are now the only active planning documents.
 
 ### Phase 1: Stabilize the DB-First Spine
 
+**status: shipped** (2026-04-17)
+
 Finish the integration work that is already underway:
 
 - unify review ingestion
@@ -76,6 +78,8 @@ Finish the integration work that is already underway:
 
 ### Phase 2: Complete Claude Code Project Controls
 
+**status: shipped** (2026-04-17)
+
 Make MUSCLE understandable and controllable per project:
 
 - real Claude Code init behavior
@@ -83,7 +87,11 @@ Make MUSCLE understandable and controllable per project:
 - memory, skill, agent, and backup inspection commands
 - truthful plugin docs and help text
 
+Open findings: [PL-02], [PL-03] (plugin doc stale references)
+
 ### Phase 3: Finish Skill and Agent Lifecycle
+
+**status: in-progress**
 
 Turn learning into specialization:
 
@@ -94,6 +102,8 @@ Turn learning into specialization:
 
 ### Phase 4: Make the Management Surfaces Real
 
+**status: in-progress**
+
 Finish the day-to-day UX:
 
 - project-local background job tracking
@@ -103,6 +113,8 @@ Finish the day-to-day UX:
 
 ### Phase 5: Hardening and Release
 
+**status: in-progress** (2026-04-17 — 🟡 Low items remain)
+
 Prepare for a production push:
 
 - changed-files-first background scope
@@ -110,6 +122,9 @@ Prepare for a production push:
 - quality gates
 - smoke coverage
 - docs and release cleanup
+
+Open findings: [PKG-02], [PKG-03], [CHK-01], [DOC-03], [TEST-08], [TEST-09],
+[TEST-10], [PL-02], [PL-03], [PM-01], [MG-01], [MG-02]
 
 ## Success Criteria
 

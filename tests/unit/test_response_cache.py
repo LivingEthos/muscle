@@ -7,8 +7,6 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from tools.muscle.response_cache import ResponseCache
 
 
@@ -133,8 +131,9 @@ class TestChatStructuredPackIdWiring:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "cache.db"
 
-            with patch.object(M27Client, "_get_session"), patch.object(
-                M27Client, "_configure_limiters"
+            with (
+                patch.object(M27Client, "_get_session"),
+                patch.object(M27Client, "_configure_limiters"),
             ):
                 client = M27Client.__new__(M27Client)
                 client.api_key = "test-key"
