@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from ..io_safety import update_text_file_locked
+from .host_memory_templates import INTERNAL_SEED
 
 logger = logging.getLogger(__name__)
 
@@ -143,11 +144,12 @@ Return ONLY the summarized text, no quotes or explanation."""
         return True
 
     def _create_file_with_markers(self, filename: str) -> str:
+        seed = INTERNAL_SEED if filename in ("CLAUDE.md", "AGENT.md") else ""
         return f"""# {filename.replace(".md", "")}
 
 <!-- MUSCLE_LEARNED_START -->
 <!-- MUSCLE managed section - DO NOT EDIT OUTSIDE MARKERS -->
-<!-- MUSCLE_LEARNED_END -->
+{seed}<!-- MUSCLE_LEARNED_END -->
 """
 
     def _extract_section(self, content: str) -> str:

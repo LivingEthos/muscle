@@ -21,6 +21,14 @@ from ..project_memory import ProjectMemory
 logger = logging.getLogger(__name__)
 
 
+def get_codex_home() -> Path:
+    """Return the Codex data directory, honoring CODEX_HOME env var.
+
+    Shared with host_memory_optimizer (future Codex-aware enhancements).
+    """
+    return Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
+
+
 @dataclass
 class ImportSummary:
     provider: str
@@ -54,7 +62,7 @@ class ExternalBenchmarkImporter:
         return summaries
 
     def _import_codex(self, cutoff: datetime) -> ImportSummary:
-        codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
+        codex_home = get_codex_home()
         sessions_dir = codex_home / "sessions"
         summary = ImportSummary(provider="codex")
         if not sessions_dir.exists():

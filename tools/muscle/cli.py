@@ -737,6 +737,48 @@ def init(
         console.print("[red]Failed to initialize project[/red]")
 
 
+@cli.command(name="optimize-host-docs")
+@click.option("--dry-run", is_flag=True, help="Print a unified diff; do not write.")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt (required in auto mode).")
+@click.option(
+    "--only",
+    type=click.Choice(["CLAUDE.md", "AGENTS.md"]),
+    default=None,
+    help="Restrict to a single target file.",
+)
+@click.option("--skip-agents", is_flag=True, help="Do not touch AGENTS.md.")
+def optimize_host_docs(dry_run: bool, yes: bool, only: str | None, skip_agents: bool) -> None:
+    """Non-destructively optimize root CLAUDE.md / AGENTS.md into the MUSCLE-preferred format."""
+    import sys
+    from pathlib import Path
+
+    from tools.muscle.code_review.host_memory_optimizer import run_optimizer
+
+    results = run_optimizer(
+        project_path=Path.cwd(),
+        only=only,
+        skip_agents=skip_agents,
+        dry_run=dry_run,
+    )
+
+    any_changed = False
+    for r in results:
+        click.echo(f"\n=== {r.filename} ===")
+        click.echo(r.reason)
+        if r.changed and r.diff:
+            click.echo(r.diff)
+            any_changed = True
+
+    if dry_run:
+        sys.exit(1 if any_changed else 0)
+
+    if any_changed and not yes:
+        if not click.confirm("Apply these changes?", default=False):
+            click.echo("Aborted.")
+            sys.exit(1)
+    click.echo("Done." if any_changed else "No changes needed.")
+
+
 @cli.command()
 def enable() -> None:
     """Enable MUSCLE for the current project.

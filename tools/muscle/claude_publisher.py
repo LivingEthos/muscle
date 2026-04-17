@@ -35,6 +35,12 @@ from pathlib import Path
 from typing import Any
 
 from .backup_manager import BackupManager
+from .code_review.host_memory_templates import (
+    PINNED_TEMPLATE,
+    SECTION_DELEGATION,
+    SECTION_EFFORT,
+    SECTION_METHODOLOGY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +55,11 @@ SECTION_AGENT_CALLS = "### Active Agent Calls"
 SECTION_SKILL_CALLS = "### Active Skill Calls"
 SECTION_TOOLING_NOTES = "### Tooling Notes"
 
+# Pinned sections are exempt from MAX_SECTION_LINES and M2.7 consolidation.
+PINNED_SECTIONS: frozenset[str] = frozenset(
+    {SECTION_METHODOLOGY, SECTION_DELEGATION, SECTION_EFFORT}
+)
+
 # Size cap per section
 MAX_SECTION_LINES = 50
 
@@ -61,6 +72,7 @@ class ClaudePublisher:
         project_path: str,
         backup_manager: BackupManager | None = None,
         m27_client: Any | None = None,
+        target_files: list[str] | None = None,
     ):
         """
         Initialize ClaudePublisher.
@@ -70,9 +82,17 @@ class ClaudePublisher:
             backup_manager: Optional shared BackupManager instance. If not provided,
                            one will be created using ProjectMemory.
             m27_client: Optional M2.7 client for consolidation.
+            target_files: Filenames (relative to project_path) to publish to.
+                          Defaults to ["CLAUDE.md", "AGENTS.md"]. Identical content
+                          is written to every target, with a per-file backup before
+                          each write.
         """
         self.project_path = Path(project_path)
-        self.claude_md_path = self.project_path / "CLAUDE.md"
+        self.target_files: list[str] = (
+            list(target_files) if target_files else ["CLAUDE.md", "AGENTS.md"]
+        )
+        # Retained for backwards compatibility with code that reads claude_md_path directly.
+        self.claude_md_path = self.project_path / self.target_files[0]
         self.m27 = m27_client
 
         if backup_manager is not None:
@@ -159,6 +179,16 @@ class ClaudePublisher:
     ) -> list[dict]:
         """Use M2.7 to summarize demoted entries into condensed form."""
         if not self.m27:
+            return entries
+
+        # Defensive: pinned sections should never reach this method, but if they
+        # do (e.g., a future regression), return entries unchanged rather than
+        # paraphrasing the delegation template.
+        if section_name in PINNED_SECTIONS:
+            logger.warning(
+                f"_m27_summarize_entries called for pinned section {section_name!r}; "
+                "returning entries unchanged."
+            )
             return entries
 
         # Format entries for summarization
@@ -248,6 +278,9 @@ Return ONLY the JSON array, nothing else."""
         Returns tuple of (critical_rules, mistake_corrections, agent_calls, skill_calls, tooling_notes)
         after consolidation.
         """
+        # Pinned sections (Methodology, Delegation Protocol, Effort & Tool Guidance)
+        # are never consolidated or size-capped. They are written verbatim from
+        # host_memory_templates.PINNED_TEMPLATE and must survive unchanged.
         current_sizes = self._get_section_sizes()
 
         # Calculate new sizes after adding incoming entries
@@ -347,22 +380,7 @@ Return ONLY the JSON array, nothing else."""
         Returns:
             True if publish succeeded, False otherwise
         """
-        if not self.claude_md_path.exists():
-            logger.warning(f"CLAUDE.md not found at {self.claude_md_path}")
-            return False
-
-        # Always create backup before writing (using shared BackupManager)
-        try:
-            self._backup_manager.create_backup("claude_md")
-        except FileNotFoundError:
-            # Root CLAUDE.md doesn't exist yet - cannot back up
-            logger.warning(f"CLAUDE.md not found at {self.claude_md_path}, cannot backup")
-            return False
-        except Exception as e:
-            logger.error(f"Failed to create backup: {e}")
-            return False
-
-        # Check sizes and consolidate if needed (M2.7 summarization for over-cap sections)
+        # Check sizes and consolidate once (results reused for every target).
         (
             critical_rules,
             mistake_corrections,
@@ -377,31 +395,56 @@ Return ONLY the JSON array, nothing else."""
             tooling_notes=tooling_notes or [],
         )
 
-        try:
-            content = self.claude_md_path.read_text()
-            updated_content = self._update_published_section(
-                content,
-                critical_rules=critical_rules or [],
-                mistake_corrections=mistake_corrections or [],
-                agent_calls=agent_calls or [],
-                skill_calls=skill_calls or [],
-                tooling_notes=tooling_notes or [],
-            )
-            self.claude_md_path.write_text(updated_content)
-            logger.info("Successfully published to CLAUDE.md")
+        any_written = False
+        for filename in self.target_files:
+            target_path = self.project_path / filename
+            if not target_path.exists():
+                # Skip targets that the user has not created. Do NOT auto-create
+                # here — auto-creation is the optimizer's job (Change 4).
+                logger.info(
+                    f"{filename} not found at {target_path}; skipping publish to this target"
+                )
+                continue
 
-            self._backup_manager._pm.insert_action_log(
-                project_path=str(self.project_path),
-                action_type="publish",
-                entity_type="claude_md",
-                entity_id=None,
-                details_json='{"sections": ["critical_rules", "mistake_corrections", "agent_calls", "skill_calls", "tooling_notes"]}',
-            )
+            # Per-file backup before write.
+            try:
+                self._backup_manager.create_backup("claude_md")
+            except FileNotFoundError:
+                logger.warning(f"{filename} not found at {target_path}, cannot backup")
+                continue
+            except Exception as e:
+                logger.error(f"Failed to create backup for {filename}: {e}")
+                continue
 
-            return True
-        except Exception as e:
-            logger.error(f"Failed to publish to CLAUDE.md: {e}")
-            return False
+            try:
+                content = target_path.read_text()
+                updated_content = self._update_published_section(
+                    content,
+                    critical_rules=critical_rules or [],
+                    mistake_corrections=mistake_corrections or [],
+                    agent_calls=agent_calls or [],
+                    skill_calls=skill_calls or [],
+                    tooling_notes=tooling_notes or [],
+                )
+                target_path.write_text(updated_content)
+                logger.info(f"Successfully published to {filename}")
+                any_written = True
+
+                self._backup_manager._pm.insert_action_log(
+                    project_path=str(self.project_path),
+                    action_type="publish",
+                    entity_type=filename,
+                    entity_id=None,
+                    details_json=(
+                        '{"sections": ["critical_rules", "mistake_corrections",'
+                        ' "agent_calls", "skill_calls", "tooling_notes"]}'
+                    ),
+                )
+            except Exception as e:
+                logger.error(f"Failed to publish to {filename}: {e}")
+                continue
+
+        return any_written
 
     def _update_published_section(
         self,
@@ -442,8 +485,18 @@ Return ONLY the JSON array, nothing else."""
         skill_calls: list[dict],
         tooling_notes: list[str],
     ) -> str:
-        """Build the compact published content section."""
+        """Build the compact published content section.
+
+        Pinned sections (Methodology, Delegation Protocol, Effort & Tool
+        Guidance) are always rendered first, byte-identical across runs,
+        regardless of dynamic-section content. Dynamic sections follow.
+        """
         lines: list[str] = []
+
+        # Pinned block — always first, always verbatim. Sourced from
+        # host_memory_templates.PINNED_TEMPLATE. Do not edit here.
+        lines.append(PINNED_TEMPLATE.rstrip())
+        lines.append("")
 
         # Critical Rules (high score rules first)
         if critical_rules:

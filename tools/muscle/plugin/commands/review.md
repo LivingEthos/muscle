@@ -15,6 +15,9 @@ args:
     required: false
 ---
 
+> **Plan-then-hand-off:** Use MUSCLE for bulk execution; you retain planning and synthesis. Pass a focused scope — don't ask MUSCLE to plan the work.
+> **Effort:** Run fix-application flows at `xhigh` effort. In auto mode, skip the confirmation prompt.
+
 Run a MUSCLE code review. Execute the following command, adding any user-specified options:
 
 ```bash
