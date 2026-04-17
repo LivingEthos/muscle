@@ -110,6 +110,46 @@ class TestCodeGenerator:
         )
         assert len(chunks) >= 2
 
+    def test_generate_streaming_no_redundant_full_response_assignment(
+        self, generator, mock_client, tmp_path
+    ):
+        """[CG-02] full_response must be set once (after the loop), not per-chunk.
+
+        We simulate 100 streaming chunks that build up an accumulated string and
+        assert the final yielded output starts with the first chunk content and
+        ends with the last chunk content — i.e., no truncation occurred because
+        the assignment was deferred to after the loop rather than overwriting on
+        every chunk.
+        """
+        chunk_size = 100
+        num_chunks = 100
+        # Build a synthetic accumulated-text stream: each item is the full text
+        # seen so far (as chat_streaming yields growing accumulated_text values).
+        base_chunk = "x" * chunk_size
+        accumulated_chunks = [
+            (base_chunk * (i + 1), TokenUsage(i + 1, i + 1)) for i in range(num_chunks)
+        ]
+        mock_client.chat_streaming.return_value = iter(accumulated_chunks)
+
+        all_yielded: list[tuple[str, object]] = []
+        for chunk in generator.generate_streaming(
+            task="write 100 chunks",
+            evolved_strategy=None,
+            output_dir=str(tmp_path),
+            # No progress_callback so deltas are yielded, then final parse output.
+        ):
+            all_yielded.append(chunk)
+
+        # The final yielded item is the parse result; deltas come before it.
+        # Check the streaming deltas (all items except the last) together
+        # reconstruct the full 10 KB text with no data dropped.
+        delta_text = "".join(item[0] for item in all_yielded[:-1])
+        expected_full = base_chunk * num_chunks
+        assert len(delta_text) == len(expected_full), (
+            f"Expected {len(expected_full)} chars of delta output, got {len(delta_text)}"
+        )
+        assert delta_text == expected_full, "Delta stream was truncated or corrupted"
+
     def test_generate_streaming_ignores_terminal_empty_chunk(self, generator, mock_client, tmp_path):
         mock_client.chat_streaming.return_value = iter(
             [

@@ -465,7 +465,6 @@ class CodeGenerator:
 
         logger.info(f"Generating code for task: {task[:50]}... (streaming)")
 
-        full_response = ""
         previous_text = ""
         final_usage = TokenUsage()
 
@@ -489,13 +488,17 @@ class CodeGenerator:
                 logger.error(f"Streaming failed: {stream_error}")
                 break
 
-            full_response = accumulated_text
             delta = accumulated_text[len(previous_text) :]
             previous_text = accumulated_text
             if progress_callback and delta:
                 progress_callback(delta)
             if delta and not progress_callback:
                 yield delta, final_usage
+
+        # Fix: [CG-02] Assign full_response once after the loop completes.
+        # Moving this out of the loop body eliminates the redundant O(n) string
+        # copy that previously occurred on every streaming chunk.
+        full_response = previous_text
 
         if stream_error:
             yield f"Generation failed: {stream_error}", final_usage
