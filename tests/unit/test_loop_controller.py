@@ -3,10 +3,11 @@ Unit tests for SCLE loop controller.
 """
 
 import hashlib
+import threading
 from unittest.mock import MagicMock, Mock, patch
 
 from tools.muscle.interactive import InteractiveChoice
-from tools.muscle.loop_controller import LoopContext, LoopController
+from tools.muscle.loop_controller import LoopContext, LoopController, LoopEvent
 from tools.muscle.project_memory import ProjectMemory
 from tools.muscle.tui.project_manager import ProjectConfig, ProjectManager
 from tools.muscle.types import (
@@ -681,3 +682,151 @@ def test_loop_controller_resume_uses_existing_context_without_creating_new_sessi
     assert ctx.stats.total_iterations == 3
     assert session_manager.create_calls == 0
     assert session_manager.resumed_sessions == ["existing-session-123"]
+
+
+# ---------------------------------------------------------------------------
+# LC-01: Budget arithmetic — remaining_tokens never negative, overspend fires once
+# ---------------------------------------------------------------------------
+
+
+def test_lc01_remaining_tokens_never_negative_and_overspend_fires_once():
+    """
+    Drive total_tokens past budget_tokens across multiple iterations.
+    Assert:
+    - remaining_tokens in all emitted events is >= 0
+    - BUDGET_OVERSPEND event fires exactly once
+    """
+    # budget of 100 tokens; each iteration costs 60 tokens → overspends on iter 2
+    budget_tokens = 100
+    token_cost_per_iter = 60  # iter 1: 60 total; iter 2: 120 total (overspend)
+
+    emitted_events: list[tuple[LoopEvent, dict]] = []
+
+    def event_cb(event: LoopEvent, data: dict) -> None:
+        emitted_events.append((event, data))
+
+    # Generator that always costs token_cost_per_iter tokens
+    class FixedCostGenerator:
+        def __call__(self, task: str, evolved_strategy: str, output_dir: str | None = None):
+            return "code", MagicMock(total=token_cost_per_iter)
+
+    config = RunConfig(
+        task="Test budget overspend",
+        max_iterations=5,
+        budget_tokens=budget_tokens,
+        budget_mode=BudgetMode.FIXED,
+    )
+
+    # Budget manager always returns OK so the loop continues past the overspend
+    def always_ok(cost: int):
+        return True, ""
+
+    controller = LoopController(
+        config=config,
+        code_generator=FixedCostGenerator(),
+        evaluator=DummyEvaluator(should_pass=False),
+        evolver=DummyEvolver(),
+        budget_manager=always_ok,
+        event_callback=event_cb,
+    )
+
+    ctx = controller.run()
+
+    # Check remaining_tokens is never negative in any event payload
+    for _event, data in emitted_events:
+        if "remaining_tokens" in data:
+            assert data["remaining_tokens"] >= 0, (
+                f"remaining_tokens went negative ({data['remaining_tokens']}) in event {_event}"
+            )
+
+    # BUDGET_OVERSPEND must fire exactly once
+    overspend_events = [e for e, _ in emitted_events if e == LoopEvent.BUDGET_OVERSPEND]
+    assert len(overspend_events) == 1, (
+        f"Expected exactly 1 BUDGET_OVERSPEND event, got {len(overspend_events)}"
+    )
+
+    # remaining_tokens in the overspend payload must be 0
+    overspend_data = [d for e, d in emitted_events if e == LoopEvent.BUDGET_OVERSPEND][0]
+    assert overspend_data["remaining_tokens"] == 0
+    assert overspend_data["total_tokens"] > budget_tokens
+
+    # total_tokens in stats must never be reported negative remaining elsewhere
+    assert ctx.stats.total_tokens > budget_tokens  # confirms overspend actually happened
+
+
+# ---------------------------------------------------------------------------
+# LC-02: Concurrent run() raises RuntimeError on the second call
+# ---------------------------------------------------------------------------
+
+
+def test_lc02_concurrent_run_raises_runtime_error():
+    """
+    Spin two threads both calling controller.run() on the same instance.
+    The second call must raise RuntimeError.
+
+    signal.signal() cannot be called from non-main threads, so we patch it out
+    to isolate the _running-flag guard from Python's signal machinery.
+    """
+    import time as _time
+
+    # Use a slow generator so the first run() is still in progress when
+    # the second thread attempts to enter run().
+    class SlowGenerator:
+        def __call__(self, task: str, evolved_strategy: str, output_dir: str | None = None):
+            _time.sleep(0.05)  # hold long enough for the second thread to fire
+            return "code", MagicMock(total=10)
+
+    config = RunConfig(
+        task="Concurrency test",
+        max_iterations=3,
+        budget_mode=BudgetMode.UNLIMITED,
+    )
+
+    controller = LoopController(
+        config=config,
+        code_generator=SlowGenerator(),
+        evaluator=DummyEvaluator(should_pass=False),
+        evolver=DummyEvolver(),
+        budget_manager=DummyBudgetManager(),
+    )
+
+    second_call_exception: list[Exception] = []
+    first_started = threading.Event()
+
+    # Patch signal.signal to be a no-op so threads can call run() without crashing
+    # on Python's "signal only works in main thread" restriction.
+    with patch("tools.muscle.loop_controller.signal.signal", return_value=None):
+
+        def first_run() -> None:
+            # Monkeypatch _emit to signal that the first run() is inside the loop
+            original_emit = controller._emit
+
+            def patched_emit(event, data):  # type: ignore[override]
+                first_started.set()
+                controller._emit = original_emit  # restore after first call
+                original_emit(event, data)
+
+            controller._emit = patched_emit  # type: ignore[method-assign]
+            controller.run()
+
+        def second_run() -> None:
+            # Wait until first run() has definitely entered its loop
+            first_started.wait(timeout=5.0)
+            try:
+                controller.run()
+            except RuntimeError as exc:
+                second_call_exception.append(exc)
+
+        t1 = threading.Thread(target=first_run)
+        t2 = threading.Thread(target=second_run)
+
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+    assert len(second_call_exception) == 1, (
+        "Expected second concurrent run() to raise RuntimeError, "
+        f"but got {len(second_call_exception)} exceptions: {second_call_exception}"
+    )
+    assert isinstance(second_call_exception[0], RuntimeError)

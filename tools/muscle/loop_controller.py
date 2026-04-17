@@ -64,6 +64,7 @@ class LoopEvent(Enum):
     EVOLUTION_START = "evolution_start"
     EVOLUTION_END = "evolution_end"
     BUDGET_WARNING = "budget_warning"
+    BUDGET_OVERSPEND = "budget_overspend"
     SESSION_COMPLETE = "session_complete"
     SESSION_ABORT = "session_abort"
 
@@ -121,6 +122,8 @@ class LoopController:
         self._session_report: SessionReport | None = None
         self._git_commit: str | None = None
         self._self_improver = SelfImprover()
+        self._running: bool = False
+        self._budget_overspend_emitted: bool = False
 
     def _emit(self, event: LoopEvent, data: dict) -> None:
         if self.event_callback:
@@ -555,6 +558,15 @@ class LoopController:
         streaming_callback: Callable[[str], None] | None = None,
         resume_context: LoopContext | None = None,
     ) -> LoopContext:
+        # LC-02: guard against concurrent reuse of the same instance
+        if self._running:
+            raise RuntimeError(
+                "LoopController.run() is already in progress on this instance. "
+                "Create a separate LoopController for concurrent execution."
+            )
+        self._running = True
+        self._budget_overspend_emitted = False
+
         config = resume_context.config if resume_context else self.config
         self._validate_config(config)
         self.config = config
@@ -627,6 +639,24 @@ class LoopController:
                 ctx.stats.total_iterations = ctx.current_iteration
                 ctx.stats.total_tokens += iteration_result.token_cost
                 ctx.stats.total_duration_seconds += iteration_result.duration_seconds
+
+                # LC-01: emit overspend event exactly once when budget is first exceeded
+                if (
+                    self.config.budget_tokens > 0
+                    and ctx.stats.total_tokens > self.config.budget_tokens
+                    and not self._budget_overspend_emitted
+                ):
+                    self._budget_overspend_emitted = True
+                    self._emit(
+                        LoopEvent.BUDGET_OVERSPEND,
+                        {
+                            "iteration": ctx.current_iteration,
+                            "total_tokens": ctx.stats.total_tokens,
+                            "budget_tokens": self.config.budget_tokens,
+                            "overspend": ctx.stats.total_tokens - self.config.budget_tokens,
+                            "remaining_tokens": 0,
+                        },
+                    )
 
                 if self.webhook_notifier and self.webhook_notifier.enabled:
                     self.webhook_notifier.send_iteration_complete(
@@ -714,6 +744,7 @@ class LoopController:
 
             return ctx
         finally:
+            self._running = False
             signal.signal(signal.SIGTERM, original_sigterm)
             self._remove_session_pid(ctx.session_id)
 
