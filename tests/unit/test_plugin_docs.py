@@ -30,6 +30,7 @@ TOP_LEVEL_COMMANDS = {
     "enable",
     "disable",
     "status",
+    "route",
 }
 
 # CLI subcommand groups (from cli.py)
