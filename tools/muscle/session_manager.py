@@ -54,9 +54,11 @@ class SessionManager:
             raise
 
     def _sanitize_session_id(self, session_id: str) -> str:
-        safe_id = "".join(
-            c for c in session_id.strip() if c in string.ascii_letters + string.digits + "_-"
-        )
+        # Fix: SM-03. Restrict explicitly to ASCII letters, ASCII digits, and "_-"
+        # so that Unicode letters that pass str.isalpha() (e.g. "résumé", "ＡＢＣ",
+        # emoji) are stripped unconditionally.
+        _safe_chars = frozenset(string.ascii_letters + string.digits + "_-")
+        safe_id = "".join(c for c in session_id.strip() if c in _safe_chars)
         if not safe_id or safe_id.startswith("."):
             raise ValueError(f"Invalid session ID: {session_id}")
         return safe_id

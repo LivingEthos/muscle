@@ -480,13 +480,19 @@ def test_loop_controller_records_positive_external_lesson_outcome(tmp_path):
     source = tmp_path / "source"
     current.mkdir()
     source.mkdir()
-    ProjectManager(current).init_project(ProjectConfig(name="current", path=current, languages=["Python"]))
-    ProjectManager(source).init_project(ProjectConfig(name="source", path=source, languages=["Python"]))
+    ProjectManager(current).init_project(
+        ProjectConfig(name="current", path=current, languages=["Python"])
+    )
+    ProjectManager(source).init_project(
+        ProjectConfig(name="source", path=source, languages=["Python"])
+    )
 
     current_pm = ProjectMemory(str(current))
     source_pm = ProjectMemory(str(source))
     source_pm.insert_learned_rule(str(source), "Reuse schema-first retries", "json")
-    current_pm.import_project_lessons(str(current), str(source), link_mode="snapshot", relatedness_score=0.8)
+    current_pm.import_project_lessons(
+        str(current), str(source), link_mode="snapshot", relatedness_score=0.8
+    )
     lesson = current_pm.list_transferred_lessons(project_path=str(current))[0]
     current_pm.insert_lesson_usage_event(
         project_path=str(current),
@@ -514,7 +520,9 @@ def test_loop_controller_records_positive_external_lesson_outcome(tmp_path):
 
     controller.run()
 
-    events = current_pm.list_lesson_usage_events(project_path=str(current), session_id="test-session-123")
+    events = current_pm.list_lesson_usage_events(
+        project_path=str(current), session_id="test-session-123"
+    )
     updated_lesson = current_pm.list_transferred_lessons(project_path=str(current))[0]
 
     assert events[0]["outcome"] == "positive_generation_iteration"
@@ -527,13 +535,19 @@ def test_loop_controller_records_negative_external_lesson_outcome(tmp_path):
     source = tmp_path / "source"
     current.mkdir()
     source.mkdir()
-    ProjectManager(current).init_project(ProjectConfig(name="current", path=current, languages=["Python"]))
-    ProjectManager(source).init_project(ProjectConfig(name="source", path=source, languages=["Python"]))
+    ProjectManager(current).init_project(
+        ProjectConfig(name="current", path=current, languages=["Python"])
+    )
+    ProjectManager(source).init_project(
+        ProjectConfig(name="source", path=source, languages=["Python"])
+    )
 
     current_pm = ProjectMemory(str(current))
     source_pm = ProjectMemory(str(source))
     source_pm.insert_learned_rule(str(source), "Reuse schema-first retries", "json")
-    current_pm.import_project_lessons(str(current), str(source), link_mode="snapshot", relatedness_score=0.8)
+    current_pm.import_project_lessons(
+        str(current), str(source), link_mode="snapshot", relatedness_score=0.8
+    )
     lesson = current_pm.list_transferred_lessons(project_path=str(current))[0]
     current_pm.insert_lesson_usage_event(
         project_path=str(current),
@@ -561,7 +575,9 @@ def test_loop_controller_records_negative_external_lesson_outcome(tmp_path):
 
     controller.run()
 
-    events = current_pm.list_lesson_usage_events(project_path=str(current), session_id="test-session-123")
+    events = current_pm.list_lesson_usage_events(
+        project_path=str(current), session_id="test-session-123"
+    )
     updated_lesson = current_pm.list_transferred_lessons(project_path=str(current))[0]
 
     assert events[0]["outcome"] == "negative_generation_evaluation"
@@ -830,3 +846,62 @@ def test_lc02_concurrent_run_raises_runtime_error():
         f"but got {len(second_call_exception)} exceptions: {second_call_exception}"
     )
     assert isinstance(second_call_exception[0], RuntimeError)
+
+
+# ---------------------------------------------------------------------------
+# LC-04: _sigterm_handler always sets shutdown flag even when handler body raises
+# ---------------------------------------------------------------------------
+
+
+def test_lc04_sigterm_handler_sets_abort_flag_even_on_exception():
+    """Fix LC-04: _sigterm_handler must set _abort_requested in its ``finally``
+    block so the flag is guaranteed to be set even if the handler body raises."""
+    config = RunConfig(
+        task="SIGTERM handler test",
+        max_iterations=1,
+        budget_mode=BudgetMode.UNLIMITED,
+    )
+
+    controller = LoopController(
+        config=config,
+        code_generator=DummyGenerator(),
+        evaluator=DummyEvaluator(should_pass=False),
+        evolver=DummyEvolver(),
+        budget_manager=DummyBudgetManager(),
+    )
+
+    # Sanity: flag should start False.
+    assert controller._abort_requested is False
+
+    # Make logger.info raise to simulate an error inside the handler body.
+    with patch("tools.muscle.loop_controller.logger") as mock_logger:
+        mock_logger.info.side_effect = RuntimeError("logger blew up")
+        try:
+            controller._sigterm_handler(15, None)
+        except RuntimeError:
+            pass  # The exception propagates — that's fine.
+
+    # The shutdown flag must have been set regardless of the exception.
+    assert controller._abort_requested is True, (
+        "_abort_requested must be True even when _sigterm_handler body raises"
+    )
+
+
+# ---------------------------------------------------------------------------
+# LC-05: LoopStats.start_time uses default_factory=time.time (callable, not call)
+# ---------------------------------------------------------------------------
+
+
+def test_lc05_loop_stats_start_time_uses_factory_not_call():
+    """Fix LC-05: LoopStats.start_time must be set via default_factory=time.time
+    so that each instance gets its own timestamp, not a single shared value."""
+    import time
+
+    stats_a = LoopStats()
+    time.sleep(0.05)
+    stats_b = LoopStats()
+
+    assert stats_b.start_time > stats_a.start_time, (
+        "LoopStats.start_time must differ between instances created at different times. "
+        "If they are equal, start_time is using a fixed default= instead of default_factory=."
+    )

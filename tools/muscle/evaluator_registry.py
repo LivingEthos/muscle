@@ -73,6 +73,8 @@ LANGUAGE_ALIASES: dict[str, str] = {
 class EvaluatorRegistry:
     def __init__(self) -> None:
         self._evaluators: dict[str, BaseEvaluator] = {}
+        # Tracks evaluator names whose import failed so we log the warning only once.
+        self._failed_imports: set[str] = set()
 
     def get_evaluators(self, language: str | None) -> list[BaseEvaluator]:
         if not language:
@@ -98,6 +100,9 @@ class EvaluatorRegistry:
     def _load_evaluator(self, name: str) -> BaseEvaluator | None:
         if name in self._evaluators:
             return self._evaluators[name]
+        # Return None immediately for previously-failed imports (log once, not repeatedly).
+        if name in self._failed_imports:
+            return None
 
         try:
             if name == "python_compiler":
@@ -176,6 +181,7 @@ class EvaluatorRegistry:
 
         except ImportError as e:
             logger.warning(f"Could not load evaluator {name}: {e}")
+            self._failed_imports.add(name)
             return None
 
     def _dummy_evaluator(self) -> BaseEvaluator:

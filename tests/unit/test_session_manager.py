@@ -325,3 +325,57 @@ class TestSessionManagerErrorHandling:
         context_file.write_text('{"session_id": "test", "task": "test"}')
         result = manager.load_evolved_strategy(session_id)
         assert result is None
+
+
+class TestSM03SessionIdSanitizer:
+    """Fix SM-03: Unicode chars must be stripped by _sanitize_session_id."""
+
+    @pytest.fixture
+    def manager(self, tmp_path):
+        return SessionManager(base_dir=str(tmp_path / "sessions"))
+
+    @pytest.mark.parametrize(
+        "raw_input, expected",
+        [
+            # Accented Latin letters (é, ú, é) must be dropped.
+            ("résumé", "rsum"),
+            # Full-width ASCII (ＡＢＣ) must be dropped — only plain ASCII survives.
+            ("ＡＢＣ", ""),
+            # Emoji must be stripped entirely.
+            ("hello🎉world", "helloworld"),
+            # Mixed: safe chars survive, Unicode chars do not.
+            ("abc_123-xyz", "abc_123-xyz"),
+            # Leading dot removed, rest kept.
+            (".abc", "abc"),
+            # Spaces stripped, then only safe chars kept.
+            ("  hello world  ", "helloworld"),
+        ],
+    )
+    def test_unicode_chars_stripped_only_ascii_safe_chars_survive(
+        self, manager, raw_input, expected
+    ):
+        if expected == "" or (len(expected) == 0) or (expected and expected.startswith(".")):
+            # Expect ValueError for empty results
+            with pytest.raises(ValueError, match="Invalid session ID"):
+                manager._sanitize_session_id(raw_input)
+        else:
+            result = manager._sanitize_session_id(raw_input)
+            assert result == expected, (
+                f"sanitize({raw_input!r}) → {result!r}, expected {expected!r}"
+            )
+            # Verify only safe ASCII chars remain.
+            import string
+
+            _SAFE = frozenset(string.ascii_letters + string.digits + "_-")
+            assert all(c in _SAFE for c in result), (
+                f"Result {result!r} contains non-safe characters"
+            )
+
+    def test_full_width_ascii_raises_because_all_chars_stripped(self, manager):
+        """ＡＢＣ are full-width Unicode — all chars stripped → empty → ValueError."""
+        with pytest.raises(ValueError, match="Invalid session ID"):
+            manager._sanitize_session_id("ＡＢＣ")
+
+    def test_emoji_only_input_raises(self, manager):
+        with pytest.raises(ValueError, match="Invalid session ID"):
+            manager._sanitize_session_id("🎉🚀💥")

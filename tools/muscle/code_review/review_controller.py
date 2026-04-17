@@ -155,6 +155,7 @@ class ReviewController:
         )
         self.code_reviewer = CodeReviewer(
             m27_client,
+            max_issues_per_batch=config.max_issues_per_batch,
             context_budgeter=context_budgeter,
             project_path=self.project_path,
             lesson_resolver=lesson_resolver,

@@ -15,143 +15,90 @@ from unittest.mock import MagicMock, patch
 from tools.muscle.code_review.types import Intensity, ReviewMode
 
 
+def _make_broker(tmp_path: Path):
+    """Create a ShadowBroker scoped to tmp_path (uses an isolated project_memory.db)."""
+    from tools.muscle.code_review.shadow_broker import ShadowBroker
+
+    db_path = str(tmp_path / ".muscle" / "project_memory.db")
+    (tmp_path / ".muscle").mkdir(parents=True, exist_ok=True)
+    return ShadowBroker(project_path=str(tmp_path), db_path=db_path)
+
+
 class TestShadowBrokerLifecycle:
     """Tests shadow job creation, status tracking, and completion."""
 
     def test_create_and_complete_job(self, tmp_path: Path):
         """Job should transition: pending -> running -> completed."""
-        from tools.muscle.code_review.shadow_broker import ShadowBroker
+        broker = _make_broker(tmp_path)
 
-        # Reset singleton for test isolation
-        ShadowBroker._instance = None
-        ShadowBroker._initialized = False
+        job_id = broker.create_job(
+            target_path="/tmp/project",
+            mode=ReviewMode.REVIEW,
+            intensity=Intensity.MODERATE,
+        )
 
-        with patch(
-            "tools.muscle.code_review.shadow_broker.SHADOW_JOBS_FILE",
-            tmp_path / "shadow_jobs.json",
-        ):
-            broker = ShadowBroker.__new__(ShadowBroker)
-            ShadowBroker._instance = broker
-            ShadowBroker._initialized = False
-            broker.__init__()
+        assert job_id
+        job = broker.get_job(job_id)
+        assert job["status"] == "pending"
 
-            job_id = broker.create_job(
-                target_path="/tmp/project",
-                mode=ReviewMode.REVIEW,
-                intensity=Intensity.MODERATE,
-            )
+        broker.start_job(job_id)
+        job = broker.get_job(job_id)
+        assert job["status"] == "running"
+        assert job["started_at"] is not None
 
-            assert job_id
-            job = broker.get_job(job_id)
-            assert job["status"] == "pending"
-
-            broker.start_job(job_id)
-            job = broker.get_job(job_id)
-            assert job["status"] == "running"
-            assert job["started_at"] is not None
-
-            broker.complete_job(job_id, result={"issues_found": 5})
-            job = broker.get_job(job_id)
-            assert job["status"] == "completed"
-            assert job["result"]["issues_found"] == 5
-
-            # Cleanup singleton
-            ShadowBroker._instance = None
-            ShadowBroker._initialized = False
+        broker.complete_job(job_id, result={"issues_found": 5})
+        job = broker.get_job(job_id)
+        assert job["status"] == "completed"
+        assert job["result"]["issues_found"] == 5
 
     def test_fail_job(self, tmp_path: Path):
         """Failed jobs should record error message."""
-        from tools.muscle.code_review.shadow_broker import ShadowBroker
+        broker = _make_broker(tmp_path)
 
-        ShadowBroker._instance = None
-        ShadowBroker._initialized = False
+        job_id = broker.create_job(
+            target_path="/tmp/project",
+            mode=ReviewMode.REVIEW,
+            intensity=Intensity.MINIMAL,
+        )
 
-        with patch(
-            "tools.muscle.code_review.shadow_broker.SHADOW_JOBS_FILE",
-            tmp_path / "shadow_jobs.json",
-        ):
-            broker = ShadowBroker.__new__(ShadowBroker)
-            ShadowBroker._instance = broker
-            ShadowBroker._initialized = False
-            broker.__init__()
+        broker.start_job(job_id)
+        broker.fail_job(job_id, "API rate limit exceeded")
 
-            job_id = broker.create_job(
-                target_path="/tmp/project",
-                mode=ReviewMode.REVIEW,
-                intensity=Intensity.MINIMAL,
-            )
-
-            broker.start_job(job_id)
-            broker.fail_job(job_id, "API rate limit exceeded")
-
-            job = broker.get_job(job_id)
-            assert job["status"] == "failed"
-            assert job["error_message"] == "API rate limit exceeded"
-
-            ShadowBroker._instance = None
-            ShadowBroker._initialized = False
+        job = broker.get_job(job_id)
+        assert job["status"] == "failed"
+        assert job["error_message"] == "API rate limit exceeded"
 
     def test_clear_completed_jobs(self, tmp_path: Path):
         """clear_completed should remove finished jobs."""
-        from tools.muscle.code_review.shadow_broker import ShadowBroker
+        broker = _make_broker(tmp_path)
 
-        ShadowBroker._instance = None
-        ShadowBroker._initialized = False
+        # Create mix of completed and pending jobs
+        job1 = broker.create_job("/tmp/a", ReviewMode.REVIEW, Intensity.MODERATE)
+        job2 = broker.create_job("/tmp/b", ReviewMode.REVIEW, Intensity.MODERATE)
+        job3 = broker.create_job("/tmp/c", ReviewMode.REVIEW, Intensity.MODERATE)
 
-        with patch(
-            "tools.muscle.code_review.shadow_broker.SHADOW_JOBS_FILE",
-            tmp_path / "shadow_jobs.json",
-        ):
-            broker = ShadowBroker.__new__(ShadowBroker)
-            ShadowBroker._instance = broker
-            ShadowBroker._initialized = False
-            broker.__init__()
+        broker.complete_job(job1)
+        broker.fail_job(job2, "error")
+        # job3 stays pending
 
-            # Create mix of completed and pending jobs
-            job1 = broker.create_job("/tmp/a", ReviewMode.REVIEW, Intensity.MODERATE)
-            job2 = broker.create_job("/tmp/b", ReviewMode.REVIEW, Intensity.MODERATE)
-            job3 = broker.create_job("/tmp/c", ReviewMode.REVIEW, Intensity.MODERATE)
+        cleared = broker.clear_completed()
+        assert cleared == 2  # completed + failed
 
-            broker.complete_job(job1)
-            broker.fail_job(job2, "error")
-            # job3 stays pending
-
-            cleared = broker.clear_completed()
-            assert cleared == 2  # completed + failed
-
-            # Pending job should remain
-            assert broker.get_job(job3) is not None
-            assert broker.get_job(job1) is None
-
-            ShadowBroker._instance = None
-            ShadowBroker._initialized = False
+        # Pending job should remain
+        assert broker.get_job(job3) is not None
+        assert broker.get_job(job1) is None
 
     def test_get_pending_jobs(self, tmp_path: Path):
         """get_pending_jobs should return only pending jobs."""
-        from tools.muscle.code_review.shadow_broker import ShadowBroker
+        broker = _make_broker(tmp_path)
 
-        ShadowBroker._instance = None
-        ShadowBroker._initialized = False
+        job1 = broker.create_job("/tmp/a", ReviewMode.REVIEW, Intensity.MODERATE)
+        job2 = broker.create_job("/tmp/b", ReviewMode.REVIEW, Intensity.MODERATE)
+        broker.start_job(job1)
 
-        with patch(
-            "tools.muscle.code_review.shadow_broker.SHADOW_JOBS_FILE",
-            tmp_path / "shadow_jobs.json",
-        ):
-            broker = ShadowBroker.__new__(ShadowBroker)
-            ShadowBroker._instance = broker
-            ShadowBroker._initialized = False
-            broker.__init__()
-
-            job1 = broker.create_job("/tmp/a", ReviewMode.REVIEW, Intensity.MODERATE)
-            job2 = broker.create_job("/tmp/b", ReviewMode.REVIEW, Intensity.MODERATE)
-            broker.start_job(job1)
-
-            pending = broker.get_pending_jobs()
-            assert len(pending) == 1
-            assert pending[0]["job_id"] == job2
-
-            ShadowBroker._instance = None
-            ShadowBroker._initialized = False
+        pending = broker.get_pending_jobs()
+        assert len(pending) == 1
+        assert pending[0]["job_id"] == job2
 
 
 class TestShadowWorkerIntegration:
@@ -159,85 +106,57 @@ class TestShadowWorkerIntegration:
 
     def test_worker_starts_and_stops(self, tmp_path: Path):
         """Worker should start as daemon and stop cleanly."""
-        from tools.muscle.code_review.shadow_broker import ShadowBroker
         from tools.muscle.code_review.shadow_worker import ShadowWorker, WorkerConfig
 
-        ShadowBroker._instance = None
-        ShadowBroker._initialized = False
+        broker = _make_broker(tmp_path)
 
-        with patch(
-            "tools.muscle.code_review.shadow_broker.SHADOW_JOBS_FILE",
-            tmp_path / "shadow_jobs.json",
-        ):
-            broker = ShadowBroker.__new__(ShadowBroker)
-            ShadowBroker._instance = broker
-            ShadowBroker._initialized = False
-            broker.__init__()
+        config = WorkerConfig(
+            poll_interval=0.1,
+            idle_timeout=1.0,
+            max_retries=1,
+        )
 
-            config = WorkerConfig(
-                poll_interval=0.1,
-                idle_timeout=1.0,
-                max_retries=1,
-            )
+        worker = ShadowWorker(broker, config=config)
 
-            worker = ShadowWorker(broker, config=config)
+        started = worker.start()
+        assert started is True
+        assert worker.is_running() is True
 
-            started = worker.start()
-            assert started is True
-            assert worker.is_running() is True
-
-            stopped = worker.stop(timeout=2.0)
-            assert stopped is True
-            assert worker.is_running() is False
-
-            ShadowBroker._instance = None
-            ShadowBroker._initialized = False
+        stopped = worker.stop(timeout=2.0)
+        assert stopped is True
+        assert worker.is_running() is False
 
     def test_worker_processes_job(self, tmp_path: Path):
         """Worker should process submitted jobs via processor callback."""
-        from tools.muscle.code_review.shadow_broker import ShadowBroker
         from tools.muscle.code_review.shadow_worker import (
             JobTask,
             ShadowWorker,
             WorkerConfig,
         )
 
-        ShadowBroker._instance = None
-        ShadowBroker._initialized = False
+        broker = _make_broker(tmp_path)
 
-        with patch(
-            "tools.muscle.code_review.shadow_broker.SHADOW_JOBS_FILE",
-            tmp_path / "shadow_jobs.json",
-        ):
-            broker = ShadowBroker.__new__(ShadowBroker)
-            ShadowBroker._instance = broker
-            ShadowBroker._initialized = False
-            broker.__init__()
+        processed_jobs: list[str] = []
 
-            processed_jobs: list[str] = []
+        def mock_processor(job_task: JobTask) -> dict:
+            processed_jobs.append(job_task.job_id)
+            return {"status": "reviewed", "issues": 0}
 
-            def mock_processor(job_task: JobTask) -> dict:
-                processed_jobs.append(job_task.job_id)
-                return {"status": "reviewed", "issues": 0}
+        config = WorkerConfig(poll_interval=0.1, idle_timeout=2.0)
+        worker = ShadowWorker(broker, config=config, job_processor=mock_processor)
 
-            config = WorkerConfig(poll_interval=0.1, idle_timeout=2.0)
-            worker = ShadowWorker(broker, config=config, job_processor=mock_processor)
+        # Create a job
+        job_id = broker.create_job("/tmp/test", ReviewMode.REVIEW, Intensity.MODERATE)
 
-            # Create a job
-            job_id = broker.create_job("/tmp/test", ReviewMode.REVIEW, Intensity.MODERATE)
+        worker.start()
+        worker.submit_job(job_id, "/tmp/test", ReviewMode.REVIEW, Intensity.MODERATE)
 
-            worker.start()
-            worker.submit_job(job_id, "/tmp/test", ReviewMode.REVIEW, Intensity.MODERATE)
+        # Wait for processing
+        time.sleep(1.0)
 
-            # Wait for processing
-            time.sleep(1.0)
+        worker.stop(timeout=3.0)
 
-            worker.stop(timeout=3.0)
-
-            assert len(processed_jobs) >= 1
-
-            ShadowBroker._instance = None
-            ShadowBroker._initialized = False
+        assert len(processed_jobs) >= 1
 
 
 class TestLongEvalRunnerIntegration:

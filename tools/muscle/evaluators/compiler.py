@@ -15,6 +15,16 @@ from .base import BaseEvaluator, EvaluatorResult
 
 logger = logging.getLogger(__name__)
 
+_STDERR_MAX_BYTES = 5 * 1024  # 5 KB cap on per-file stderr captured in error messages
+
+
+def _cap_stderr(stderr: str) -> str:
+    """Truncate stderr to _STDERR_MAX_BYTES; log original length when truncated."""
+    if len(stderr) <= _STDERR_MAX_BYTES:
+        return stderr
+    logger.warning("stderr truncated from %d bytes to %d bytes", len(stderr), _STDERR_MAX_BYTES)
+    return stderr[:_STDERR_MAX_BYTES] + "\n... [stderr truncated]"
+
 
 class PythonCompiler(BaseEvaluator):
     @property
@@ -74,7 +84,7 @@ class NodeCompiler(BaseEvaluator):
         for js_file in files_to_check:
             code, stdout, stderr = self._run_command(["node", "--check", str(js_file)], output_dir)
             if code != 0:
-                errors.append(f"{js_file}: {stderr or stdout}")
+                errors.append(f"{js_file}: {_cap_stderr(stderr) or stdout}")
 
         return EvaluatorResult(success=len(errors) == 0, errors=errors)
 
@@ -97,7 +107,7 @@ class TscCompiler(BaseEvaluator):
 
         errors = []
         if code != 0:
-            output = stdout + stderr
+            output = stdout + _cap_stderr(stderr)
             errors = [line for line in output.split("\n") if line.strip()]
 
         return EvaluatorResult(success=code == 0, errors=errors)
@@ -123,7 +133,7 @@ class GoCompiler(BaseEvaluator):
 
         errors = []
         if code != 0:
-            output = stdout + stderr
+            output = stdout + _cap_stderr(stderr)
             errors = [line for line in output.split("\n") if line.strip()]
 
         return EvaluatorResult(success=code == 0, errors=errors)
@@ -156,7 +166,7 @@ class RustCompiler(BaseEvaluator):
                 ["rustc", "--emit=metadata", str(rs_file)], output_dir
             )
             if code != 0:
-                errors.append(f"{rs_file}: {stderr or stdout}")
+                errors.append(f"{rs_file}: {_cap_stderr(stderr) or stdout}")
 
         return EvaluatorResult(success=len(errors) == 0, errors=errors)
 
@@ -199,7 +209,7 @@ class GppCompiler(BaseEvaluator):
                 compiler, flags = "g++", ["-fsyntax-only", "-std=c++17"]
             code, stdout, stderr = self._run_command([compiler] + flags + [str(c_file)], output_dir)
             if code != 0:
-                errors.append(f"{c_file}: {stderr or stdout}")
+                errors.append(f"{c_file}: {_cap_stderr(stderr) or stdout}")
 
         return EvaluatorResult(success=len(errors) == 0, errors=errors)
 
@@ -229,6 +239,6 @@ class JavacCompiler(BaseEvaluator):
         for java_file in files_to_check:
             code, stdout, stderr = self._run_command(["javac", str(java_file)], output_dir)
             if code != 0:
-                errors.append(f"{java_file}: {stderr or stdout}")
+                errors.append(f"{java_file}: {_cap_stderr(stderr) or stdout}")
 
         return EvaluatorResult(success=len(errors) == 0, errors=errors)

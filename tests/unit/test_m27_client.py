@@ -862,6 +862,61 @@ class TestHelperMethods:
         assert result == "Response"
 
 
+class TestM27_05RetryNarrow:
+    """Fix M27-05: bare except narrowed to (RequestException, JSONDecodeError, ValueError)."""
+
+    def test_connection_reset_error_continues_retry(self, mock_client):
+        """ConnectionResetError (a subclass of ConnectionError / OSError) should retry,
+        not break early."""
+        import requests as req
+
+        client, mock_session = mock_client
+        client.max_retries = 3
+
+        # First call raises ConnectionResetError; second returns success.
+        success_response = _make_mock_response(
+            200,
+            json_data={
+                "content": [{"type": "text", "text": "Recovered"}],
+                "usage": {"input_tokens": 3, "output_tokens": 2},
+            },
+        )
+
+        call_count = 0
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise req.exceptions.ConnectionError(
+                    "Connection reset by peer", ConnectionResetError()
+                )
+            return success_response
+
+        mock_session.post.side_effect = side_effect
+
+        with patch("time.sleep"):
+            result, usage = client.chat([{"role": "user", "content": "hi"}])
+
+        assert result == "Recovered"
+        assert mock_session.post.call_count == 2
+
+    def test_value_error_breaks_retry_loop(self, mock_client):
+        """ValueError must break the loop immediately without further retries."""
+        client, mock_session = mock_client
+        client.max_retries = 5
+
+        mock_session.post.side_effect = ValueError("bad argument")
+
+        with patch("time.sleep") as mock_sleep:
+            result, usage = client.chat([{"role": "user", "content": "hi"}])
+
+        assert result == ""
+        # Only 1 attempt; ValueError breaks immediately.
+        assert mock_session.post.call_count == 1
+        mock_sleep.assert_not_called()
+
+
 class TestRateLimiterWait:
     """Tests for RateLimiter."""
 

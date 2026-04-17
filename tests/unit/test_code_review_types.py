@@ -327,3 +327,66 @@ def test_handoff_plan():
     assert plan.session_id == "plan-001"
     assert len(plan.issues) == 1
     assert plan.markdown.startswith("# Handoff Plan")
+
+
+# ---------------------------------------------------------------------------
+# [TY-CR] Enum .name / .value convention tests
+# ---------------------------------------------------------------------------
+
+
+def test_severity_value_is_int_for_persistence():
+    """[TY-CR] Severity.value must be an int — used for JSON persistence and comparisons."""
+    for member in Severity:
+        assert isinstance(member.value, int), (
+            f"Severity.{member.name}.value should be int, got {type(member.value)}"
+        )
+
+
+def test_severity_name_is_upper_str_for_logs():
+    """[TY-CR] Severity.name is the upper-case string used in log messages."""
+    assert Severity.HIGH.name == "HIGH"
+    assert Severity.CRITICAL.name == "CRITICAL"
+    assert Severity.INFO.name == "INFO"
+
+
+def test_issue_category_value_is_lowercase_str_for_persistence():
+    """[TY-CR] IssueCategory.value must be a lowercase str — used for JSON persistence."""
+    for member in IssueCategory:
+        assert isinstance(member.value, str), (
+            f"IssueCategory.{member.name}.value should be str, got {type(member.value)}"
+        )
+        assert member.value == member.value.lower(), (
+            f"IssueCategory.{member.name}.value '{member.value}' must be lowercase"
+        )
+
+
+def test_issue_category_name_is_upper_str_for_logs():
+    """[TY-CR] IssueCategory.name is the upper-case string used in log messages."""
+    assert IssueCategory.SECURITY.name == "SECURITY"
+    assert IssueCategory.BEST_PRACTICE.name == "BEST_PRACTICE"
+
+
+def test_review_mode_value_is_lowercase_str():
+    """[TY-CR] ReviewMode.value is a lowercase str — used for persistence/JSON."""
+    from tools.muscle.code_review.types import ReviewMode
+
+    for member in ReviewMode:
+        assert isinstance(member.value, str), f"ReviewMode.{member.name}.value should be str"
+
+
+# ---------------------------------------------------------------------------
+# [CR-05] ReviewConfig.max_issues_per_batch is present and documented
+# ---------------------------------------------------------------------------
+
+
+def test_review_config_has_max_issues_per_batch():
+    """[CR-05] ReviewConfig must expose max_issues_per_batch (default 20)."""
+    config = ReviewConfig(target_path="./src")
+    assert hasattr(config, "max_issues_per_batch")
+    assert config.max_issues_per_batch == 20
+
+
+def test_review_config_max_issues_per_batch_overridable():
+    """[CR-05] ReviewConfig.max_issues_per_batch must be overridable."""
+    config = ReviewConfig(target_path="./src", max_issues_per_batch=10)
+    assert config.max_issues_per_batch == 10

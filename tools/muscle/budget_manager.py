@@ -67,34 +67,57 @@ class BudgetManager:
                 threshold for threshold in self.warning_thresholds if used_percent >= threshold
             }
 
+    @staticmethod
+    def _parse_budget_value(raw: object, path: "Path") -> int:
+        """Parse and validate a ``remaining_tokens`` value from a budget file.
+
+        Fix: BM-02.  Rejects non-numeric types and negative values, logging a
+        warning and returning 0 so the caller can fall back gracefully.
+        """
+        if not isinstance(raw, (int, float)):
+            logger.warning(
+                f"Budget file {path}: 'remaining_tokens' must be a number, got "
+                f"{type(raw).__name__!r} — resetting to 0"
+            )
+            return 0
+        try:
+            value = int(raw)
+        except (TypeError, ValueError, OverflowError):
+            logger.warning(f"Budget file {path}: could not convert {raw!r} to int — resetting to 0")
+            return 0
+        if value < 0:
+            logger.warning(
+                f"Budget file {path}: 'remaining_tokens' is negative ({value}) — resetting to 0"
+            )
+            return 0
+        return value
+
     def _load_auto_budget(self) -> None:
         if self.auto_budget_path:
             path = Path(self.auto_budget_path).expanduser()
             if path.exists():
                 try:
                     data = json.loads(path.read_text())
-                    remaining = data.get("remaining_tokens", 0)
-                    self.fixed_limit = max(0, int(remaining or 0))
+                    # Fix: BM-02. Validate type and sign before accepting.
+                    remaining = self._parse_budget_value(data.get("remaining_tokens", 0), path)
+                    self.fixed_limit = remaining
                     logger.info(f"Loaded auto budget from {path}: {self.fixed_limit} tokens")
                     return
                 except json.JSONDecodeError:
                     logger.warning(f"Invalid budget JSON at {path}")
-                except (TypeError, ValueError):
-                    logger.warning(f"Invalid budget value at {path}")
 
         for path_str in DEFAULT_BUDGET_PATHS:
             path = Path(path_str).expanduser()
             if path.exists():
                 try:
                     data = json.loads(path.read_text())
-                    remaining = data.get("remaining_tokens", 0)
-                    self.fixed_limit = max(0, int(remaining or 0))
+                    # Fix: BM-02. Validate type and sign before accepting.
+                    remaining = self._parse_budget_value(data.get("remaining_tokens", 0), path)
+                    self.fixed_limit = remaining
                     logger.info(f"Loaded auto budget from {path}: {self.fixed_limit} tokens")
                     return
                 except json.JSONDecodeError:
                     logger.warning(f"Invalid budget JSON at {path}")
-                except (TypeError, ValueError):
-                    logger.warning(f"Invalid budget value at {path}")
 
         api_key = os.environ.get("MINIMAX_API_KEY")
         if api_key:

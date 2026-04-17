@@ -2,10 +2,12 @@
 Unit tests for evaluators/compiler.py
 """
 
+import logging
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from tools.muscle.evaluators.compiler import (
+    _STDERR_MAX_BYTES,
     GoCompiler,
     GppCompiler,
     JavacCompiler,
@@ -13,6 +15,7 @@ from tools.muscle.evaluators.compiler import (
     PythonCompiler,
     RustCompiler,
     TscCompiler,
+    _cap_stderr,
 )
 
 
@@ -173,6 +176,55 @@ class TestGppCompiler:
             result = GppCompiler().evaluate(str(tmp_path))
         assert result.success is False
         assert len(result.errors) > 0
+
+
+# EV-T1: stderr capped at 5 KB
+
+
+class TestCapStderr:
+    def test_short_stderr_unchanged(self):
+        short = "error: something went wrong"
+        assert _cap_stderr(short) == short
+
+    def test_long_stderr_truncated(self, caplog):
+        big_stderr = "e" * (_STDERR_MAX_BYTES + 100)
+        with caplog.at_level(logging.WARNING, logger="tools.muscle.evaluators.compiler"):
+            result = _cap_stderr(big_stderr)
+        assert len(result) < len(big_stderr)
+        assert result.endswith("... [stderr truncated]")
+        # Log must mention the original length
+        assert any(str(len(big_stderr)) in r.message for r in caplog.records)
+
+    def test_exactly_at_limit_not_truncated(self):
+        exact = "x" * _STDERR_MAX_BYTES
+        result = _cap_stderr(exact)
+        assert result == exact
+        assert "truncated" not in result
+
+
+class TestNodeCompilerStderrCap:
+    """EV-T1: NodeCompiler must cap stderr in error messages."""
+
+    def test_large_stderr_is_truncated_in_error(self, mock_shutil_which, tmp_path, caplog):
+        mock_shutil_which.return_value = "/usr/bin/node"
+        big_stderr = "E" * (_STDERR_MAX_BYTES + 500)
+
+        (tmp_path / "bad.js").write_text("{{{{")
+
+        with patch(
+            "tools.muscle.evaluators.compiler.NodeCompiler._run_command",
+            return_value=(1, "", big_stderr),
+        ):
+            with caplog.at_level(logging.WARNING, logger="tools.muscle.evaluators.compiler"):
+                result = NodeCompiler().evaluate(str(tmp_path))
+
+        assert result.success is False
+        assert len(result.errors) > 0
+        error_text = result.errors[0]
+        # The captured error must be smaller than the original stderr
+        assert len(error_text) < len(big_stderr) + 100  # +100 for filename prefix
+        # Log must warn about truncation including original length
+        assert any(str(len(big_stderr)) in r.message for r in caplog.records)
 
 
 class TestJavacCompiler:

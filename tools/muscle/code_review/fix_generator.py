@@ -1,13 +1,16 @@
 """
 Fix Generator - Generates and applies code fixes.
 
-Uses M2.7 to generate specific code fixes for identified issues,
-applies them to the codebase, and verifies the fixes work.
+Uses M2.7 to generate specific code fixes for identified issues and
+applies them to the codebase atomically (backup + apply).  Pre-apply
+syntax validation is performed by ``_validate_staged_file``; post-apply
+semantic verification is handled by ``VerificationLoop`` in
+``review_controller.py``.
 
 Architecture Decision Record (ADR):
 - Generate targeted fixes for specific issues
 - Apply fixes atomically (backup + apply)
-- Verify fixes don't break compilation or introduce new issues
+- Validate syntax before committing; reject invalid fixes before write
 """
 
 from __future__ import annotations
@@ -359,14 +362,6 @@ Provide the JSON output with the fixed code."""
         # wired through ReviewController. This method exists to provide a hook
         # for the CLI to report user rejections.
         # Callers should also invoke the callback directly if they have access to it.
-
-    def verify_fix(self, file_path: str, language: str | None) -> bool:
-        if not self.verify_compile:
-            return True
-        path = Path(file_path)
-        if not path.exists():
-            return False
-        return self._validate_staged_file(path, language=language) is None
 
     @staticmethod
     def _load_json_response(response_text: str) -> dict:

@@ -1001,12 +1001,6 @@ def run(
         console.print("[red]Error: Task cannot be empty[/red]")
         sys.exit(1)
 
-    if max_iterations < 1 or max_iterations > 100:
-        console.print(
-            f"[red]Error: max_iterations must be between 1 and 100, got {max_iterations}[/red]"
-        )
-        sys.exit(1)
-
     cost_optimizer = CostOptimizer()
     cost_estimate = cost_optimizer.estimate_cost(task)
 
@@ -1031,22 +1025,26 @@ def run(
 
     budget_mode, budget_tokens = _parse_budget(budget)
 
-    config = RunConfig(
-        task=task,
-        language=language,
-        output_dir=output,
-        max_iterations=max_iterations,
-        timeout_seconds=timeout_seconds,
-        budget_tokens=budget_tokens,
-        budget_mode=budget_mode,
-        eval_mode={
-            "all": EvalMode.ALL,
-            "sequential": EvalMode.SEQUENTIAL,
-            "parallel": EvalMode.PARALLEL,
-        }.get(eval_mode, EvalMode.ALL),
-        allow_warnings=allow_warnings,
-        interactive=interactive,
-    )
+    try:
+        config = RunConfig(
+            task=task,
+            language=language,
+            output_dir=output,
+            max_iterations=max_iterations,
+            timeout_seconds=timeout_seconds,
+            budget_tokens=budget_tokens,
+            budget_mode=budget_mode,
+            eval_mode={
+                "all": EvalMode.ALL,
+                "sequential": EvalMode.SEQUENTIAL,
+                "parallel": EvalMode.PARALLEL,
+            }.get(eval_mode, EvalMode.ALL),
+            allow_warnings=allow_warnings,
+            interactive=interactive,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        sys.exit(1)
 
     if template is None:
         template = language is not None

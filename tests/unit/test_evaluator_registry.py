@@ -2,6 +2,7 @@
 Unit tests for evaluator_registry.py
 """
 
+import logging
 from unittest.mock import Mock, patch
 
 from tools.muscle.evaluator_registry import LANGUAGE_ALIASES, EvaluatorRegistry, detect_language
@@ -120,3 +121,40 @@ class TestEvaluatorRegistry:
             result = registry.evaluate("/fake", eval_mode=EvalMode.SEQUENTIAL)
         assert result.passed is False
         assert len(result.compiler_errors) == 1
+
+    # ER-01: failed imports cached; warning logged only once
+    def test_failed_import_logged_only_once(self, caplog):
+        """Trigger import failure twice; the warning must appear exactly once."""
+        registry = EvaluatorRegistry()
+
+        def _raise_import(*_args, **_kwargs):
+            raise ImportError("no module named fake_evaluator_pkg")
+
+        # Patch the known evaluator name so ImportError fires during _load_evaluator
+        with patch(
+            "tools.muscle.evaluator_registry.EvaluatorRegistry._load_evaluator",
+            wraps=registry._load_evaluator,
+        ):
+            # Manually inject an evaluator name that will fail via ImportError
+            # by patching the import inside _load_evaluator for "python_compiler"
+            with patch(
+                "tools.muscle.evaluators.compiler.PythonCompiler",
+                side_effect=ImportError("mocked import failure"),
+            ):
+                with caplog.at_level(logging.WARNING, logger="tools.muscle.evaluator_registry"):
+                    # First call — should log the warning
+                    result1 = registry._load_evaluator("python_compiler")
+                    # Second call — import is cached as failed; no new warning
+                    result2 = registry._load_evaluator("python_compiler")
+
+        assert result1 is None
+        assert result2 is None
+
+        warning_msgs = [
+            r
+            for r in caplog.records
+            if "python_compiler" in r.message and r.levelno == logging.WARNING
+        ]
+        assert len(warning_msgs) == 1, (
+            f"Expected exactly 1 warning for failed import, got {len(warning_msgs)}: {warning_msgs}"
+        )

@@ -532,8 +532,12 @@ class LoopController:
         return result
 
     def _sigterm_handler(self, signum: int, frame: object) -> None:
-        logger.info("SIGTERM received, requesting abort")
-        self._abort_requested = True
+        # Fix: LC-04. Always set the shutdown flag, even if the handler body
+        # raises, so the loop can observe the abort request on any exception.
+        try:
+            logger.info("SIGTERM received, requesting abort")
+        finally:
+            self._abort_requested = True
 
     def _write_session_pid(self, session_id: str) -> None:
         pid_file = Path.home() / ".muscle" / f"{session_id}.pid"

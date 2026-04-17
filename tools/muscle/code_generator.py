@@ -337,7 +337,9 @@ class CodeGenerator:
 
         try:
             code_blocks = self._extract_code_blocks(response)
-        except Exception as e:
+        except (OSError, UnicodeError, re.error) as e:
+            # Fix: CG-04. Narrow to expected I/O and regex errors so that
+            # programming errors (e.g. TypeError, AttributeError) propagate.
             logger.error(f"Error extracting code blocks: {e}")
             code_blocks = []
 
@@ -365,10 +367,18 @@ class CodeGenerator:
                 else:
                     plain_code = self._extract_plain_code(response)
                     if plain_code:
+                        # Fix: CG-05. Round-trip through UTF-8 with replacement to
+                        # strip any non-encodable surrogates or lone high bytes that
+                        # could cause write_text() to raise on some platforms.
+                        safe_plain = plain_code.encode("utf-8", "replace").decode("utf-8")
+                        if safe_plain != plain_code:
+                            logger.warning(
+                                "Plain-code fallback: replaced non-UTF-8 characters before emit"
+                            )
                         written_name = self._write_output_file(
                             output_dir,
                             "generated_code.py",
-                            plain_code,
+                            safe_plain,
                             default_filename="generated_code.py",
                         )
                         files_written.append(written_name)

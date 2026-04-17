@@ -18,6 +18,30 @@ class TestWebhookNotifier:
         notifier = WebhookNotifier(webhook_url="https://example.com/webhook")
         assert notifier.enabled is True
 
+    # CLI-03: HTTPS enforcement
+    def test_rejects_http_url(self):
+        with pytest.raises(ValueError, match="HTTPS"):
+            WebhookNotifier(webhook_url="http://evil.example/hook")
+
+    def test_accepts_https_url(self):
+        notifier = WebhookNotifier(webhook_url="https://ok.example/hook")
+        assert notifier.enabled is True
+        assert notifier.webhook_url == "https://ok.example/hook"
+
+    def test_accepts_localhost_http_url(self):
+        # localhost is in the allowlist for local dev / testing
+        notifier = WebhookNotifier(webhook_url="http://localhost/hook")
+        assert notifier.enabled is True
+
+    def test_accepts_loopback_http_url(self):
+        notifier = WebhookNotifier(webhook_url="http://127.0.0.1/hook")
+        assert notifier.enabled is True
+
+    def test_rejects_http_url_from_env(self, monkeypatch):
+        monkeypatch.setenv("MUSCLE_WEBHOOK_URL", "http://evil.example/hook")
+        with pytest.raises(ValueError, match="HTTPS"):
+            WebhookNotifier(webhook_url=None)
+
     def test_send_noop_when_disabled(self):
         notifier = WebhookNotifier(webhook_url=None)
         notifier.send(WebhookEvent.SESSION_START, "sess-1", {})

@@ -40,10 +40,30 @@ class WebhookPayload:
     data: dict[str, Any]
 
 
+# URLs explicitly allowed even without HTTPS (e.g. localhost testing).
+_WEBHOOK_URL_ALLOWLIST: tuple[str, ...] = ("http://localhost", "http://127.0.0.1")
+
+
 class WebhookNotifier:
     def __init__(self, webhook_url: str | None = None):
-        self.webhook_url = webhook_url or os.environ.get("MUSCLE_WEBHOOK_URL")
+        resolved_url = webhook_url or os.environ.get("MUSCLE_WEBHOOK_URL")
+        if resolved_url is not None:
+            self._validate_url(resolved_url)
+        self.webhook_url = resolved_url
         self._enabled = bool(self.webhook_url)
+
+    @staticmethod
+    def _validate_url(url: str) -> None:
+        """Require HTTPS unless the URL is in the explicit localhost allowlist."""
+        if url.startswith("https://"):
+            return
+        for allowed_prefix in _WEBHOOK_URL_ALLOWLIST:
+            if url.startswith(allowed_prefix):
+                return
+        raise ValueError(
+            f"Webhook URL must use HTTPS (got: {url!r}). "
+            "Only 'https://' URLs are accepted outside the localhost allowlist."
+        )
 
     @property
     def enabled(self) -> bool:

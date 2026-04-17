@@ -101,6 +101,68 @@ def test_run_config_rejects_negative_budget():
         RunConfig(task="Build a REST API", budget_tokens=-1)
 
 
+# TY-01: __post_init__ validation tests
+
+
+def test_run_config_rejects_zero_max_iterations():
+    with pytest.raises(ValueError, match="max_iterations"):
+        RunConfig(task="Build a REST API", max_iterations=0)
+
+
+def test_run_config_rejects_over_100_max_iterations():
+    with pytest.raises(ValueError, match="max_iterations"):
+        RunConfig(task="Build a REST API", max_iterations=101)
+
+
+def test_run_config_rejects_zero_timeout_seconds():
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        RunConfig(task="Build a REST API", timeout_seconds=0)
+
+
+def test_run_config_rejects_negative_timeout_seconds():
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        RunConfig(task="Build a REST API", timeout_seconds=-1)
+
+
+def test_run_config_rejects_zero_max_task_length():
+    with pytest.raises(ValueError, match="max_task_length must be > 0"):
+        RunConfig(task="Build a REST API", max_task_length=0)
+
+
+def test_run_config_rejects_task_exceeding_max_task_length():
+    long_task = "x" * 200
+    with pytest.raises(ValueError, match="exceeds max_task_length"):
+        RunConfig(task=long_task, max_task_length=100)
+
+
+def test_run_config_accepts_task_at_max_task_length():
+    task = "x" * 100
+    config = RunConfig(task=task, max_task_length=100)
+    assert config.max_task_length == 100
+
+
+def test_run_config_max_task_length_none_ignores_length():
+    long_task = "x" * 50000
+    # No error when max_task_length is None (default)
+    config = RunConfig(task=long_task)
+    assert config.max_task_length is None
+
+
+def test_run_config_rejects_zero_max_timeout_seconds():
+    with pytest.raises(ValueError, match="max_timeout_seconds must be > 0"):
+        RunConfig(task="Build a REST API", max_timeout_seconds=0)
+
+
+def test_run_config_rejects_negative_max_timeout_seconds():
+    with pytest.raises(ValueError, match="max_timeout_seconds must be > 0"):
+        RunConfig(task="Build a REST API", max_timeout_seconds=-5)
+
+
+def test_run_config_accepts_valid_max_timeout_seconds():
+    config = RunConfig(task="Build a REST API", max_timeout_seconds=3600)
+    assert config.max_timeout_seconds == 3600
+
+
 def test_iteration_result():
     result = IterationResult(
         iteration=1,

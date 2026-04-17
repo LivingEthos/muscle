@@ -230,26 +230,22 @@ class TestRollbackFix:
         assert result is False
 
 
-class TestVerifyFix:
-    """Test fix verification."""
+class TestVerifyFixRemoved:
+    """Confirm that FixGenerator.verify_fix has been removed (FG-04).
 
-    def test_verify_fix_skips_when_disabled(self):
-        """Test verification is skipped when disabled."""
+    The stub always returned True and was misleading.  Pre-apply syntax
+    validation is now handled exclusively by _validate_staged_file (called
+    inside _commit_fix), and post-apply semantic verification is handled by
+    VerificationLoop in review_controller.py.
+    """
+
+    def test_verify_fix_method_does_not_exist(self):
+        """FG-04: FixGenerator must not expose the old stub verify_fix method."""
         mock_client = MockM27Client()
-        generator = FixGenerator(mock_client, verify_compile=False)
-
-        result = generator.verify_fix("/fake/path.py", "python")
-
-        assert result is True
-
-    def test_verify_fix_placeholder(self):
-        """Test verify_fix fails closed when the file cannot be validated."""
-        mock_client = MockM27Client()
-        generator = FixGenerator(mock_client, verify_compile=True)
-
-        result = generator.verify_fix("/fake/path.py", "python")
-
-        assert result is False
+        generator = FixGenerator(mock_client)
+        assert not hasattr(generator, "verify_fix"), (
+            "verify_fix stub must be removed; use _validate_staged_file or VerificationLoop"
+        )
 
 
 class TestGenerateFix:
@@ -600,7 +596,9 @@ class TestFG02BakCleanup:
         def raise_after_backup(src: str, dst: str) -> None:  # type: ignore[return]
             raise OSError("Simulated write failure mid-apply")
 
-        with patch("tools.muscle.code_review.fix_generator.os.replace", side_effect=raise_after_backup):
+        with patch(
+            "tools.muscle.code_review.fix_generator.os.replace", side_effect=raise_after_backup
+        ):
             result = generator.apply_fix(issue, "new content\n")
 
         # The apply must have failed
@@ -620,6 +618,7 @@ class TestFG02BakCleanup:
         # Set mtime to 2 hours ago
         old_time = time.time() - 7200
         import os as _os
+
         _os.utime(old_bak, (old_time, old_time))
 
         fresh_bak = tmp_path / "fresh.py.muscle.bak"

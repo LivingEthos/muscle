@@ -3,6 +3,7 @@ Unit tests for code_review/shadow_worker.py (W3-A).
 """
 
 import subprocess
+import threading
 import time
 from unittest.mock import Mock, patch
 
@@ -317,3 +318,82 @@ class TestWorkerManager:
     def test_project_path_property(self, tmp_project):
         mgr = WorkerManager(project_path=str(tmp_project))
         assert mgr.project_path == str(tmp_project)
+
+
+class TestSH04LockInvariant:
+    """[SH-04] Concurrent submit_job calls for the same job_id must not corrupt
+    _in_progress_jobs and the lock invariant (assert self._lock.locked()) must hold."""
+
+    @pytest.fixture
+    def mock_broker(self):
+        return Mock()
+
+    def test_concurrent_submit_same_job_no_duplication(self, mock_broker):
+        """Two threads simultaneously calling submit_job with the same job_id must
+        result in the job appearing exactly once in _in_progress_jobs."""
+        worker = ShadowWorker(broker=mock_broker)
+        mock_broker.get_pending_jobs.return_value = []
+
+        barrier = threading.Barrier(2)
+        errors: list[Exception] = []
+
+        def submit(tid: int) -> None:
+            try:
+                barrier.wait()  # ensure both threads start at the same instant
+                worker.submit_job("shared-job-1", "/src", Mock(), Mock())
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=submit, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5.0)
+
+        assert errors == [], f"Thread(s) raised exceptions: {errors}"
+        # The job must appear exactly once
+        assert worker._in_progress_jobs == {"shared-job-1"}
+        # broker.start_job should have been called exactly once (idempotent guard)
+        assert mock_broker.start_job.call_count == 1
+
+    def test_lock_invariant_assertion_fires_inside_lock(self, mock_broker):
+        """The assert self._lock.locked() inside submit_job must pass when the
+        lock is held — confirming the assertion is correctly placed."""
+        worker = ShadowWorker(broker=mock_broker)
+        mock_broker.get_pending_jobs.return_value = []
+
+        # submit_job acquires _lock before mutating _in_progress_jobs;
+        # the assertion should not raise.
+        worker.submit_job("job-assert-1", "/src", Mock(), Mock())
+        assert "job-assert-1" in worker._in_progress_jobs
+
+    def test_in_progress_jobs_cleared_after_job_completion(self, mock_broker):
+        """After _process_job completes (or fails), the job_id must be removed
+        from _in_progress_jobs regardless of outcome."""
+        worker = ShadowWorker(broker=mock_broker)
+
+        task = JobTask(
+            job_id="job-cleanup-1",
+            target_path="/src",
+            mode=Mock(),
+            intensity=Mock(),
+        )
+        # Pre-register the job as in-progress
+        with worker._lock:
+            worker._in_progress_jobs.add("job-cleanup-1")
+
+        # Provide a job_processor that raises to exercise the failure path
+        def failing_processor(_task: JobTask) -> dict:  # type: ignore[return]
+            raise RuntimeError("simulated failure")
+
+        worker.job_processor = failing_processor
+        mock_broker.fail_job.return_value = None
+        mock_broker.complete_job.return_value = None
+        mock_broker.heartbeat_job.return_value = None
+
+        # Allow max_retries to exhaust quickly
+        worker.config.max_retries = 0
+        worker._process_job(task)
+
+        # job_id must be removed from _in_progress_jobs by the finally block
+        assert "job-cleanup-1" not in worker._in_progress_jobs

@@ -189,6 +189,7 @@ class ShadowWorker:
             changed_files: Optional changed-files list for scope.
         """
         with self._lock:
+            assert self._lock.locked(), "_in_progress_jobs mutation must be performed under _lock"
             if job_id in self._in_progress_jobs:
                 logger.debug(f"Job {job_id} already in progress, skipping")
                 return
@@ -270,6 +271,9 @@ class ShadowWorker:
                 existing = self.broker.get_job(job_id)
                 if existing and existing.get("status") == "pending":
                     with self._lock:
+                        assert self._lock.locked(), (
+                            "_in_progress_jobs mutation must be performed under _lock"
+                        )
                         if job_id in self._in_progress_jobs:
                             continue
                         self._in_progress_jobs.add(job_id)

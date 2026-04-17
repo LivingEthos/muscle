@@ -15,6 +15,13 @@ from typing import Any
 
 
 class Severity(Enum):
+    """Issue severity levels aligned with CWE triage taxonomy.
+
+    Convention:
+    - Use ``.value`` (int) for persistence, JSON serialisation, and numeric comparisons.
+    - Use ``.name`` (str, e.g. ``"HIGH"``) for human-readable log messages and display.
+    """
+
     CRITICAL = 5
     HIGH = 4
     MEDIUM = 3
@@ -23,6 +30,13 @@ class Severity(Enum):
 
 
 class IssueCategory(Enum):
+    """Issue category labels.
+
+    Convention:
+    - Use ``.value`` (lowercase str, e.g. ``"security"``) for persistence and JSON.
+    - Use ``.name`` (upper str, e.g. ``"SECURITY"``) for log messages and display.
+    """
+
     SECURITY = "security"
     CORRECTNESS = "correctness"
     PERFORMANCE = "performance"
@@ -127,6 +141,10 @@ class ReviewConfig:
     worktree_enabled: bool = False
     fetch_sources: bool = False
     fetch_source_packages: list[str] | None = None
+    # Maximum number of static-analysis issues forwarded to the M2.7 semantic
+    # review per file per batch.  Tune down to reduce token spend; tune up to
+    # allow the reviewer to see more context per call.
+    max_issues_per_batch: int = 20
 
     def __post_init__(self) -> None:
         if self.execution_mode == "worktree" and not self.worktree_enabled:

@@ -6,13 +6,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from tools.muscle.code_review.code_reviewer import CodeReviewer
 from tools.muscle.code_review.review_artifacts import ReviewArtifactStore
-from tools.muscle.code_review.types import IssueCategory, PressureFocus, Severity
+from tools.muscle.code_review.types import IssueCategory, PressureFocus, ReviewConfig, Severity
 
 
 class TestParseSeverity:
@@ -458,3 +456,75 @@ class TestPressureReview:
         focus = PressureFocus()
         result = reviewer.pressure_review("test.py", "x = 1", focus)
         assert "pressure_findings" in result
+
+
+class TestCR05MaxIssuesPerBatch:
+    """[CR-05] max_issues_per_batch must be documented in ReviewConfig and honoured
+    by CodeReviewer when threaded through from config.
+    """
+
+    def test_review_config_default_max_issues_per_batch(self):
+        """ReviewConfig exposes max_issues_per_batch with a default of 20."""
+        config = ReviewConfig(target_path="./src")
+        assert config.max_issues_per_batch == 20
+
+    def test_review_config_custom_max_issues_per_batch(self):
+        """ReviewConfig accepts a custom max_issues_per_batch value."""
+        config = ReviewConfig(target_path="./src", max_issues_per_batch=5)
+        assert config.max_issues_per_batch == 5
+
+    def test_code_reviewer_respects_custom_max_issues_per_batch(self, tmp_path):
+        """When CodeReviewer is constructed with a custom max_issues_per_batch the batch
+        is truncated to that limit before the M2.7 call."""
+        test_file = tmp_path / "sample.py"
+        test_file.write_text("x = 1\n")
+
+        mock_m27 = MagicMock()
+        # Return a minimal valid response so _review_file succeeds
+        empty_response = json.dumps(
+            {
+                "reviews": [],
+                "summary": {
+                    "total_reviewed": 0,
+                    "valid_issues": 0,
+                    "false_positives": 0,
+                    "intentional": 0,
+                    "critical": 0,
+                    "high": 0,
+                    "medium": 0,
+                    "low": 0,
+                    "info": 0,
+                },
+            }
+        )
+        mock_m27.chat.return_value = (empty_response, MagicMock(total=10))
+
+        # Construct reviewer with a very small batch limit
+        reviewer = CodeReviewer(mock_m27, max_issues_per_batch=3)
+
+        # Submit 7 issues for the same file
+        issues = [
+            {"file_path": str(test_file), "line": i, "message": f"issue {i}"} for i in range(1, 8)
+        ]
+        reviewer.review(str(test_file), issues)
+
+        # The M2.7 call must have been made (batch not empty after truncation)
+        assert mock_m27.chat.call_count == 1
+        # The user-prompt argument must contain at most 3 issues
+        call_args = mock_m27.chat.call_args
+        messages = call_args.kwargs.get("messages") or call_args.args[0]
+        user_message = next(m["content"] for m in messages if m["role"] == "user")
+        # The truncated issues list should contain exactly 3 entries
+        import re
+
+        # Count occurrences of "issue " in the serialised issues block
+        issue_count = len(re.findall(r'"message":', user_message))
+        assert issue_count == 3, f"Expected 3 issues in prompt (batch limit), got {issue_count}"
+
+    def test_reviewer_config_threaded_via_review_config(self, tmp_path):
+        """ReviewConfig.max_issues_per_batch is threaded into CodeReviewer by
+        ReviewController, so the constructor default is no longer the only option."""
+        # Verify that CodeReviewer stores the value passed to it
+        mock_m27 = MagicMock()
+        reviewer = CodeReviewer(mock_m27, max_issues_per_batch=7)
+        assert reviewer.max_issues_per_batch == 7

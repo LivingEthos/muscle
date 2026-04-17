@@ -660,10 +660,22 @@ class M27Client:
                 backoff *= 2
                 continue
 
-            except Exception as e:
-                last_error = f"Unexpected error: {type(e).__name__}: {e}"
-                logger.error(f"Unexpected error: {last_error}")
+            except ValueError as e:
+                # Fix: M27-05. ValueError indicates a programming error (e.g. bad
+                # argument) that retrying will not resolve — break immediately.
+                last_error = f"Value error (non-retryable): {e}"
+                logger.error(f"Non-retryable error: {last_error}")
                 break
+
+            except (requests.RequestException, json.JSONDecodeError) as e:
+                # Fix: M27-05. Transient network / parse errors — retry.
+                last_error = f"Transient error: {type(e).__name__}: {e}"
+                logger.warning(
+                    f"Transient error (attempt {attempt + 1}/{self.max_retries}): {last_error}"
+                )
+                time.sleep(backoff)
+                backoff *= 2
+                continue
 
         logger.error(f"All {self.max_retries} attempts failed. Last error: {last_error}")
         failure_usage = TokenUsage()
@@ -769,10 +781,22 @@ class M27Client:
                 backoff *= 2
                 continue
 
-            except Exception as e:
-                last_error = f"Unexpected error: {e}"
-                logger.error(f"Unexpected error: {e}")
+            except ValueError as e:
+                # Fix: M27-05. ValueError is non-retryable in streaming path too.
+                last_error = f"Value error (non-retryable): {e}"
+                logger.error(f"Non-retryable streaming error: {last_error}")
                 break
+
+            except (requests.RequestException, json.JSONDecodeError) as e:
+                # Fix: M27-05. Transient errors in streaming path — retry.
+                last_error = f"Transient error: {type(e).__name__}: {e}"
+                logger.warning(
+                    f"Transient streaming error (attempt {attempt + 1}/{self.max_retries}):"
+                    f" {last_error}"
+                )
+                time.sleep(backoff)
+                backoff *= 2
+                continue
 
         logger.error(f"All {self.max_retries} attempts failed. Last error: {last_error}")
         self._record_telemetry(

@@ -29,11 +29,9 @@ from tools.muscle.cli import (
     _session_report_to_dict,
     _truncate,
     abort,
-    agents_group,
     agents_list,
     backups_group,
     check,
-    cli,
     cost_group,
     diagnosis,
     disable,
@@ -43,15 +41,13 @@ from tools.muscle.cli import (
     init,
     kb_group,
     lifeline,
-    memory_group,
+    long_eval_group,
     memory_history,
     memory_status,
-    long_eval_group,
     probe,
     resume,
     run,
     settings_group,
-    skills_group,
     skills_list,
     status,
     tui,
@@ -63,8 +59,8 @@ from tools.muscle.types import (
     BudgetMode,
     CodeArtifact,
     EvalMode,
-    IterationResult,
     IterationReport,
+    IterationResult,
     LoopStats,
     RunConfig,
     SessionReport,
@@ -384,9 +380,7 @@ class TestEventHandler:
 
     def test_session_complete_success(self, capsys):
         _, handler = _create_event_handler()
-        handler(
-            LoopEvent.SESSION_COMPLETE, {"status": SessionStatus.SUCCESS.value, "reason": ""}
-        )
+        handler(LoopEvent.SESSION_COMPLETE, {"status": SessionStatus.SUCCESS.value, "reason": ""})
         captured = capsys.readouterr()
         assert "SUCCESS" in captured.out
 
@@ -1084,12 +1078,31 @@ class TestProbeCommand:
     def runner(self):
         return CliRunner()
 
-    def test_probe_no_job_id(self, runner):
-        result = runner.invoke(probe, [], catch_exceptions=False)
+    @pytest.fixture
+    def mock_broker(self):
+        """Return a mock ShadowBroker that does not touch the filesystem."""
+        broker = MagicMock()
+        broker.get_job.return_value = None
+        broker.get_active_jobs.return_value = []
+        broker.get_recent_jobs.return_value = []
+        return broker
+
+    def test_probe_no_job_id(self, runner, mock_broker):
+        with patch(
+            "tools.muscle.code_review.shadow_broker.ShadowBroker",
+            return_value=mock_broker,
+        ):
+            result = runner.invoke(probe, [], catch_exceptions=False)
         assert result.exit_code == 0
 
-    def test_probe_nonexistent_job(self, runner):
-        result = runner.invoke(probe, ["--job-id", "nonexistent-job-id"], catch_exceptions=False)
+    def test_probe_nonexistent_job(self, runner, mock_broker):
+        with patch(
+            "tools.muscle.code_review.shadow_broker.ShadowBroker",
+            return_value=mock_broker,
+        ):
+            result = runner.invoke(
+                probe, ["--job-id", "nonexistent-job-id"], catch_exceptions=False
+            )
         assert result.exit_code == 1
 
 
@@ -1100,15 +1113,30 @@ class TestDiagnosisCommand:
     def runner(self):
         return CliRunner()
 
-    def test_diagnosis_no_job_id(self, runner, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        result = runner.invoke(diagnosis, [], catch_exceptions=False)
+    @pytest.fixture
+    def mock_broker(self):
+        """Return a mock ShadowBroker that does not touch the filesystem."""
+        broker = MagicMock()
+        broker.get_job.return_value = None
+        broker.get_recent_jobs.return_value = []
+        return broker
+
+    def test_diagnosis_no_job_id(self, runner, mock_broker):
+        with patch(
+            "tools.muscle.code_review.shadow_broker.ShadowBroker",
+            return_value=mock_broker,
+        ):
+            result = runner.invoke(diagnosis, [], catch_exceptions=False)
         assert result.exit_code == 1
 
-    def test_diagnosis_nonexistent_job(self, runner):
-        result = runner.invoke(
-            diagnosis, ["--job-id", "nonexistent-job-id"], catch_exceptions=False
-        )
+    def test_diagnosis_nonexistent_job(self, runner, mock_broker):
+        with patch(
+            "tools.muscle.code_review.shadow_broker.ShadowBroker",
+            return_value=mock_broker,
+        ):
+            result = runner.invoke(
+                diagnosis, ["--job-id", "nonexistent-job-id"], catch_exceptions=False
+            )
         assert result.exit_code == 1
 
 
@@ -1302,28 +1330,57 @@ class TestMemoryGroup:
     def runner(self):
         return CliRunner()
 
-    def test_memory_status_empty(self, runner):
+    @pytest.fixture
+    def mock_project_memory(self, tmp_path):
+        """Mock ProjectMemory so tests don't need a writable CWD with .muscle/."""
+        pm = MagicMock()
+        pm._db_path = tmp_path / ".muscle" / "project_memory.db"
+        pm.get_schema_version.return_value = "1"
+        pm.get_statistics.return_value = {
+            "total_learned_rules": 0,
+            "total_reviews": 0,
+            "total_findings": 0,
+            "total_skills": 0,
+            "total_agents": 0,
+            "related_projects": 0,
+            "transferred_lessons": 0,
+            "validated_transferred_lessons": 0,
+            "promoted_transferred_lessons": 0,
+            "archived_transferred_lessons": 0,
+            "avg_rule_success_rate": None,
+        }
+        pm.list_transferred_lesson_recommendations.return_value = []
+        pm.list_review_runs.return_value = []
+        pm.list_decisions.return_value = []
+        pm.list_action_logs.return_value = []
+        return pm
+
+    def test_memory_status_empty(self, runner, mock_project_memory):
         """memory status should succeed even with empty DB."""
-        result = runner.invoke(memory_status, [], catch_exceptions=False)
+        with patch("tools.muscle.cli.ProjectMemory", return_value=mock_project_memory):
+            result = runner.invoke(memory_status, [], catch_exceptions=False)
         assert result.exit_code == 0
         assert "Memory Status" in result.output
 
-    def test_memory_status_shows_db_path(self, runner):
+    def test_memory_status_shows_db_path(self, runner, mock_project_memory):
         """memory status shows database path."""
-        result = runner.invoke(memory_status, [], catch_exceptions=False)
+        with patch("tools.muscle.cli.ProjectMemory", return_value=mock_project_memory):
+            result = runner.invoke(memory_status, [], catch_exceptions=False)
         assert result.exit_code == 0
         # Verify the table header and at least the "Database" row label appears
         assert "Memory Status" in result.output
         assert "Database" in result.output
 
-    def test_memory_history_empty(self, runner):
+    def test_memory_history_empty(self, runner, mock_project_memory):
         """memory history should succeed even with no data."""
-        result = runner.invoke(memory_history, [], catch_exceptions=False)
+        with patch("tools.muscle.cli.ProjectMemory", return_value=mock_project_memory):
+            result = runner.invoke(memory_history, [], catch_exceptions=False)
         assert result.exit_code == 0
 
-    def test_memory_history_with_limit(self, runner):
+    def test_memory_history_with_limit(self, runner, mock_project_memory):
         """memory history accepts --limit flag."""
-        result = runner.invoke(memory_history, ["--limit", "5"], catch_exceptions=False)
+        with patch("tools.muscle.cli.ProjectMemory", return_value=mock_project_memory):
+            result = runner.invoke(memory_history, ["--limit", "5"], catch_exceptions=False)
         assert result.exit_code == 0
 
 

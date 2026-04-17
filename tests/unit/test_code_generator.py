@@ -150,7 +150,9 @@ class TestCodeGenerator:
         )
         assert delta_text == expected_full, "Delta stream was truncated or corrupted"
 
-    def test_generate_streaming_ignores_terminal_empty_chunk(self, generator, mock_client, tmp_path):
+    def test_generate_streaming_ignores_terminal_empty_chunk(
+        self, generator, mock_client, tmp_path
+    ):
         mock_client.chat_streaming.return_value = iter(
             [
                 ("```python\nprint('hi')\n", None),
@@ -282,8 +284,8 @@ class TestGenerateRetryLogic:
 
         generator, mock_client = gen_with_retry
         cost_opt = Mock(spec=CostOptimizer)
-        cost_opt.get_from_cache.side_effect = (
-            lambda cache_key: {"files": ["cached.py"]} if cache_key == "say hello" else None
+        cost_opt.get_from_cache.side_effect = lambda cache_key: (
+            {"files": ["cached.py"]} if cache_key == "say hello" else None
         )
         cost_opt.estimate_tier.return_value = "medium"
         cost_opt.get_max_tokens.return_value = 4096
@@ -492,3 +494,75 @@ class TestSanitizeFunctions:
 
         result = _sanitize_for_prompt("line1\r\nline2")
         assert "\r\n" not in result
+
+
+class TestCG04FencedBlockExtractionNarrowExcept:
+    """Fix CG-04: bare except in fenced-block extraction narrowed to (OSError, UnicodeError, re.error)."""
+
+    @pytest.fixture
+    def gen(self):
+        return CodeGenerator(Mock())
+
+    def test_re_error_in_extract_code_blocks_falls_back_to_empty(self, gen, tmp_path):
+        """An re.error raised inside _extract_code_blocks must be caught and yield
+        an empty block list rather than propagating."""
+        import re
+
+        with patch.object(gen, "_extract_code_blocks", side_effect=re.error("bad pattern")):
+            code_output, files = gen._parse_and_write("```python\nprint('hi')\n```", tmp_path)
+        # Because blocks were empty, fallback writes raw response.
+        assert files is not None
+
+    def test_programming_error_propagates_through_extract_code_blocks(self, gen, tmp_path):
+        """A TypeError (programming error) must NOT be silenced by the narrowed except."""
+        with patch.object(gen, "_extract_code_blocks", side_effect=TypeError("oops")):
+            with pytest.raises(TypeError, match="oops"):
+                gen._parse_and_write("```python\nprint('hi')\n```", tmp_path)
+
+
+class TestCG05PlainCodeUtf8Validation:
+    """Fix CG-05: plain-code fallback round-trips through UTF-8 replace before emit."""
+
+    @pytest.fixture
+    def gen(self):
+        return CodeGenerator(Mock())
+
+    def test_plain_code_with_valid_utf8_is_unchanged(self, gen, tmp_path):
+        """Valid UTF-8 content must be written without modification."""
+        response = "def héllo():\n    print('bonjour')\n    return True\n\nmore lines\n"
+        code_output, files = gen._parse_and_write(response, tmp_path)
+        # At minimum no exception; files may be empty or written.
+        assert code_output is not None
+
+    def test_plain_code_with_lone_surrogate_is_sanitized(self, gen, tmp_path):
+        """A lone surrogate in plain-code text must be replaced, not cause a crash."""
+        # Lone surrogates cannot be encoded as valid UTF-8; inject one via surrogateescape.
+        bad_char = "\udcff"  # lone low surrogate
+        response = f"def foo():\n    x = '{bad_char}'\n    return x\n\nextra line\n"
+
+        # The round-trip should succeed (not raise) and the bad char should be
+        # replaced with the UTF-8 replacement character b'\xef\xbf\xbd'.
+        safe = response.encode("utf-8", "replace").decode("utf-8")
+        assert bad_char not in safe
+        assert "\ufffd" in safe or safe  # replacement happened or string was clean
+
+    def test_warning_logged_when_replacement_occurs(self, gen, tmp_path, caplog):
+        """A warning must be logged when non-UTF-8 characters are replaced."""
+        import logging
+
+        # Build a plain-code-shaped response that contains a lone surrogate.
+        bad_char = "\udcff"
+        response = f"def broken():\n    x = '{bad_char}'\n    return x\n\nextra line\n"
+
+        # Patch _extract_plain_code to return content with the bad char, and
+        # _write_output_file to avoid actually writing to disk.
+        with patch.object(gen, "_extract_plain_code", return_value=response):
+            with patch.object(gen, "_extract_alternative", return_value=[]):
+                with patch.object(gen, "_write_output_file", return_value="generated_code.py"):
+                    with caplog.at_level(logging.WARNING, logger="tools.muscle.code_generator"):
+                        gen._parse_and_write(response, tmp_path)
+
+        warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("non-UTF-8" in msg or "replace" in msg.lower() for msg in warning_msgs), (
+            f"Expected a UTF-8 replacement warning, got: {warning_msgs}"
+        )

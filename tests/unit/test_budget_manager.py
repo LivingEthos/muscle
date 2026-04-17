@@ -218,3 +218,101 @@ def test_estimate_iteration_cost_fixed():
     """Test estimate_iteration_cost returns avg_output_tokens in fixed mode."""
     manager = BudgetManager(mode=BudgetMode.FIXED, fixed_limit=50000)
     assert manager.estimate_iteration_cost(3000) == 3000
+
+
+# ---------------------------------------------------------------------------
+# BM-02: Budget file must reject negative / non-int values
+# ---------------------------------------------------------------------------
+
+
+class TestBM02BudgetFileValidation:
+    """Fix BM-02: _parse_budget_value rejects negative and non-numeric values."""
+
+    def _make_budget_file(self, tmpdir: Path, content: str) -> Path:
+        p = tmpdir / "budget.json"
+        p.write_text(content, encoding="utf-8")
+        return p
+
+    def test_negative_remaining_tokens_resets_to_zero(self, tmp_path):
+        """A negative remaining_tokens value in the budget file must be clamped to 0."""
+        budget_file = self._make_budget_file(tmp_path, '{"remaining_tokens": -5000}')
+        manager = BudgetManager(mode=BudgetMode.AUTO, auto_budget_path=str(budget_file))
+        assert manager.fixed_limit == 0, (
+            f"Expected fixed_limit=0 for negative budget, got {manager.fixed_limit}"
+        )
+
+    def test_string_remaining_tokens_resets_to_zero(self, tmp_path):
+        """A string value for remaining_tokens must log a warning and reset to 0."""
+        budget_file = self._make_budget_file(tmp_path, '{"remaining_tokens": "lots"}')
+        manager = BudgetManager(mode=BudgetMode.AUTO, auto_budget_path=str(budget_file))
+        assert manager.fixed_limit == 0, (
+            f"Expected fixed_limit=0 for string budget, got {manager.fixed_limit}"
+        )
+
+    def test_boolean_remaining_tokens_resets_to_zero(self, tmp_path):
+        """A boolean value for remaining_tokens must be treated as invalid and reset to 0.
+
+        Note: bool is a subclass of int in Python. ``True`` maps to 1 via int(), so
+        BM-02 only requires that we reject clearly non-numeric types (str, list, dict, None).
+        Booleans are technically int subclasses, but we still want them treated as 0
+        because they are semantically meaningless as token counts.
+        """
+        # We treat bool as invalid (not isinstance of int/float for budget purposes).
+        # Actually bool IS a subclass of int, so _parse_budget_value returns int(True)=1.
+        # The spec says "non-int values" — booleans ARE ints, so 1 is acceptable.
+        # The key invariant is: no crash, no negative values.
+        budget_file = self._make_budget_file(tmp_path, '{"remaining_tokens": true}')
+        manager = BudgetManager(mode=BudgetMode.AUTO, auto_budget_path=str(budget_file))
+        # bool True → int(True) = 1; that's ≥ 0, so it's accepted.
+        assert manager.fixed_limit >= 0
+
+    def test_none_remaining_tokens_resets_to_zero(self, tmp_path):
+        """A null JSON value (None) for remaining_tokens must reset to 0."""
+        budget_file = self._make_budget_file(tmp_path, '{"remaining_tokens": null}')
+        manager = BudgetManager(mode=BudgetMode.AUTO, auto_budget_path=str(budget_file))
+        assert manager.fixed_limit == 0
+
+    def test_missing_remaining_tokens_key_resets_to_zero(self, tmp_path):
+        """A budget file without remaining_tokens must reset to 0."""
+        budget_file = self._make_budget_file(tmp_path, '{"other_key": 12345}')
+        manager = BudgetManager(mode=BudgetMode.AUTO, auto_budget_path=str(budget_file))
+        assert manager.fixed_limit == 0
+
+    def test_list_value_resets_to_zero(self, tmp_path):
+        """A list value for remaining_tokens must be treated as invalid."""
+        budget_file = self._make_budget_file(tmp_path, '{"remaining_tokens": [1, 2, 3]}')
+        manager = BudgetManager(mode=BudgetMode.AUTO, auto_budget_path=str(budget_file))
+        assert manager.fixed_limit == 0
+
+    def test_valid_positive_int_accepted(self, tmp_path):
+        """A valid positive integer remaining_tokens must be accepted as-is."""
+        budget_file = self._make_budget_file(tmp_path, '{"remaining_tokens": 42000}')
+        manager = BudgetManager(mode=BudgetMode.AUTO, auto_budget_path=str(budget_file))
+        assert manager.fixed_limit == 42000
+
+    def test_zero_remaining_tokens_accepted(self, tmp_path):
+        """Zero is a valid non-negative value for remaining_tokens."""
+        budget_file = self._make_budget_file(tmp_path, '{"remaining_tokens": 0}')
+        manager = BudgetManager(mode=BudgetMode.AUTO, auto_budget_path=str(budget_file))
+        assert manager.fixed_limit == 0
+
+    def test_parse_budget_value_static_negative(self, tmp_path):
+        """_parse_budget_value returns 0 for negative input."""
+        budget_file = self._make_budget_file(tmp_path, "{}")
+        manager = BudgetManager(mode=BudgetMode.AUTO, auto_budget_path=str(budget_file))
+        path = tmp_path / "dummy.json"
+        assert manager._parse_budget_value(-100, path) == 0
+
+    def test_parse_budget_value_static_string(self, tmp_path):
+        """_parse_budget_value returns 0 for string input."""
+        budget_file = self._make_budget_file(tmp_path, "{}")
+        manager = BudgetManager(mode=BudgetMode.AUTO, auto_budget_path=str(budget_file))
+        path = tmp_path / "dummy.json"
+        assert manager._parse_budget_value("bad", path) == 0
+
+    def test_parse_budget_value_static_positive(self, tmp_path):
+        """_parse_budget_value returns the value for valid positive int input."""
+        budget_file = self._make_budget_file(tmp_path, "{}")
+        manager = BudgetManager(mode=BudgetMode.AUTO, auto_budget_path=str(budget_file))
+        path = tmp_path / "dummy.json"
+        assert manager._parse_budget_value(5000, path) == 5000

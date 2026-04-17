@@ -53,12 +53,23 @@ class RunConfig:
     kb_path: str | None = None
     max_cost_per_iteration: int | None = None
     early_exit_on: str | None = None
+    max_task_length: int | None = None
+    max_timeout_seconds: int | None = None
 
     def __post_init__(self) -> None:
         if not self.task or not self.task.strip():
             raise ValueError("Task cannot be empty")
+        if self.max_task_length is not None:
+            if self.max_task_length <= 0:
+                raise ValueError("max_task_length must be > 0")
+            if len(self.task) > self.max_task_length:
+                raise ValueError(
+                    f"Task length {len(self.task)} exceeds max_task_length {self.max_task_length}"
+                )
         if not 1 <= self.max_iterations <= 100:
             raise ValueError("max_iterations must be between 1 and 100")
+        if self.max_timeout_seconds is not None and self.max_timeout_seconds <= 0:
+            raise ValueError("max_timeout_seconds must be > 0")
         if not 1 <= self.timeout_seconds <= 86400:
             raise ValueError("timeout_seconds must be between 1 and 86400")
         if self.budget_tokens < 0:
