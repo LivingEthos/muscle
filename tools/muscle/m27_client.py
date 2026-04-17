@@ -54,6 +54,24 @@ TEMP_BALANCED = 0.4  # Code generation with some creativity
 TEMP_CREATIVE = 0.5  # Strategy evolution, creative solutions
 
 
+class M27StructuredError(Exception):
+    """Raised when chat_structured fails to produce valid JSON after retries."""
+
+    pass
+
+
+def _strip_json_fences(text: str) -> str:
+    """Extract JSON body if wrapped in ```json or ``` fences."""
+    text = text.strip()
+    if text.startswith("```json"):
+        text = text[len("```json") :].lstrip("\n")
+    elif text.startswith("```"):
+        text = text[len("```") :].lstrip("\n")
+    if text.endswith("```"):
+        text = text[: -len("```")].rstrip("\n")
+    return text.strip()
+
+
 @dataclass
 class TokenUsage:
     input_tokens: int = 0
@@ -648,6 +666,60 @@ class M27Client:
             False,
         )
         return "", failure_usage
+
+    def chat_structured(
+        self,
+        schema: type[Any],
+        messages: list[dict],
+        system: str = "",
+        max_tokens: int = 4096,
+        retries: int = 2,
+    ) -> Any:
+        """Call M2.7, parse response as JSON, validate against Pydantic schema.
+
+        Retries on ValidationError with a schema-corrective follow-up.
+        Raises M27StructuredError after retries + 1 total attempts.
+        """
+        from pydantic import ValidationError
+
+        schema_hint = (
+            f"Reply ONLY with valid JSON matching this schema:\n{schema.model_json_schema()}"
+        )
+        system_with_schema = f"{system}\n\n{schema_hint}" if system else schema_hint
+
+        last_error: Exception | None = None
+        working_messages = list(messages)
+
+        for attempt in range(retries + 1):
+            response_text, _ = self.chat(
+                messages=working_messages,
+                system=system_with_schema,
+                max_tokens=max_tokens,
+                temperature=0.1,
+            )
+            parsed_text = _strip_json_fences(response_text)
+            try:
+                data = json.loads(parsed_text)
+                return schema.model_validate(data)
+            except (json.JSONDecodeError, ValidationError) as e:
+                last_error = e
+                if attempt < retries:
+                    working_messages.append({"role": "assistant", "content": response_text})
+                    working_messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Your last response did not match the schema: {e}. "
+                                "Reply ONLY with valid JSON matching the schema."
+                            ),
+                        }
+                    )
+                else:
+                    raise M27StructuredError(
+                        f"Failed to produce schema-valid response after {retries + 1} "
+                        f"attempts. Last error: {e}"
+                    ) from e
+        raise M27StructuredError(f"Unreachable: {last_error}")
 
     def chat_streaming(
         self,

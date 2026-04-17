@@ -15,9 +15,7 @@ class ReviewFinding(BaseModel):
     file_path: str
     line_number: int = Field(ge=1)
     severity: Literal["critical", "high", "medium", "low", "info"]
-    category: Literal[
-        "security", "correctness", "performance", "style", "docs", "best_practice"
-    ]
+    category: Literal["security", "correctness", "performance", "style", "docs", "best_practice"]
     title: str
     description: str
     code_snippet: str = ""

@@ -174,3 +174,116 @@ class TestRouteDecisionSchema:
                 confidence=0.8,
                 rationale="bad",
             )
+
+
+from unittest.mock import MagicMock, patch
+
+from tools.muscle.m27_client import M27Client, M27StructuredError, _strip_json_fences
+
+
+class TestStripJsonFences:
+    def test_no_fences(self) -> None:
+        assert _strip_json_fences('{"a": 1}') == '{"a": 1}'
+
+    def test_json_fence(self) -> None:
+        text = '```json\n{"a": 1}\n```'
+        assert _strip_json_fences(text) == '{"a": 1}'
+
+    def test_plain_fence(self) -> None:
+        text = '```\n{"a": 1}\n```'
+        assert _strip_json_fences(text) == '{"a": 1}'
+
+    def test_whitespace_only(self) -> None:
+        assert _strip_json_fences("  ") == ""
+
+
+class TestM27StructuredError:
+    def test_is_exception(self) -> None:
+        err = M27StructuredError("test")
+        assert isinstance(err, Exception)
+        assert str(err) == "test"
+
+
+class TestChatStructured:
+    @pytest.fixture()
+    def client(self) -> M27Client:
+        with patch.dict("os.environ", {"MINIMAX_API_KEY": "test-key"}):
+            return M27Client(api_key="test-key")
+
+    def test_valid_json_parses(self, client: M27Client) -> None:
+        with patch.object(client, "chat") as mock_chat:
+            mock_chat.return_value = (
+                '{"tier": "mechanical", "recommended": "m27", '
+                '"confidence": 0.9, "rationale": "simple task"}',
+                MagicMock(),
+            )
+            result = client.chat_structured(
+                schema=RouteDecisionSchema,
+                messages=[{"role": "user", "content": "Classify: fix typo"}],
+            )
+        assert isinstance(result, RouteDecisionSchema)
+        assert result.tier == "mechanical"
+
+    def test_malformed_json_retries_then_succeeds(self, client: M27Client) -> None:
+        with patch.object(client, "chat") as mock_chat:
+            mock_chat.side_effect = [
+                ("not json at all", MagicMock()),
+                (
+                    '{"tier": "reasoning", "recommended": "m27", '
+                    '"confidence": 0.7, "rationale": "ok"}',
+                    MagicMock(),
+                ),
+            ]
+            result = client.chat_structured(
+                schema=RouteDecisionSchema,
+                messages=[{"role": "user", "content": "Classify: refactor"}],
+                retries=2,
+            )
+        assert result.tier == "reasoning"
+        assert mock_chat.call_count == 2
+
+    def test_exhausted_retries_raises(self, client: M27Client) -> None:
+        with patch.object(client, "chat") as mock_chat:
+            mock_chat.return_value = ("garbage", MagicMock())
+            with pytest.raises(M27StructuredError, match="Failed to produce schema-valid"):
+                client.chat_structured(
+                    schema=RouteDecisionSchema,
+                    messages=[{"role": "user", "content": "test"}],
+                    retries=2,
+                )
+        assert mock_chat.call_count == 3
+
+    def test_schema_validation_failure_retries(self, client: M27Client) -> None:
+        with patch.object(client, "chat") as mock_chat:
+            mock_chat.side_effect = [
+                (
+                    '{"tier": "bad_tier", "recommended": "m27", '
+                    '"confidence": 0.5, "rationale": "ok"}',
+                    MagicMock(),
+                ),
+                (
+                    '{"tier": "mechanical", "recommended": "m27", '
+                    '"confidence": 0.8, "rationale": "fixed"}',
+                    MagicMock(),
+                ),
+            ]
+            result = client.chat_structured(
+                schema=RouteDecisionSchema,
+                messages=[{"role": "user", "content": "test"}],
+                retries=1,
+            )
+        assert result.tier == "mechanical"
+        assert mock_chat.call_count == 2
+
+    def test_fenced_json_stripped(self, client: M27Client) -> None:
+        with patch.object(client, "chat") as mock_chat:
+            mock_chat.return_value = (
+                '```json\n{"tier": "mechanical", "recommended": "m27", '
+                '"confidence": 0.9, "rationale": "test"}\n```',
+                MagicMock(),
+            )
+            result = client.chat_structured(
+                schema=RouteDecisionSchema,
+                messages=[{"role": "user", "content": "test"}],
+            )
+        assert result.tier == "mechanical"
