@@ -2181,6 +2181,18 @@ def _parse_budget(budget_str: str) -> tuple[BudgetMode, int]:
     type=click.Choice(["local", "worktree"]),
     help="Override review execution mode for this run",
 )
+@click.option(
+    "--fetch-sources",
+    is_flag=True,
+    default=False,
+    help="Fetch third-party JS/TS package sources via opensrc for enriched review context",
+)
+@click.option(
+    "--source-package",
+    multiple=True,
+    default=(),
+    help="Explicit package(s) to fetch (repeatable); overrides import-based discovery",
+)
 def review(
     target: str,
     language: str | None,
@@ -2195,6 +2207,8 @@ def review(
     focus: str | None,
     workflow: str | None,
     execution: str | None,
+    fetch_sources: bool,
+    source_package: tuple[str, ...],
 ) -> None:
     """Review code for issues, auto-fix where possible, and generate handoff plans.
 
@@ -2261,6 +2275,12 @@ def review(
             configured_workflow = optimization_settings.get("optimize.default_workflow")
     except Exception as exc:
         logger.warning("Could not resolve optimization defaults for %s: %s", project_path, exc)
+
+    if fetch_sources and shadow:
+        raise click.UsageError(
+            "--fetch-sources is not supported with --shadow. "
+            "Run a foreground review to use dependency context enrichment."
+        )
 
     if shadow:
         from .code_review.shadow_worker import WorkerManager
@@ -2342,6 +2362,8 @@ def review(
         ),
         execution_mode=execution_mode,
         worktree_enabled=execution_mode == "worktree",
+        fetch_sources=fetch_sources,
+        fetch_source_packages=list(source_package) if source_package else None,
     )
 
     # Initialize ProjectMemory and LearningIngestor early for correction signal callback

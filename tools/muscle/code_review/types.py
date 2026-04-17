@@ -125,6 +125,8 @@ class ReviewConfig:
     scope_mode: str = "auto"
     execution_mode: str = "local"
     worktree_enabled: bool = False
+    fetch_sources: bool = False
+    fetch_source_packages: list[str] | None = None
 
     def __post_init__(self) -> None:
         if self.execution_mode == "worktree" and not self.worktree_enabled:

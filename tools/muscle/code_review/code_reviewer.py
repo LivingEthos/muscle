@@ -200,6 +200,7 @@ class CodeReviewer:
         language: str | None = None,
         complexity: str | None = None,
         target_type: str | None = None,
+        supplemental_context: str = "",
     ) -> tuple[list[ReviewIssue], dict]:
         target = Path(target_path)
         if target.is_file():
@@ -278,6 +279,7 @@ class CodeReviewer:
                 language=language,
                 complexity=complexity,
                 target_type=target_type,
+                supplemental_context=supplemental_context,
             )
 
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FILE_REVIEWS) as executor:
@@ -320,6 +322,7 @@ class CodeReviewer:
         language: str | None = None,
         complexity: str | None = None,
         target_type: str | None = None,
+        supplemental_context: str = "",
     ) -> tuple[list[ReviewIssue], dict]:
         review_budget = (
             self.context_budgeter.build_semantic_review_budget(
@@ -368,6 +371,14 @@ Static analysis issues found:
 {json.dumps(issues, indent=2)}
 
 Provide your review in JSON format."""
+        if supplemental_context:
+            user_prompt += (
+                f"\n\n{supplemental_context}\n\n"
+                "Note: the dependency context above is partial. Use it only when directly "
+                "relevant to the issues found. Do not invent dependency internals beyond "
+                "the supplied excerpts."
+            )
+
         base_context_strategy = review_budget.strategy if review_budget else "truncated_file_slice"
         prompt_envelope = compose_prompt_envelope(
             base_prompt=user_prompt,

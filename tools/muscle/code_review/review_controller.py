@@ -889,6 +889,10 @@ class ReviewController:
 
         all_static_issues = self._flatten_static_issues(static_results)
 
+        supplemental_context = ""
+        if self.config.fetch_sources:
+            supplemental_context = self._build_source_context()
+
         semantic_issues, summary = self.code_reviewer.review(
             self.config.target_path,
             all_static_issues,
@@ -898,6 +902,7 @@ class ReviewController:
             language=self.config.language,
             complexity=self._runtime_complexity(ctx),
             target_type=self._runtime_target_type(),
+            supplemental_context=supplemental_context,
         )
         ctx.issues = self._filter_by_severity(semantic_issues)
         ctx.stats.valid_issues = len(ctx.issues)
@@ -923,6 +928,21 @@ class ReviewController:
         )
 
         return ctx
+
+    def _build_source_context(self) -> str:
+        """Build supplemental JS/TS dependency context via opensrc. Never raises."""
+        try:
+            from .source_context import SourceContextBuilder
+
+            result = SourceContextBuilder(self.config.target_path).build(
+                fetch_source_packages=self.config.fetch_source_packages,
+            )
+            if result.skip_reason:
+                logger.info("Source context skipped: %s", result.skip_reason)
+            return result.context
+        except Exception as exc:
+            logger.warning("Source context build failed (continuing without it): %s", exc)
+            return ""
 
     def _run_auto_fix_mode(self, ctx: ReviewContext) -> ReviewContext:
         ctx = self._run_review_mode(ctx)
