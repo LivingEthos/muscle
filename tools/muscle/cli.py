@@ -4744,6 +4744,36 @@ def uninstall(force: bool, keep_data: bool, keep_config: bool) -> None:
     )
 
 
+@cli.command(name="route")
+@click.option("--task", required=True, help="Task description to classify.")
+@click.option("--scope", type=click.Path(exists=True, path_type=Path), default=None)
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON output.")
+def route_cmd(task: str, scope: Path | None, as_json: bool) -> None:
+    """Classify a task and decide where it should run (M2.7 vs host)."""
+    from .routing import TaskRouter
+
+    client = M27Client(api_key=os.environ.get("MINIMAX_API_KEY", ""))
+    router = TaskRouter(client)
+    decision = router.route(task, scope=scope)
+    if as_json:
+        click.echo(
+            json.dumps(
+                {
+                    "tier": decision.tier.value,
+                    "recommended": decision.recommended.value,
+                    "confidence": decision.confidence,
+                    "rationale": decision.rationale,
+                    "from_cache": decision.from_cache,
+                }
+            )
+        )
+    else:
+        click.echo(f"Tier:        {decision.tier.value}")
+        click.echo(f"Recommended: {decision.recommended.value}")
+        click.echo(f"Confidence:  {decision.confidence:.2f}")
+        click.echo(f"Rationale:   {decision.rationale}")
+
+
 def main() -> None:
     cli()
 

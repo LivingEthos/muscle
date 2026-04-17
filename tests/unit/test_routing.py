@@ -151,3 +151,45 @@ class TestTaskRouter:
         call_args = mock_client.chat.call_args
         user_msg = call_args[1]["messages"][0]["content"]
         assert "Scope hint" in user_msg
+
+
+from click.testing import CliRunner
+
+from tools.muscle.cli import cli
+
+
+class TestRouteCLI:
+    @pytest.fixture()
+    def runner(self) -> CliRunner:
+        return CliRunner()
+
+    def test_route_text_output(self, runner: CliRunner) -> None:
+        with patch("tools.muscle.cli.M27Client") as mock_client_cls:
+            mock_instance = MagicMock()
+            mock_client_cls.return_value = mock_instance
+            mock_instance.chat.return_value = (
+                '{"tier": "mechanical", "recommended": "m27", '
+                '"confidence": 0.9, "rationale": "test task"}',
+                MagicMock(),
+            )
+            with patch.dict("os.environ", {"MINIMAX_API_KEY": "test-key"}):
+                result = runner.invoke(cli, ["route", "--task", "fix a typo"])
+        assert result.exit_code == 0
+        assert "Tier:" in result.output
+        assert "mechanical" in result.output
+
+    def test_route_json_output(self, runner: CliRunner) -> None:
+        with patch("tools.muscle.cli.M27Client") as mock_client_cls:
+            mock_instance = MagicMock()
+            mock_client_cls.return_value = mock_instance
+            mock_instance.chat.return_value = (
+                '{"tier": "reasoning", "recommended": "m27", '
+                '"confidence": 0.7, "rationale": "debug task"}',
+                MagicMock(),
+            )
+            with patch.dict("os.environ", {"MINIMAX_API_KEY": "test-key"}):
+                result = runner.invoke(cli, ["route", "--task", "debug null pointer", "--json"])
+        assert result.exit_code == 0
+        output = json.loads(result.output)
+        assert output["tier"] == "reasoning"
+        assert output["recommended"] == "m27"
