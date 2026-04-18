@@ -134,6 +134,7 @@ class ReviewConfig:
     shadow_mode: bool = False
     failsafe: bool = False
     pressure_focus: PressureFocus | None = None
+    pressure_challenge: str | None = None
     workflow_name: str | None = None
     review_profile: str = "smart"
     scope_mode: str = "auto"

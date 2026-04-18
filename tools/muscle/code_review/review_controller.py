@@ -550,6 +550,7 @@ class ReviewController:
                 all_static_issues,
                 scope,
                 self.config.pressure_focus,
+                self.config.pressure_challenge,
                 ctx.session_id,
                 workflow_name,
                 self.config.mode.value,
@@ -1101,11 +1102,19 @@ class ReviewController:
                         cached_content,
                         pressure_focus,
                         artifact_store=artifact_store,
+                        challenge_mode=self.config.pressure_challenge,
+                        telemetry_session_id=ctx.session_id,
+                        workflow_name=self._resolve_workflow_name(),
+                        review_mode=self.config.mode.value,
+                        language=self.config.language,
+                        complexity=self._runtime_complexity(ctx),
+                        target_type=self._runtime_target_type(),
                     )
                     summary = pressure_result.get("summary", {})
                     if isinstance(summary, dict):
                         token_usage = int(summary.get("token_usage", 0))
                     findings = pressure_result.get("pressure_findings", [])
+                    source_agent = f"pressure:{self.config.pressure_challenge or 'default'}"
                     for finding in findings:
                         severity_str = finding.get("severity", "MEDIUM")
                         severity = self._parse_pressure_severity(severity_str)
@@ -1122,6 +1131,7 @@ class ReviewController:
                                     code_snippet=finding.get("code_snippet", ""),
                                     suggested_fix=finding.get("suggested_approach"),
                                     auto_fixable=False,
+                                    source_agent=source_agent,
                                 )
                             )
             except Exception as e:
@@ -1141,7 +1151,19 @@ class ReviewController:
                     logger.warning(f"Pressure review failed: {e}")
 
         ctx.issues = found_issues
+        ctx.raw_issues = list(found_issues)
+        ctx.agent_findings = {
+            f"pressure:{self.config.pressure_challenge or 'default'}": list(found_issues)
+        }
         ctx.stats.valid_issues = len(ctx.issues)
+        artifact_store.write_agent_findings(ctx.agent_findings)
+        artifact_store.write_synthesis(
+            ctx.issues,
+            {
+                "challenge_mode": self.config.pressure_challenge or "default",
+                "total": len(ctx.issues),
+            },
+        )
         self._emit(ReviewEvent.SEMANTIC_REVIEW_COMPLETE, {"issues": len(ctx.issues)})
 
         if ctx.issues:

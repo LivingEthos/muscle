@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 MAX_PARALLEL_FILE_REVIEWS = 5
 FILE_CONTENT_CACHE_SIZE = 100
+FRAGILITY_CHALLENGE = "fragility"
 
 
 @lru_cache(maxsize=FILE_CONTENT_CACHE_SIZE)
@@ -149,6 +150,53 @@ Your response MUST be valid JSON with this exact structure:
     "critical_findings": 2,
     "high_findings": 3,
     "concerns_addressed": 2,
+    "confidence_score": 7
+  }}
+}}
+"""
+
+FRAGILITY_PRESSURE_PROMPT = """You are performing a FRAGILITY PRE-MORTEM review.
+Assume this code works today but is likely to fail after a plausible future change.
+
+Your job is to identify fragile implementation details that normal bug reviews miss:
+1. Hidden invariants
+2. Load-bearing defaults
+3. Shared mutable state
+4. Ordering dependencies
+5. Non-atomic updates
+6. Assumptions about timing, retries, or caller behaviour
+7. Future edits that look safe but would trigger production incidents
+
+Focus areas for this review:
+{focus_areas}
+
+Your response MUST be valid JSON with this exact structure:
+{{
+  "pressure_findings": [
+    {{
+      "file_path": "src/service.py",
+      "line_number": 42,
+      "finding_type": "fragility",
+      "severity": "CRITICAL|HIGH|MEDIUM|LOW",
+      "title": "Short incident title",
+      "description": "Why the current code is fragile",
+      "incident_title": "Human-readable future incident title",
+      "fragility_type": "hidden_invariant|ordering_dependency|load_bearing_default|shared_mutable_state|non_atomic_update|reliability_gap",
+      "plausible_triggering_change": "A realistic future edit or scale change",
+      "failure_surface": "How the failure would show up in production",
+      "hardening_suggestions": [
+        "Concrete hardening step 1",
+        "Concrete hardening step 2"
+      ],
+      "suggested_approach": "Concise hardening direction",
+      "challenge_question": "Question the team should answer before shipping"
+    }}
+  ],
+  "summary": {{
+    "total_examined": 15,
+    "critical_findings": 2,
+    "high_findings": 3,
+    "concerns_addressed": 0,
     "confidence_score": 7
   }}
 }}
@@ -658,6 +706,13 @@ Provide your review in JSON format."""
         code_content: str,
         pressure_focus: PressureFocus,
         artifact_store: ReviewArtifactStore | None = None,
+        challenge_mode: str | None = None,
+        telemetry_session_id: str | None = None,
+        workflow_name: str | None = None,
+        review_mode: str | None = None,
+        language: str | None = None,
+        complexity: str | None = None,
+        target_type: str | None = None,
     ) -> dict:
         focus_areas = []
         if pressure_focus.design_tradeoffs:
@@ -681,8 +736,21 @@ Provide your review in JSON format."""
             focus_areas = ["- General code quality and potential issues"]
 
         focus_text = "\n".join(focus_areas)
-
-        user_prompt = f"""Perform a PRESSURE TEST on this code. Be adversarial.
+        is_fragility = challenge_mode == FRAGILITY_CHALLENGE
+        challenge_label = challenge_mode or "default"
+        prompt_title = (
+            "Perform a FRAGILITY PRE-MORTEM on this code."
+            if is_fragility
+            else "Perform a PRESSURE TEST on this code. Be adversarial."
+        )
+        goal_text = (
+            "Assume the current code passes today, then identify the future incident most likely "
+            "to appear after a plausible edit, scaling event, or timing change."
+            if is_fragility
+            else "Your goal is to expose weaknesses, hidden risks, and assumptions. "
+            "Think like an attacker or someone who wants to break this code."
+        )
+        user_prompt = f"""{prompt_title}
 
 Target file: {target_path}
 
@@ -691,21 +759,51 @@ Code:
 {self._truncate_code(code_content, 500)}
 ```
 
-Focus areas for this pressure test:
+Focus areas for this review:
 {focus_text}
 
-Your goal is to expose weaknesses, hidden risks, and assumptions. Think like an attacker or someone who wants to break this code.
+{goal_text}
 """
+
+        prompt_envelope = compose_prompt_envelope(
+            base_prompt=user_prompt,
+            lesson_resolver=self.lesson_resolver,
+            query_text=f"{target_path}\npressure:{challenge_label}\n{focus_text}",
+            stage="pressure_review",
+            base_context_strategy="pressure_prompt",
+            session_id=telemetry_session_id,
+            language=language or self._get_lang_from_ext(target_path),
+        )
+        user_prompt = prompt_envelope.prompt
+        system_prompt = (FRAGILITY_PRESSURE_PROMPT if is_fragility else PRESSURE_PROMPT).format(
+            focus_areas=focus_text
+        )
+        telemetry_context = build_telemetry_context(
+            project_path=self.project_path,
+            session_id=telemetry_session_id,
+            stage="pressure_review",
+            prompt_envelope=prompt_envelope,
+            workflow_name=workflow_name,
+            review_mode=review_mode,
+            language=language or self._get_lang_from_ext(target_path),
+            complexity=complexity,
+            target_type=target_type,
+            metadata={
+                "file_path": target_path,
+                "pressure_challenge": challenge_label,
+            },
+        )
 
         max_retries = 3
         response_text = ""
-
+        usage = None
         for attempt in range(max_retries):
             response_text, usage = self.m27_client.chat(
                 messages=[
-                    {"role": "system", "content": PRESSURE_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
+                telemetry_context=telemetry_context,
             )
 
             logger.info(f"Pressure review used {usage.total} tokens (attempt {attempt + 1})")
@@ -725,9 +823,12 @@ Your goal is to expose weaknesses, hidden risks, and assumptions. Think like an 
 
         try:
             data = self._load_json_response(response_text)
+            if is_fragility:
+                data = self._normalize_fragility_payload(data)
             data.setdefault("summary", {})
             if isinstance(data["summary"], dict):
                 data["summary"]["token_usage"] = usage.total if usage else 0
+                data["summary"]["challenge_mode"] = challenge_label
             return data
         except json.JSONDecodeError as e:
             logger.error("Failed to parse pressure review response for %s: %s", target_path, e)
@@ -738,6 +839,30 @@ Your goal is to expose weaknesses, hidden risks, and assumptions. Think like an 
                 token_usage=usage.total if usage else 0,
                 artifact_store=artifact_store,
             )
+
+    @staticmethod
+    def _normalize_fragility_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        findings = payload.get("pressure_findings", [])
+        normalized_findings: list[dict[str, Any]] = []
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            hardening_suggestions = finding.get("hardening_suggestions", [])
+            if isinstance(hardening_suggestions, list):
+                suggestions = [
+                    str(item).strip() for item in hardening_suggestions if str(item).strip()
+                ]
+            else:
+                suggestions = [str(hardening_suggestions).strip()] if hardening_suggestions else []
+            suggested_approach = str(finding.get("suggested_approach") or "").strip()
+            if not suggested_approach and suggestions:
+                suggested_approach = " ".join(suggestions[:2])
+            finding["suggested_approach"] = suggested_approach
+            finding["hardening_suggestions"] = suggestions
+            finding["finding_type"] = str(finding.get("finding_type") or "fragility")
+            normalized_findings.append(finding)
+        payload["pressure_findings"] = normalized_findings
+        return payload
 
     @staticmethod
     def _pressure_parse_failure(

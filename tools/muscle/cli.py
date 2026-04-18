@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    import orjson  # type: ignore[import-not-found]
+    import orjson
 
     _HAS_ORJSON = True
 except ImportError:
@@ -2243,6 +2243,12 @@ def _parse_budget(budget_str: str) -> tuple[BudgetMode, int]:
     help="Pressure focus: design,failure,race,auth,data,rollback,reliability (comma-separated)",
 )
 @click.option(
+    "--challenge",
+    default=None,
+    type=click.Choice(["fragility"]),
+    help="Pressure challenge mode (pressure reviews only)",
+)
+@click.option(
     "--workflow",
     default=None,
     type=click.Choice(
@@ -2280,6 +2286,7 @@ def review(
     intensity: str,
     failsafe: bool,
     focus: str | None,
+    challenge: str | None,
     workflow: str | None,
     execution: str | None,
     fetch_sources: bool,
@@ -2303,6 +2310,7 @@ def review(
     """
     from .code_review import (
         Intensity,
+        PressureFocus,
         ReviewConfig,
         ReviewController,
         ReviewEvent,
@@ -2351,10 +2359,41 @@ def review(
     except Exception as exc:
         logger.warning("Could not resolve optimization defaults for %s: %s", project_path, exc)
 
+    if challenge and mode != "pressure":
+        raise click.UsageError("--challenge is only supported with --mode pressure.")
+
     if fetch_sources and shadow:
         raise click.UsageError(
             "--fetch-sources is not supported with --shadow. "
             "Run a foreground review to use dependency context enrichment."
+        )
+
+    pressure_focus: PressureFocus | None = None
+    if focus:
+        selected_focus = {item.strip().lower() for item in focus.split(",") if item.strip()}
+        pressure_focus = PressureFocus(
+            design_tradeoffs="design" in selected_focus,
+            failure_modes="failure" in selected_focus,
+            race_conditions="race" in selected_focus,
+            auth_security="auth" in selected_focus,
+            data_loss="data" in selected_focus,
+            rollback="rollback" in selected_focus,
+            reliability="reliability" in selected_focus,
+            custom_focus=",".join(
+                item
+                for item in sorted(selected_focus)
+                if item
+                not in {
+                    "auth",
+                    "data",
+                    "design",
+                    "failure",
+                    "race",
+                    "reliability",
+                    "rollback",
+                }
+            )
+            or None,
         )
 
     if shadow:
@@ -2431,6 +2470,8 @@ def review(
         intensity=intensity_map.get(intensity, Intensity.MODERATE),
         severity_threshold=severity_map.get(severity, Severity.LOW),
         max_fixes_per_round=max_fixes,
+        pressure_focus=pressure_focus,
+        pressure_challenge=challenge,
         workflow_name=configured_workflow,
         review_profile=(
             "comprehensive" if configured_workflow == "review-comprehensive" else "smart"
@@ -2808,13 +2849,30 @@ def optimize_import(provider: str, since_days: int) -> None:
 @click.option("--prompt", "-p", required=True, help="Task or question to investigate")
 @click.option("--model", "-m", default=None, help="Model to use (optional)")
 @click.option(
+    "--history/--no-history",
+    default=False,
+    help="Attach targeted git history forensics to the investigation",
+)
+@click.option(
+    "--bisect-cmd",
+    default=None,
+    help="Optional deterministic command to run via temporary git bisect",
+)
+@click.option(
     "--intensity",
     "-i",
     type=click.Choice(["minimal", "moderate", "intensive", "exhaustive"]),
     default="moderate",
     help="Investigation intensity",
 )
-def lifeline(target: str, prompt: str, model: str | None, intensity: str) -> None:
+def lifeline(
+    target: str,
+    prompt: str,
+    model: str | None,
+    history: bool,
+    bisect_cmd: str | None,
+    intensity: str,
+) -> None:
     """Throw a lifeline to M2.7 to investigate issues, propose fixes, or debug problems.
 
     Unlike review which focuses on finding issues, lifeline is for:
@@ -2840,6 +2898,23 @@ def lifeline(target: str, prompt: str, model: str | None, intensity: str) -> Non
     from .m27_client import M27Client
 
     m27_client = M27Client(api_key=api_key)
+    history_requested = history or bisect_cmd is not None
+    history_summary = ""
+    history_artifact = ""
+    if history_requested:
+        from .git_history_forensics import GitHistoryForensics
+
+        project_path, _ = _resolve_project_context(Path(target).resolve())
+        report = GitHistoryForensics(str(project_path)).analyze(target, bisect_cmd=bisect_cmd)
+        if report.get("available"):
+            history_summary = str(report.get("summary") or "")
+            report_paths = report.get("report_paths") or {}
+            if isinstance(report_paths, dict):
+                history_artifact = str(report_paths.get("json") or "")
+        else:
+            logger.info(
+                "Git history forensics unavailable for %s: %s", target, report.get("reason")
+            )
 
     system_prompt = f"""You are a debugging and investigation assistant. Your task is to:
 1. Investigate the reported issue thoroughly
@@ -2855,11 +2930,18 @@ Investigation intensity: {intensity.capitalize()}"""
 Task: {prompt}
 
 Please investigate this thoroughly and provide your findings and proposed solutions."""
+    if history_summary:
+        user_prompt += (
+            "\n\nUse this git history evidence first before requesting broader source context:\n"
+            f"{history_summary}"
+        )
 
     try:
         console.print("[cyan]Throwing lifeline to M2.7...[/cyan]")
         console.print(f"[dim]Target: {target}[/dim]")
         console.print(f"[dim]Intensity: {intensity}[/dim]")
+        if history_artifact:
+            console.print(f"[dim]History artifact: {history_artifact}[/dim]")
 
         response, usage = m27_client.chat(
             messages=[
@@ -3058,6 +3140,43 @@ def long_eval_run(target: str | None) -> None:
             console.print(f"[red]High: {high}[/red]")
     else:
         console.print("[yellow]No report generated.[/yellow]")
+
+
+@long_eval_group.command(name="mutate")
+@click.option("--target", "-t", required=True, help="Python file or directory to mutate")
+@click.option(
+    "--test-command",
+    default=None,
+    help="Command used to evaluate each mutant (defaults to project pytest command)",
+)
+@click.option("--limit", default=12, help="Maximum number of mutants to run")
+@click.option("--timeout", default=300, help="Timeout per mutant in seconds")
+def long_eval_mutate(
+    target: str,
+    test_command: str | None,
+    limit: int,
+    timeout: int,
+) -> None:
+    """Run deterministic Python mutation testing in disposable workspaces."""
+    from .code_review.mutation_runner import MutationRunner
+
+    resolved_target = Path(target).resolve()
+    project_root, _ = _resolve_project_context(resolved_target)
+    runner = MutationRunner(str(project_root))
+    console.print(f"[cyan]Running mutation evaluation on {resolved_target}...[/cyan]")
+    report = runner.run(
+        str(resolved_target),
+        test_command=test_command,
+        limit=limit,
+        timeout_seconds=timeout,
+    )
+    console.print(
+        f"[green]Mutation run complete:[/green] "
+        f"killed={report['killed']} survived={report['survived']} timeouts={report['timeouts']}"
+    )
+    report_paths = report.get("report_paths", {})
+    if isinstance(report_paths, dict) and report_paths.get("json"):
+        console.print(f"[dim]Report: {report_paths['json']}[/dim]")
 
 
 @long_eval_group.command(name="reports")

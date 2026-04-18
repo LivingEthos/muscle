@@ -552,6 +552,7 @@ class TestTuiCommand:
         # picks up the mock on its local ``from readchar import readkey`` line.
         # Returning "q" causes the event loop in views.py to exit cleanly
         # instead of hitting ``io.UnsupportedOperation: fileno`` in CI.
+        pytest.importorskip("readchar")
         with patch("readchar.readkey", return_value="q"):
             result = runner.invoke(tui, [], catch_exceptions=False)
         assert result is not None

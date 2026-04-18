@@ -74,7 +74,7 @@ class BudgetManager:
         Fix: BM-02.  Rejects non-numeric types and negative values, logging a
         warning and returning 0 so the caller can fall back gracefully.
         """
-        if not isinstance(raw, (int, float)):
+        if not isinstance(raw, int | float):
             logger.warning(
                 f"Budget file {path}: 'remaining_tokens' must be a number, got "
                 f"{type(raw).__name__!r} — resetting to 0"
