@@ -244,6 +244,19 @@ def benchmark_routing_profiles() -> dict[str, Any]:
     }
 
 
+def offline_route(
+    task_description: str,
+    profile: str = ROUTING_PROFILE_CURRENT,
+) -> RouteDecision:
+    """Deterministic offline routing fallback.
+
+    Public API used when the M2.7 classifier is unavailable (no API key or
+    network failure). Returns the same ``RouteDecision`` shape as the M2.7
+    path, so the CLI/JSON contract is preserved.
+    """
+    return _offline_route(task_description, profile)
+
+
 def _offline_route(task_description: str, profile: str) -> RouteDecision:
     features = _extract_route_features(task_description)
     mode = features.get("mode", "review")

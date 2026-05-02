@@ -461,8 +461,8 @@ Compatibility wrappers:
 | Slash command | Current behavior |
 |---|---|
 | `/muscle:cancel` | Explains how to stop foreground sessions with `muscle abort` and inspect shadow jobs. |
-| `/muscle:result` | Uses `muscle diagnosis` for completed shadow job results. |
-| `/muscle:nightly-status` | Points to `muscle long-eval reports`. |
+| `/muscle:result` | Alias for `/muscle:diagnosis`; both invoke `muscle diagnosis` for completed shadow job results. |
+| `/muscle:rescue` | Alias for `/muscle:lifeline` wired to the `rescue_agent` subagent for directed root-cause investigations. |
 
 ## CLI Command Map
 

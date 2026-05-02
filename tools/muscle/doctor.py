@@ -27,6 +27,9 @@ PLUGIN_ROOT = Path(__file__).resolve().parent / "plugin"
 CLAUDE_MANIFEST_PATH = PLUGIN_ROOT / ".claude-plugin" / "plugin.json"
 CLAUDE_MARKETPLACE_PATH = PLUGIN_ROOT / ".claude-plugin" / "marketplace.json"
 CODEX_MANIFEST_PATH = PLUGIN_ROOT / ".codex-plugin" / "plugin.json"
+# Two hook files are intentional: Claude Code reads ``<plugin>/hooks/hooks.json``
+# (subdir convention), Codex reads ``<plugin>/hooks.json`` (top-level
+# convention). Do not "dedupe" — each host expects its own location.
 CLAUDE_HOOKS_PATH = PLUGIN_ROOT / "hooks" / "hooks.json"
 CODEX_HOOKS_PATH = PLUGIN_ROOT / "hooks.json"
 PLUGIN_COMMAND_PATTERN = re.compile(r"/muscle:([a-z0-9][a-z0-9\-]*)")
@@ -142,6 +145,29 @@ def _plugin_asset_detail() -> tuple[str, str]:
     return "ok", "Codex composer icon and logo present"
 
 
+def _provider_endpoint_detail() -> tuple[str, str]:
+    """Surface ANTHROPIC_BASE_URL misconfiguration (B3).
+
+    MUSCLE's m27_client honours ``ANTHROPIC_BASE_URL`` blindly, so a user who
+    already exports ``https://api.anthropic.com`` for the real Anthropic SDK
+    will silently send M2.7-shaped traffic to Anthropic. Doctor reports this
+    as a warning so the misconfig is visible before the first real request.
+    """
+    base = os.environ.get("ANTHROPIC_BASE_URL")
+    if not base:
+        return "ok", "default MiniMax endpoint"
+    host = base.lower()
+    if "minimax" in host:
+        return "ok", base
+    if "anthropic.com" in host:
+        return (
+            "warn",
+            f"{base} (MiniMax client will POST to real Anthropic; "
+            "unset ANTHROPIC_BASE_URL or point it at MiniMax)",
+        )
+    return "info", base
+
+
 def _hook_runtime_degradation_detail(project_path: str) -> tuple[str, str]:
     state_path = Path(project_path) / ".muscle" / "hook-runtime.json"
     if not state_path.exists():
@@ -198,6 +224,7 @@ def build_doctor_report(
     command_parity_status, command_parity_detail = _plugin_command_parity_detail()
     asset_status, asset_detail = _plugin_asset_detail()
     hook_runtime_status, hook_runtime_detail = _hook_runtime_degradation_detail(resolved_project)
+    provider_endpoint_status, provider_endpoint_detail = _provider_endpoint_detail()
 
     checks = [
         DoctorCheck(
@@ -237,6 +264,12 @@ def build_doctor_report(
             detail="present"
             if os.environ.get("MINIMAX_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
             else "missing",
+        ),
+        DoctorCheck(
+            key="provider_endpoint",
+            status=provider_endpoint_status,
+            label="Provider Endpoint",
+            detail=provider_endpoint_detail,
         ),
         DoctorCheck(
             key="claude_manifest",

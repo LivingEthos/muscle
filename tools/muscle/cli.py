@@ -4992,7 +4992,7 @@ def settings_show() -> None:
         table.add_row("Project", project.name)
         table.add_row("Platform", project.platform)
         table.add_row("API Key Source", project.api_key_source)
-        table.add_row("Hooks Enabled", str(project.hooks_enabled))
+        table.add_row("Hooks (project setting)", str(project.hooks_enabled))
         table.add_row("CLI Path", project.cli_path or "Not set")
         table.add_row("Review Gate", project.review_gate)
         table.add_row("Review Execution", project.review_execution)
@@ -5052,6 +5052,12 @@ def settings_api_key(key: str | None, source: str | None) -> None:
         console.print(
             f"Current API key: {current_key[:10]}..." if current_key else "No API key set"
         )
+        # B2: only prompt for input when stdin is an interactive TTY. When the
+        # CLI is invoked from a slash-command subprocess (Claude Code / Codex)
+        # there is no TTY, so prompting would abort with a confusing
+        # "Aborted!" message. In that case, return after printing the status.
+        if not sys.stdin.isatty():
+            return
         new_key = console.input("Enter new API key (or press Enter to keep current): ").strip()
         if new_key:
             os.environ["MINIMAX_API_KEY"] = new_key
@@ -5462,25 +5468,45 @@ def pack_gc_cmd(older_than: str) -> None:
 @click.option("--scope", type=click.Path(exists=True, path_type=Path), default=None)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON output.")
 def route_cmd(task: str, scope: Path | None, as_json: bool) -> None:
-    """Classify a task and decide where it should run (M2.7 vs host)."""
-    from .routing import TaskRouter
+    """Classify a task and decide where it should run (M2.7 vs host).
 
-    client = M27Client(api_key=os.environ.get("MINIMAX_API_KEY", ""))
-    router = TaskRouter(client)
-    decision = router.route(task, scope=scope)
-    if as_json:
-        click.echo(
-            json.dumps(
-                {
-                    "tier": decision.tier.value,
-                    "recommended": decision.recommended.value,
-                    "confidence": decision.confidence,
-                    "rationale": decision.rationale,
-                    "from_cache": decision.from_cache,
-                }
-            )
-        )
+    Falls back to a deterministic heuristic when ``MINIMAX_API_KEY`` is not set
+    or the M2.7 classifier is unreachable, so the slash-command always returns
+    a usable decision without raising.
+    """
+    from .routing import ROUTING_PROFILE_CURRENT, TaskRouter, offline_route
+
+    api_key = os.environ.get("MINIMAX_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+    decision = None
+    fallback_reason: str | None = None
+    if api_key:
+        try:
+            client = M27Client(api_key=api_key)
+            router = TaskRouter(client)
+            decision = router.route(task, scope=scope)
+        except Exception as exc:
+            fallback_reason = f"M2.7 classifier unavailable: {exc}"
     else:
+        fallback_reason = "MINIMAX_API_KEY not set"
+
+    if decision is None:
+        decision = offline_route(task, ROUTING_PROFILE_CURRENT)
+
+    if as_json:
+        payload = {
+            "tier": decision.tier.value,
+            "recommended": decision.recommended.value,
+            "confidence": decision.confidence,
+            "rationale": decision.rationale,
+            "from_cache": decision.from_cache,
+        }
+        if fallback_reason is not None:
+            payload["fallback"] = "offline_heuristic"
+            payload["fallback_reason"] = fallback_reason
+        click.echo(json.dumps(payload))
+    else:
+        if fallback_reason is not None:
+            click.echo(f"[heuristic fallback] {fallback_reason}", err=True)
         click.echo(f"Tier:        {decision.tier.value}")
         click.echo(f"Recommended: {decision.recommended.value}")
         click.echo(f"Confidence:  {decision.confidence:.2f}")

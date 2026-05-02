@@ -240,20 +240,27 @@ class TestWorkerManager:
         mgr = WorkerManager(project_path=str(tmp_project))
         worker = mgr.get_worker()
         worker.config.poll_interval = 0.1
+        # Inject a no-op processor so the worker doesn't try to run the default
+        # M2.7-backed processor (which fails without an API key and spams the
+        # test log). N2 fix.
+        worker.job_processor = lambda task: {"status": "ok"}
 
-        # submit_shadow_job creates the job then enqueues it; returns the actual job_id
-        job_id = mgr.submit_shadow_job(
-            "/src",
-            ReviewMode.REVIEW,
-            Intensity.MODERATE,
-        )
-        assert job_id is not None
-        assert len(job_id) == 8
-        broker = mgr.get_broker()
-        # Verify job was stored in broker
-        job = broker.get_job(job_id)
-        assert job is not None
-        assert job["target_path"] == "/src"
+        try:
+            # submit_shadow_job creates the job then enqueues it; returns the actual job_id
+            job_id = mgr.submit_shadow_job(
+                "/src",
+                ReviewMode.REVIEW,
+                Intensity.MODERATE,
+            )
+            assert job_id is not None
+            assert len(job_id) == 8
+            broker = mgr.get_broker()
+            # Verify job was stored in broker
+            job = broker.get_job(job_id)
+            assert job is not None
+            assert job["target_path"] == "/src"
+        finally:
+            mgr.stop_worker(timeout=3.0)
 
     def test_submit_shadow_job_with_timeout_and_budget(self, tmp_project):
         from tools.muscle.code_review.types import Intensity, ReviewMode
@@ -261,20 +268,24 @@ class TestWorkerManager:
         mgr = WorkerManager(project_path=str(tmp_project))
         worker = mgr.get_worker()
         worker.config.poll_interval = 0.1
+        worker.job_processor = lambda task: {"status": "ok"}
 
-        job_id = mgr.submit_shadow_job(
-            "/src",
-            ReviewMode.REVIEW,
-            Intensity.MODERATE,
-            timeout_seconds=600,
-            token_budget=50000,
-            changed_files=["src/main.py"],
-        )
-        broker = mgr.get_broker()
-        job = broker.get_job(job_id)
-        assert job is not None
-        assert job["timeout_seconds"] == 600
-        assert job["token_budget"] == 50000
+        try:
+            job_id = mgr.submit_shadow_job(
+                "/src",
+                ReviewMode.REVIEW,
+                Intensity.MODERATE,
+                timeout_seconds=600,
+                token_budget=50000,
+                changed_files=["src/main.py"],
+            )
+            broker = mgr.get_broker()
+            job = broker.get_job(job_id)
+            assert job is not None
+            assert job["timeout_seconds"] == 600
+            assert job["token_budget"] == 50000
+        finally:
+            mgr.stop_worker(timeout=3.0)
 
     def test_submit_shadow_job_persists_execution_mode(self, tmp_project):
         from tools.muscle.code_review.types import Intensity, ReviewMode
@@ -282,16 +293,20 @@ class TestWorkerManager:
         mgr = WorkerManager(project_path=str(tmp_project))
         worker = mgr.get_worker()
         worker.config.poll_interval = 0.1
+        worker.job_processor = lambda task: {"status": "ok"}
 
-        job_id = mgr.submit_shadow_job(
-            "/src",
-            ReviewMode.AUTO_FIX,
-            Intensity.MODERATE,
-            execution_mode="worktree",
-        )
-        job = mgr.get_broker().get_job(job_id)
-        assert job is not None
-        assert job["execution_mode"] == "worktree"
+        try:
+            job_id = mgr.submit_shadow_job(
+                "/src",
+                ReviewMode.AUTO_FIX,
+                Intensity.MODERATE,
+                execution_mode="worktree",
+            )
+            job = mgr.get_broker().get_job(job_id)
+            assert job is not None
+            assert job["execution_mode"] == "worktree"
+        finally:
+            mgr.stop_worker(timeout=3.0)
 
     def test_submit_shadow_job_detached_spawns_process(self, tmp_project):
         from tools.muscle.code_review.types import Intensity, ReviewMode

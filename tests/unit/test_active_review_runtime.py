@@ -114,8 +114,32 @@ def test_build_doctor_report_surfaces_new_plugin_checks(tmp_path: Path) -> None:
     assert "plugin_assets" in checks
     assert "plugin_hook_runtime" in checks
     assert "active_review_snapshot" in checks
+    assert "provider_endpoint" in checks
     assert checks["project_initialized"].status == "ok"
     assert checks["plugin_command_docs_parity"].status == "ok"
+
+
+def test_build_doctor_report_warns_on_real_anthropic_endpoint(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """B3: doctor surfaces a warn when ANTHROPIC_BASE_URL points at the real
+    Anthropic API instead of MiniMax. Without this, MUSCLE silently sends
+    M2.7-shaped traffic to Anthropic."""
+    _init_project(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+    report = build_doctor_report(str(tmp_path), refresh=False)
+    checks = {check.key: check for check in report.checks}
+    assert checks["provider_endpoint"].status == "warn"
+    assert "anthropic.com" in checks["provider_endpoint"].detail.lower()
+
+
+def test_build_doctor_report_passes_on_minimax_endpoint(tmp_path: Path, monkeypatch) -> None:
+    """B3: doctor reports OK when ANTHROPIC_BASE_URL points at MiniMax."""
+    _init_project(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.minimax.io/anthropic")
+    report = build_doctor_report(str(tmp_path), refresh=False)
+    checks = {check.key: check for check in report.checks}
+    assert checks["provider_endpoint"].status == "ok"
 
 
 def test_run_host_hook_deduplicates_post_write_messages(tmp_path: Path) -> None:

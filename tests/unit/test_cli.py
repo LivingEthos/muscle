@@ -1048,6 +1048,19 @@ class TestSettingsGroup:
         assert config["project"]["review_execution"] == "worktree"
         assert config["project"]["review_gate"] == "block+fix"
 
+    def test_settings_api_key_shows_status_in_non_tty(self, runner, monkeypatch):
+        """B2: when invoked without args from a non-interactive shell (slash
+        command subprocess), the command must print status and return cleanly
+        instead of prompting for input and aborting."""
+        # CliRunner provides a non-TTY stdin by default — exactly matches the
+        # slash-command invocation path.
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        result = runner.invoke(settings_group, ["api-key"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "No API key set" in result.output
+        # Must not have attempted to prompt and aborted.
+        assert "Aborted" not in result.output
+
 
 class TestBackupsGroup:
     """Integration tests for backups subcommands."""

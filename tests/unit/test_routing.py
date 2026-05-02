@@ -17,6 +17,7 @@ from tools.muscle.routing import (
     TaskTier,
     _parse_json_response,
     benchmark_routing_profiles,
+    offline_route,
 )
 
 
@@ -190,6 +191,50 @@ class TestRouteCLI:
         output = json.loads(result.output)
         assert output["tier"] == "reasoning"
         assert output["recommended"] == "m27"
+
+    def test_route_falls_back_to_offline_when_no_api_key(self, runner: CliRunner) -> None:
+        """B1 + N3: missing API key must not raise; the heuristic produces a
+        valid decision and the JSON payload exposes the fallback reason."""
+        with patch.dict("os.environ", {}, clear=False):
+            import os as _os
+
+            _os.environ.pop("MINIMAX_API_KEY", None)
+            _os.environ.pop("ANTHROPIC_API_KEY", None)
+            result = runner.invoke(cli, ["route", "--task", "rename a variable", "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["fallback"] == "offline_heuristic"
+        assert payload["fallback_reason"] == "MINIMAX_API_KEY not set"
+        assert payload["tier"] in {"mechanical", "reasoning", "architectural"}
+        assert payload["recommended"] in {"m27", "m27_with_verify", "escalate_to_host"}
+
+    def test_route_falls_back_when_classifier_raises(self, runner: CliRunner) -> None:
+        """B1: if the M2.7 client fails, the CLI falls back to the heuristic
+        instead of bubbling a Python traceback up to the host model."""
+        with patch("tools.muscle.cli.M27Client") as mock_client_cls:
+            mock_client_cls.side_effect = ValueError("boom")
+            with patch.dict("os.environ", {"MINIMAX_API_KEY": "test-key"}):
+                result = runner.invoke(cli, ["route", "--task", "rename a variable", "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["fallback"] == "offline_heuristic"
+        assert "boom" in payload["fallback_reason"]
+
+
+class TestOfflineRoute:
+    """Public ``offline_route`` API used by the CLI fallback (B1/N3)."""
+
+    def test_default_review_returns_m27(self) -> None:
+        decision = offline_route("rename a variable across files")
+        assert decision.recommended in {Recommendation.M27, Recommendation.M27_WITH_VERIFY}
+        assert decision.tier in {TaskTier.MECHANICAL, TaskTier.REASONING}
+
+    def test_pressure_routes_to_host(self) -> None:
+        decision = offline_route(
+            "mode=pressure; workflow=pressure-review; target=directory:/tmp; intensity=deep"
+        )
+        assert decision.recommended == Recommendation.ESCALATE_TO_HOST
+        assert decision.tier == TaskTier.ARCHITECTURAL
 
 
 def test_benchmark_routing_profiles_prefers_candidate_without_quality_regression() -> None:

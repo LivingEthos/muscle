@@ -1,6 +1,6 @@
 ---
 description: Initialize or enable MUSCLE for the current project
-argument-hint: "[init|enable|disable|status]"
+argument-hint: "[--non-interactive] [--platform claude-code|codex|opencode] [--canonical-model <model>]"
 ---
 
 Configure MUSCLE for the current project.
