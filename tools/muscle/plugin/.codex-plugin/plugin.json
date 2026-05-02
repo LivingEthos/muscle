@@ -1,7 +1,7 @@
 {
   "name": "muscle",
   "version": "0.1.0",
-  "description": "MUSCLE plugin bundle for Codex with shared commands, skills, lifecycle hooks, local evidence surfaces, and project-local review state.",
+  "description": "MUSCLE plugin bundle for Codex with self-learning review workflows, shared commands, skills, lifecycle hooks, command evidence, savings, discovery, filters, context packs, diagnostics, and project-local review state.",
   "author": {
     "name": "MUSCLE Team",
     "email": "muscle@minimax.io",
@@ -14,8 +14,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "MUSCLE",
-    "shortDescription": "Project-local review memory, evidence, and diagnostics",
-    "longDescription": "MUSCLE adds project-local review memory, doctor diagnostics, lifecycle hooks, command evidence, savings reports, discovery reports, and generated active-review snapshots while keeping project memory authoritative.",
+    "shortDescription": "Self-learning review, project memory, evidence, and diagnostics",
+    "longDescription": "MUSCLE adds self-learning code review, pressure review, rescue investigation support, project-local review memory, doctor diagnostics, lifecycle hooks, command evidence, savings reports, discovery reports, trust-gated filters, model routing, reusable context packs, and generated active-review snapshots while keeping project memory authoritative.",
     "developerName": "MUSCLE Team",
     "category": "Coding",
     "capabilities": ["Interactive", "Write"],
@@ -23,7 +23,7 @@
     "privacyPolicyURL": "https://github.com/LivingEthos/muscle/blob/main/docs/PRIVACY.md",
     "termsOfServiceURL": "https://github.com/LivingEthos/muscle/blob/main/docs/TERMS.md",
     "defaultPrompt": [
-      "Use MUSCLE when you need a project-local review baseline, lifecycle diagnostics, evidence-backed savings/discovery reports, or a generated active-review snapshot."
+      "Use MUSCLE when you need a project-local review baseline, self-learning code review, lifecycle diagnostics, evidence-backed savings/discovery reports, trust-gated filters, model routing, reusable context packs, or a generated active-review snapshot."
     ],
     "brandColor": "#113B2C",
     "composerIcon": "./assets/muscle-mark.svg",

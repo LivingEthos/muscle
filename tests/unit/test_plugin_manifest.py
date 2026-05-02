@@ -96,9 +96,10 @@ class TestPluginManifest:
             {
                 "name": "muscle",
                 "description": (
-                    "Self-learning code review with project-local memory, lifecycle hooks, "
-                    "diagnostics, evidence surfaces, savings, discovery, filters, and "
-                    "operator visibility."
+                    "Self-learning code review for real projects: static analysis, semantic "
+                    "review, project-local memory, doctor diagnostics, savings reports, "
+                    "discovery, filters, model routing, context packs, and release-gate "
+                    "evidence."
                 ),
                 "version": "0.1.0",
                 "category": "development",

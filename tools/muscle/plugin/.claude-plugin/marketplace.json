@@ -5,12 +5,12 @@
     "email": "muscle@minimax.io"
   },
   "metadata": {
-    "description": "MUSCLE Claude Code plugin bundle for self-learning code review, lifecycle hooks, diagnostics, local evidence, savings, discovery, filters, and project-local memory."
+    "description": "MUSCLE is a beginner-friendly Claude Code plugin for self-learning code review, pressure review, rescue investigations, lifecycle hooks, diagnostics, command evidence, savings, discovery, trust-gated filters, project-local memory, model routing, and reusable context packs."
   },
   "plugins": [
     {
       "name": "muscle",
-      "description": "Self-learning code review with project-local memory, lifecycle hooks, diagnostics, evidence surfaces, savings, discovery, filters, and operator visibility.",
+      "description": "Self-learning code review for real projects: static analysis, semantic review, project-local memory, doctor diagnostics, savings reports, discovery, filters, model routing, context packs, and release-gate evidence.",
       "version": "0.1.0",
       "category": "development",
       "source": "./"
