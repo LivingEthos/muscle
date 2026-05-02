@@ -1,6 +1,5 @@
 ---
 description: List recent long evaluation reports
-args: []
 ---
 
 List recent long evaluation reports. Execute:

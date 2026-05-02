@@ -1,9 +1,6 @@
 ---
 description: Submit a local model-pack candidate bundle as a draft PR
-args:
-  - name: bundle-path
-    description: Path to an exported candidate bundle
-    required: true
+argument-hint: "[bundle-path]"
 ---
 
 Project-local memory remains primary. Model packs are optional overlays and should be reviewed before submission.

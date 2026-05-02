@@ -6,6 +6,7 @@ Tests all CLI command groups via Click's CliRunner with mocked backends.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -70,7 +71,7 @@ class TestReviewCLI:
                 assert result.exit_code == 0, f"Mode {mode} failed: {result.output}"
 
     def test_review_json_output(self, runner: CliRunner, env_with_key: dict):
-        """JSON output format should produce valid JSON."""
+        """JSON output format should produce valid JSON only on stdout."""
         mock_result = MagicMock()
         mock_result.session_id = "json-001"
         mock_result.target_path = "/tmp/test"
@@ -80,24 +81,30 @@ class TestReviewCLI:
         mock_result.medium_count = 0
         mock_result.low_count = 0
         mock_result.info_count = 0
+        mock_result.workflow_name = "review-smart"
+        mock_result.execution_mode = "local"
 
         mock_ctx = MagicMock()
         mock_ctx.handoff_plan = None
+        mock_ctx.stats.duration_seconds = 0.0
+        mock_ctx.stats.tokens_used = 0
 
         mock_controller = MagicMock()
         mock_controller.run.return_value = mock_ctx
         mock_controller.get_review_result.return_value = mock_result
 
-        with patch(
-            "tools.muscle.code_review.review_controller.ReviewController",
-            return_value=mock_controller,
-        ):
+        with patch("tools.muscle.code_review.ReviewController", return_value=mock_controller):
             result = runner.invoke(
                 cli,
                 ["review", "--target", "/tmp/test", "--format", "json"],
                 env=env_with_key,
             )
             assert result.exit_code == 0
+            payload = json.loads(result.output)
+            assert payload["session_id"] == "json-001"
+            assert payload["summary"]["critical"] == 0
+            assert "Starting code review session" not in result.output
+            assert "Review Complete" not in result.output
 
     def test_review_no_api_key(self, runner: CliRunner):
         """Review should fail gracefully without API key."""

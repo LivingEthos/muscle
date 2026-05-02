@@ -56,7 +56,11 @@ class PythonCompiler(BaseEvaluator):
             except py_compile.PyCompileError as e:
                 errors.append(f"{py_file}: {str(e)}")
 
-        return EvaluatorResult(success=len(errors) == 0, errors=errors)
+        return EvaluatorResult(
+            success=len(errors) == 0,
+            errors=errors,
+            evidence=self.last_command_evidence,
+        )
 
 
 class NodeCompiler(BaseEvaluator):
@@ -86,7 +90,11 @@ class NodeCompiler(BaseEvaluator):
             if code != 0:
                 errors.append(f"{js_file}: {_cap_stderr(stderr) or stdout}")
 
-        return EvaluatorResult(success=len(errors) == 0, errors=errors)
+        return EvaluatorResult(
+            success=len(errors) == 0,
+            errors=errors,
+            evidence=self.last_command_evidence,
+        )
 
 
 class TscCompiler(BaseEvaluator):
@@ -110,7 +118,9 @@ class TscCompiler(BaseEvaluator):
             output = stdout + _cap_stderr(stderr)
             errors = [line for line in output.split("\n") if line.strip()]
 
-        return EvaluatorResult(success=code == 0, errors=errors)
+        return EvaluatorResult(
+            success=code == 0, errors=errors, evidence=self.last_command_evidence
+        )
 
 
 class GoCompiler(BaseEvaluator):
@@ -136,7 +146,9 @@ class GoCompiler(BaseEvaluator):
             output = stdout + _cap_stderr(stderr)
             errors = [line for line in output.split("\n") if line.strip()]
 
-        return EvaluatorResult(success=code == 0, errors=errors)
+        return EvaluatorResult(
+            success=code == 0, errors=errors, evidence=self.last_command_evidence
+        )
 
 
 class RustCompiler(BaseEvaluator):
@@ -168,7 +180,11 @@ class RustCompiler(BaseEvaluator):
             if code != 0:
                 errors.append(f"{rs_file}: {_cap_stderr(stderr) or stdout}")
 
-        return EvaluatorResult(success=len(errors) == 0, errors=errors)
+        return EvaluatorResult(
+            success=len(errors) == 0,
+            errors=errors,
+            evidence=self.last_command_evidence,
+        )
 
 
 class GppCompiler(BaseEvaluator):
@@ -211,7 +227,17 @@ class GppCompiler(BaseEvaluator):
             if code != 0:
                 errors.append(f"{c_file}: {_cap_stderr(stderr) or stdout}")
 
-        return EvaluatorResult(success=len(errors) == 0, errors=errors)
+        return EvaluatorResult(
+            success=len(errors) == 0,
+            errors=errors,
+            evidence=self.last_command_evidence,
+        )
+
+
+class GccCompiler(GppCompiler):
+    @property
+    def name(self) -> str:
+        return "gcc_compiler"
 
 
 class JavacCompiler(BaseEvaluator):
@@ -241,4 +267,60 @@ class JavacCompiler(BaseEvaluator):
             if code != 0:
                 errors.append(f"{java_file}: {_cap_stderr(stderr) or stdout}")
 
-        return EvaluatorResult(success=len(errors) == 0, errors=errors)
+        return EvaluatorResult(
+            success=len(errors) == 0,
+            errors=errors,
+            evidence=self.last_command_evidence,
+        )
+
+
+class CscCompiler(BaseEvaluator):
+    @property
+    def name(self) -> str:
+        return "csc_compiler"
+
+    @property
+    def error_type(self) -> str:
+        return "compiler"
+
+    def evaluate(self, output_dir: str) -> EvaluatorResult:
+        path = Path(output_dir)
+        if shutil.which("dotnet") and not path.is_file():
+            code, stdout, stderr = self._run_command(
+                ["dotnet", "build", "--no-restore"], output_dir
+            )
+            errors = []
+            if code != 0:
+                output = stdout + _cap_stderr(stderr)
+                errors = [line for line in output.split("\n") if line.strip()][:20]
+            return EvaluatorResult(
+                success=code == 0,
+                errors=errors,
+                output=stdout,
+                evidence=self.last_command_evidence,
+            )
+
+        compiler = "csc" if shutil.which("csc") else "mcs" if shutil.which("mcs") else None
+        if compiler is None:
+            logger.warning("csc/mcs/dotnet not found, skipping C# compilation check")
+            return EvaluatorResult(success=True)
+
+        if path.is_file():
+            files_to_check = [path] if path.suffix == ".cs" else []
+        else:
+            files_to_check = list(path.rglob("*.cs"))
+
+        errors = []
+        for cs_file in files_to_check:
+            code, stdout, stderr = self._run_command(
+                [compiler, "-target:library", str(cs_file)],
+                output_dir,
+            )
+            if code != 0:
+                errors.append(f"{cs_file}: {_cap_stderr(stderr) or stdout}")
+
+        return EvaluatorResult(
+            success=len(errors) == 0,
+            errors=errors,
+            evidence=self.last_command_evidence,
+        )

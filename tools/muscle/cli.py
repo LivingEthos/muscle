@@ -12,6 +12,7 @@ import os
 import signal
 import subprocess
 import sys
+from contextlib import nullcontext, redirect_stdout
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -32,13 +33,16 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.text import Text
 
+from .active_review import load_active_review_snapshot, refresh_active_review, refresh_project_state
 from .audit_presenter import format_action_log_entry
 from .backup_manager import BackupManager
 from .budget_manager import BudgetManager
 from .code_generator import CodeGenerator
 from .code_review.learning_pipeline import LearningPipeline
 from .cost_optimizer import CostOptimizer
+from .doctor import build_doctor_report, doctor_report_to_dict
 from .evolver import Evolver
+from .host_runtime import run_host_hook
 from .interactive import InteractiveHandler
 from .learning_ingestor import LearningIngestor
 from .lesson_resolver import LessonResolver
@@ -166,6 +170,150 @@ def _requested_model_label() -> str:
 
 def _provider_endpoint() -> str | None:
     return os.environ.get("ANTHROPIC_BASE_URL")
+
+
+def _emit_json(data: object) -> None:
+    """Emit machine JSON without Rich wrapping or styling."""
+
+    click.echo(json.dumps(data, indent=2))
+
+
+def _refresh_project_state_safe(
+    project_path: str | Path,
+    reason: str,
+    *,
+    import_provider: str | None = None,
+) -> None:
+    """Refresh active-review state without failing the invoking command."""
+
+    project_root = Path(project_path).resolve()
+    if not (project_root / ".muscle").exists():
+        return
+    try:
+        refresh_project_state(
+            str(project_root),
+            reason=reason,
+            import_provider=import_provider,
+        )
+    except Exception as exc:
+        logger.warning("Active review refresh failed for %s: %s", project_path, exc)
+
+
+def _refresh_active_review_safe(project_path: str | Path, reason: str) -> None:
+    """Regenerate `.muscle/active-review.md` without surfacing refresh failures."""
+
+    project_root = Path(project_path).resolve()
+    if not (project_root / ".muscle").exists():
+        return
+    try:
+        refresh_active_review(str(project_root), reason=reason)
+    except Exception as exc:
+        logger.warning("Active review snapshot refresh failed for %s: %s", project_path, exc)
+
+
+def _format_snapshot_age(age_seconds: float | None) -> str:
+    if age_seconds is None:
+        return "missing"
+    if age_seconds < 60:
+        return f"{int(age_seconds)}s old"
+    if age_seconds < 3600:
+        return f"{int(age_seconds // 60)}m old"
+    if age_seconds < 86400:
+        return f"{int(age_seconds // 3600)}h old"
+    return f"{int(age_seconds // 86400)}d old"
+
+
+def _render_doctor_report(report: Any) -> None:
+    table = Table(title="MUSCLE Doctor")
+    table.add_column("Status", style="cyan")
+    table.add_column("Check", style="white")
+    table.add_column("Detail", style="green")
+
+    status_label = {
+        "ok": "[green]OK[/green]",
+        "warn": "[yellow]WARN[/yellow]",
+        "fail": "[red]FAIL[/red]",
+        "info": "[cyan]INFO[/cyan]",
+    }
+
+    for check in report.checks:
+        table.add_row(
+            status_label.get(check.status, check.status.upper()),
+            check.label,
+            check.detail,
+        )
+
+    console.print(table)
+    if report.refresh:
+        console.print(
+            "[dim]Refresh: "
+            f"snapshot {'changed' if report.refresh.get('active_review_changed') else 'unchanged'}; "
+            f"catchup {'changed' if report.refresh.get('catchup_changed') else 'unchanged'}"
+            "[/dim]"
+        )
+
+
+def _render_savings_report(report: dict[str, Any]) -> None:
+    """Render savings report for humans."""
+    table = Table(title="MUSCLE Savings")
+    table.add_column("Area", style="cyan")
+    table.add_column("Value", style="green")
+
+    llm = report.get("llm_calls", {})
+    commands = report.get("command_evidence", {})
+    totals = report.get("totals", {})
+    table.add_row("LLM Calls", str(llm.get("count", 0)))
+    table.add_row("LLM Tokens", str(llm.get("total_tokens", 0)))
+    table.add_row("Prompt Compaction Saved", str(llm.get("prompt_compaction_tokens_saved", 0)))
+    table.add_row("Cache Tokens", str(llm.get("cache_tokens", 0)))
+    table.add_row("Command Evidence Runs", str(commands.get("count", 0)))
+    table.add_row("Command Compaction Saved", str(commands.get("tokens_saved_estimate", 0)))
+    table.add_row("Parser Tiers", json.dumps(commands.get("parser_tier_counts", {})))
+    table.add_row("Total Saved Estimate", str(totals.get("tokens_saved_estimate", 0)))
+    console.print(table)
+
+    stages = report.get("high_cost_stages") or []
+    if stages:
+        stage_table = Table(title="High-Cost Stages")
+        stage_table.add_column("Stage")
+        stage_table.add_column("Calls")
+        stage_table.add_column("Tokens")
+        for row in stages:
+            stage_table.add_row(
+                str(row.get("stage") or "unknown"),
+                str(row.get("call_count") or 0),
+                str(row.get("total_tokens") or 0),
+            )
+        console.print(stage_table)
+
+
+def _render_discovery_report(report: dict[str, Any]) -> None:
+    """Render discovery report for humans."""
+    summary = report.get("summary", {})
+    table = Table(title="MUSCLE Discovery")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Imported Turns Scanned", str(summary.get("imported_turns_scanned", 0)))
+    table.add_row("Review Runs Seen", str(summary.get("review_runs_seen", 0)))
+    table.add_row("Open Finding Files", str(summary.get("open_finding_files", 0)))
+    table.add_row("Opportunities", str(summary.get("opportunity_count", 0)))
+    console.print(table)
+
+    opportunities = report.get("opportunities") or []
+    if not opportunities:
+        console.print("[green]No missed MUSCLE opportunities found.[/green]")
+        return
+    opp_table = Table(title="Opportunities")
+    opp_table.add_column("Severity")
+    opp_table.add_column("Type")
+    opp_table.add_column("Message")
+    for item in opportunities:
+        opp_table.add_row(
+            str(item.get("severity") or "info"),
+            str(item.get("type") or "unknown"),
+            str(item.get("message") or ""),
+        )
+    console.print(opp_table)
 
 
 def _resolve_model_identity(
@@ -299,6 +447,13 @@ def _attach_optimization_runtime(
             project_memory=pm,
         )
         m27_client.set_model_identity(identity)
+        try:
+            manager = ModelPackManager(project_path)
+            m27_client._cache_pack_id = manager.get_active_pack_id(  # noqa: SLF001
+                str(identity.get("canonical_model_key")) if identity else None
+            )
+        except Exception:
+            logger.debug("Model-pack cache key wiring unavailable", exc_info=True)
         return pm, optimizer, context_budgeter, recorder, lesson_resolver, identity, system_db
     except Exception as exc:
         logger.warning("Optimization runtime disabled for %s: %s", project_path, exc)
@@ -388,7 +543,7 @@ def cli() -> None:
 @click.option("--non-interactive", is_flag=True, help="Skip interactive prompts")
 @click.option(
     "--platform",
-    type=click.Choice(["auto", "opencode", "claude-code"]),
+    type=click.Choice(["auto", "opencode", "claude-code", "codex"]),
     default="auto",
     help="Target platform",
 )
@@ -438,6 +593,7 @@ def init(
 
     For OpenCode integration, run with --platform opencode.
     For Claude Code integration, run with --platform claude-code.
+    For Codex integration, run with --platform codex.
     """
     from .tui.project_manager import ProjectConfig, ProjectManager
 
@@ -662,6 +818,8 @@ def init(
         except Exception as exc:
             logger.warning("Could not persist model identity during init: %s", exc)
 
+        _refresh_active_review_safe(project.path, reason="init")
+
         suggestions = (
             _suggest_related_projects(
                 project.path,
@@ -731,6 +889,15 @@ def init(
         console.print("Run 'muscle tui' to start the TUI")
         console.print("Run 'muscle review --target ./src' to run a review")
         console.print("Run 'muscle status' to check project status")
+        if effective_platform == "codex":
+            plugin_root = Path(__file__).resolve().parent / "plugin"
+            console.print()
+            console.print("[bold cyan]Codex plugin bundle[/bold cyan]")
+            console.print(f"Point Codex at: [cyan]{plugin_root}[/cyan]")
+            console.print(
+                "[dim]This bundle includes `.codex-plugin/plugin.json` and "
+                "root `hooks.json`; MUSCLE does not create repo-local `.codex/` assets.[/dim]"
+            )
         if effective_platform in ("opencode", "auto"):
             console.print()
             console.print("[dim]For OpenCode, use the muscle_* tools directly[/dim]")
@@ -828,6 +995,7 @@ def enable() -> None:
 
     if manager.set_project_enabled(project_path, True):
         manager.register_project(project_path)
+        _refresh_active_review_safe(project_path, reason="enable")
         console.print("[green]MUSCLE enabled for this project.[/green]")
     else:
         console.print("[red]Failed to enable MUSCLE.[/red]")
@@ -855,13 +1023,20 @@ def disable() -> None:
         return
 
     if manager.set_project_enabled(project_path, False):
+        _refresh_active_review_safe(project_path, reason="disable")
         console.print("[green]MUSCLE disabled for this project.[/green]")
     else:
         console.print("[red]Failed to disable MUSCLE.[/red]")
 
 
 @cli.command()
-def status() -> None:
+@click.option(
+    "--refresh",
+    "refresh_state",
+    is_flag=True,
+    help="Refresh external catchup and `.muscle/active-review.md` before reporting",
+)
+def status(refresh_state: bool) -> None:
     """Show MUSCLE status for the current project.
 
     Displays whether MUSCLE is enabled, the active project config, the
@@ -871,13 +1046,23 @@ def status() -> None:
     Examples:
 
         muscle status
+
+        muscle status --refresh
     """
     from .project_memory import ProjectMemory
     from .tui.project_manager import ProjectManager
 
     manager = ProjectManager()
-    project_path = Path.cwd()
-    project = manager.get_current_project()
+    start_path = Path.cwd()
+    project = (
+        manager.load_config(start_path)
+        or manager.load_nearest_config(start_path)
+        or manager.get_current_project()
+    )
+    project_path = project.path if project is not None else start_path
+
+    if refresh_state:
+        _refresh_project_state_safe(project_path, reason="status-refresh", import_provider="all")
 
     table = Table(title="MUSCLE Status")
     table.add_column("Setting", style="cyan")
@@ -921,6 +1106,13 @@ def status() -> None:
         stats = pm.get_statistics(str(project_path))
         table.add_row("Total Reviews", str(stats.get("total_reviews", 0)))
         table.add_row("Total Findings", str(stats.get("total_findings", 0)))
+        snapshot = load_active_review_snapshot(str(project_path))
+        table.add_row("Active Review Snapshot", _format_snapshot_age(snapshot.get("age_seconds")))
+        catchup_summary = snapshot.get("catchup_summary") or {}
+        table.add_row(
+            "Last Catchup Summary",
+            str(catchup_summary.get("summary") or "None"),
+        )
         table.add_row("Learned Rules", str(stats.get("total_learned_rules", 0)))
         table.add_row("Skills", str(stats.get("total_skills", 0)))
         table.add_row("Related Projects", str(stats.get("related_projects", 0)))
@@ -962,6 +1154,142 @@ def status() -> None:
         pass
 
     console.print(table)
+
+
+@cli.command()
+@click.option("--json", "json_output", is_flag=True, help="Emit structured doctor output")
+@click.option(
+    "--refresh",
+    "refresh_state",
+    is_flag=True,
+    help="Refresh external catchup and `.muscle/active-review.md` before reporting",
+)
+def doctor(json_output: bool, refresh_state: bool) -> None:
+    """Diagnose MUSCLE project lifecycle, plugin bundle, and snapshot state."""
+
+    report = build_doctor_report(str(Path.cwd()), refresh=refresh_state)
+    if json_output:
+        console.print(json.dumps(doctor_report_to_dict(report), indent=2))
+        return
+    _render_doctor_report(report)
+
+
+@cli.command()
+@click.option("--json", "json_output", is_flag=True, help="Emit structured savings output")
+def savings(json_output: bool) -> None:
+    """Summarize token, cache, and command-output savings evidence."""
+
+    from .savings import build_savings_report
+
+    project_path, _ = _resolve_project_context(Path.cwd())
+    report = build_savings_report(project_path)
+    if json_output:
+        console.print(json.dumps(report, indent=2))
+        return
+    _render_savings_report(report)
+
+
+@cli.command()
+@click.option("--json", "json_output", is_flag=True, help="Emit structured discovery output")
+@click.option("--since", "since_days", type=int, default=30, show_default=True)
+def discover(json_output: bool, since_days: int) -> None:
+    """Report missed MUSCLE opportunities without writing memory files."""
+
+    from .discovery import build_discovery_report
+
+    project_path, _ = _resolve_project_context(Path.cwd())
+    report = build_discovery_report(project_path, since_days=max(1, since_days))
+    if json_output:
+        console.print(json.dumps(report, indent=2))
+        return
+    _render_discovery_report(report)
+
+
+@cli.group(name="filters")
+def filters_group() -> None:
+    """Verify and trust declarative command-output filters."""
+
+
+@filters_group.command(name="verify")
+@click.option("--filter", "filter_name", default=None, help="Verify one filter by name")
+@click.option("--require-all", is_flag=True, help="Require inline tests for every filter")
+@click.option("--json", "json_output", is_flag=True, help="Emit structured filter output")
+def filters_verify(filter_name: str | None, require_all: bool, json_output: bool) -> None:
+    """Verify built-in and trusted project-local output filters."""
+
+    from .output_filters import verify_filters
+
+    project_path, _ = _resolve_project_context(Path.cwd())
+    report = verify_filters(project_path, filter_name=filter_name, require_all=require_all)
+    if json_output:
+        console.print(json.dumps(report, indent=2))
+        return
+    status = "[green]passed[/green]" if report["passed"] else "[red]failed[/red]"
+    console.print(f"Filter verification {status} ({report['filter_count']} filter(s))")
+    for warning in report.get("warnings", []):
+        console.print(f"[yellow]WARN[/yellow] {warning}")
+
+
+@filters_group.command(name="trust")
+@click.option("--json", "json_output", is_flag=True, help="Emit structured filter output")
+def filters_trust(json_output: bool) -> None:
+    """Trust current project-local `.muscle/filters.yaml` content."""
+
+    from .output_filters import trust_project_filters
+
+    project_path, _ = _resolve_project_context(Path.cwd())
+    report = trust_project_filters(project_path)
+    if json_output:
+        console.print(json.dumps(report, indent=2))
+        return
+    if report.get("trusted"):
+        console.print(f"[green]Trusted project filters[/green] {report.get('filters_sha256')}")
+    else:
+        console.print(f"[yellow]Project filters not trusted:[/yellow] {report.get('reason')}")
+
+
+@filters_group.command(name="untrust")
+@click.option("--json", "json_output", is_flag=True, help="Emit structured filter output")
+def filters_untrust(json_output: bool) -> None:
+    """Remove project-local filter trust."""
+
+    from .output_filters import untrust_project_filters
+
+    project_path, _ = _resolve_project_context(Path.cwd())
+    report = untrust_project_filters(project_path)
+    if json_output:
+        console.print(json.dumps(report, indent=2))
+        return
+    console.print("[green]Project filter trust removed.[/green]")
+
+
+@cli.command(name="_host-hook", hidden=True)
+@click.option(
+    "--platform",
+    type=click.Choice(["claude-code", "codex"]),
+    required=True,
+    help="Host platform invoking the lifecycle hook",
+)
+@click.option(
+    "--event",
+    type=click.Choice(["session_start", "user_prompt_submit", "post_write", "stop"]),
+    required=True,
+    help="Lifecycle event to process",
+)
+@click.option("--project-path", type=click.Path(path_type=Path), default=None)
+@click.option("--tool-name", default=None, help="Optional host tool name for post_write hooks")
+def host_hook(platform: str, event: str, project_path: Path | None, tool_name: str | None) -> None:
+    """Internal lifecycle hook bridge used by Claude/Codex plugin hook files."""
+
+    resolved_project = project_path.resolve() if project_path else Path.cwd().resolve()
+    result = run_host_hook(
+        platform=platform,
+        event=event,
+        project_path=str(resolved_project),
+        tool_name=tool_name,
+    )
+    if result.message:
+        console.print(result.message)
 
 
 @cli.command()
@@ -1178,6 +1506,7 @@ def run(
             strategy or "",
             output_dir or ".",
             session_id=session_id,
+            language=config.language,
         )
 
     code_gen_wrapper.generate_streaming = code_gen.generate_streaming  # type: ignore[attr-defined]
@@ -1207,6 +1536,7 @@ def run(
         interactive=interactive_handler,
         session_manager=session_manager,
         project_memory=pm,
+        m27_client=m27_client,
     )
 
     try:
@@ -1464,6 +1794,7 @@ def resume(session_id: str) -> None:
         interactive=InteractiveHandler(enabled=resume_ctx.config.interactive),
         session_manager=session_manager,
         project_memory=pm,
+        m27_client=m27_client,
     )
 
     try:
@@ -1588,12 +1919,10 @@ def check(target: str, language: str | None, format: str) -> None:
         console.print(f"[red]Error: Target does not exist: {target}[/red]")
         sys.exit(1)
 
-    # Evaluators scan directories; for a single file, infer language from its
-    # extension and run checks against the parent directory.
     if target_path.is_file():
         if not language:
             language = target_path.suffix if target_path.suffix in LANGUAGE_EVALUATORS else None
-        eval_target = str(target_path.parent)
+        eval_target = str(target_path)
     else:
         eval_target = str(target_path)
 
@@ -2243,6 +2572,12 @@ def _parse_budget(budget_str: str) -> tuple[BudgetMode, int]:
     help="Pressure focus: design,failure,race,auth,data,rollback,reliability (comma-separated)",
 )
 @click.option(
+    "--challenge",
+    default=None,
+    type=click.Choice(["fragility"]),
+    help="Pressure challenge mode (pressure reviews only)",
+)
+@click.option(
     "--workflow",
     default=None,
     type=click.Choice(
@@ -2280,6 +2615,7 @@ def review(
     intensity: str,
     failsafe: bool,
     focus: str | None,
+    challenge: str | None,
     workflow: str | None,
     execution: str | None,
     fetch_sources: bool,
@@ -2303,6 +2639,7 @@ def review(
     """
     from .code_review import (
         Intensity,
+        PressureFocus,
         ReviewConfig,
         ReviewController,
         ReviewEvent,
@@ -2351,11 +2688,44 @@ def review(
     except Exception as exc:
         logger.warning("Could not resolve optimization defaults for %s: %s", project_path, exc)
 
+    if challenge and mode != "pressure":
+        raise click.UsageError("--challenge is only supported with --mode pressure.")
+
     if fetch_sources and shadow:
         raise click.UsageError(
             "--fetch-sources is not supported with --shadow. "
             "Run a foreground review to use dependency context enrichment."
         )
+
+    pressure_focus: PressureFocus | None = None
+    if focus:
+        selected_focus = {item.strip().lower() for item in focus.split(",") if item.strip()}
+        pressure_focus = PressureFocus(
+            design_tradeoffs="design" in selected_focus,
+            failure_modes="failure" in selected_focus,
+            race_conditions="race" in selected_focus,
+            auth_security="auth" in selected_focus,
+            data_loss="data" in selected_focus,
+            rollback="rollback" in selected_focus,
+            reliability="reliability" in selected_focus,
+            custom_focus=",".join(
+                item
+                for item in sorted(selected_focus)
+                if item
+                not in {
+                    "auth",
+                    "data",
+                    "design",
+                    "failure",
+                    "race",
+                    "reliability",
+                    "rollback",
+                }
+            )
+            or None,
+        )
+
+    json_output = format == "json"
 
     if shadow:
         from .code_review.shadow_worker import WorkerManager
@@ -2410,8 +2780,16 @@ def review(
 
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("MINIMAX_API_KEY")
     if not api_key:
-        console.print("[red]Error: MINIMAX_API_KEY not set[/red]")
-        console.print("Set it with: export MINIMAX_API_KEY='your-key'")
+        if json_output:
+            _emit_json(
+                {
+                    "error": "MINIMAX_API_KEY not set",
+                    "required_env": ["MINIMAX_API_KEY", "ANTHROPIC_API_KEY"],
+                }
+            )
+        else:
+            console.print("[red]Error: MINIMAX_API_KEY not set[/red]")
+            console.print("Set it with: export MINIMAX_API_KEY='your-key'")
         sys.exit(1)
 
     from .m27_client import M27Client
@@ -2431,6 +2809,8 @@ def review(
         intensity=intensity_map.get(intensity, Intensity.MODERATE),
         severity_threshold=severity_map.get(severity, Severity.LOW),
         max_fixes_per_round=max_fixes,
+        pressure_focus=pressure_focus,
+        pressure_challenge=challenge,
         workflow_name=configured_workflow,
         review_profile=(
             "comprehensive" if configured_workflow == "review-comprehensive" else "smart"
@@ -2480,7 +2860,7 @@ def review(
     controller = ReviewController(
         config=config,
         m27_client=m27_client,
-        event_callback=event_handler,
+        event_callback=None if json_output else event_handler,
         correction_signal_callback=on_correction_signal,
         project_path=project_path,
         context_budgeter=context_budgeter,
@@ -2488,75 +2868,82 @@ def review(
     )
 
     try:
-        result = controller.run()
-        review_result = controller.get_review_result()
-        savings_estimate = None
-        if optimizer is not None and review_result is not None:
-            stage_totals = _resolve_stage_totals(pm, project_path, review_result.session_id)
-            target_type = "file" if resolved_target.is_file() else "directory"
-            try:
-                savings_estimate = optimizer.record_review_outcome(
-                    session_id=review_result.session_id,
-                    workflow_name=review_result.workflow_name or configured_workflow or "legacy",
-                    language=language,
-                    complexity=str(
-                        (review_result.scope_summary or {}).get("complexity", "unknown")
-                    ),
-                    target_type=target_type,
-                    total_tokens=result.stats.tokens_used,
-                    duration_ms=int(result.stats.duration_seconds * 1000),
-                    valid_findings=len(review_result.issues),
-                    verified_fixes=len(review_result.fixed_issues),
-                    one_shot_verified_fixes=len(review_result.fixed_issues),
-                    high_critical_findings=(
-                        review_result.critical_count + review_result.high_count
-                    ),
-                    validation_success=result.stats.failed_fixes == 0,
-                    success=True,
-                    stage_totals=stage_totals,
-                )
-            except Exception as exc:
-                logger.warning("Failed to record optimization outcome: %s", exc)
-
-        # Self-learning: update CLAUDE.md, MEMORY.md, and skills
-        if review_result:
-            try:
-                duration_ms = int(result.stats.duration_seconds * 1000)
-                pipeline = LearningPipeline(
-                    project_path=project_path,
-                    m27_client=m27_client,
-                )
-                learn_result = pipeline.learn_from_review(
-                    review_result,
-                    review_mode=config.mode.value,
-                    token_cost=result.stats.tokens_used,
-                    duration_ms=duration_ms,
-                )
-                if learn_result.get("rules_added"):
-                    console.print(f"[cyan]Learned {learn_result['rules_added']} new rules[/cyan]")
-                if learn_result.get("skills_generated"):
-                    console.print(
-                        f"[cyan]Generated {learn_result['skills_generated']} new skills[/cyan]"
-                    )
-            except Exception as e:
-                logger.warning(f"Learning pipeline failed: {e}")
-
-            # Record change events after review (MUS-021)
-            if pm:
+        output_context = redirect_stdout(sys.stderr) if json_output else nullcontext()
+        with output_context:
+            result = controller.run()
+            review_result = controller.get_review_result()
+            savings_estimate = None
+            if optimizer is not None and review_result is not None:
+                stage_totals = _resolve_stage_totals(pm, project_path, review_result.session_id)
+                target_type = "file" if resolved_target.is_file() else "directory"
                 try:
-                    from .change_capture import ChangeCapture
+                    savings_estimate = optimizer.record_review_outcome(
+                        session_id=review_result.session_id,
+                        workflow_name=review_result.workflow_name
+                        or configured_workflow
+                        or "legacy",
+                        language=language,
+                        complexity=str(
+                            (review_result.scope_summary or {}).get("complexity", "unknown")
+                        ),
+                        target_type=target_type,
+                        total_tokens=result.stats.tokens_used,
+                        duration_ms=int(result.stats.duration_seconds * 1000),
+                        valid_findings=len(review_result.issues),
+                        verified_fixes=len(review_result.fixed_issues),
+                        one_shot_verified_fixes=len(review_result.fixed_issues),
+                        high_critical_findings=(
+                            review_result.critical_count + review_result.high_count
+                        ),
+                        validation_success=result.stats.failed_fixes == 0,
+                        success=True,
+                        stage_totals=stage_totals,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to record optimization outcome: %s", exc)
 
-                    cc = ChangeCapture(project_path)
-                    capture_result = cc.capture_and_store(pm, learn_result.get("review_run_id"))
-                    if capture_result.get("changed_files_count", 0) > 0:
-                        logger.debug(
-                            f"Captured {capture_result['changed_files_count']} changed files "
-                            f"as learning evidence"
+            # Self-learning: update CLAUDE.md, MEMORY.md, and skills
+            if review_result:
+                learn_result: dict[str, Any] = {}
+                try:
+                    duration_ms = int(result.stats.duration_seconds * 1000)
+                    pipeline = LearningPipeline(
+                        project_path=project_path,
+                        m27_client=m27_client,
+                    )
+                    learn_result = pipeline.learn_from_review(
+                        review_result,
+                        review_mode=config.mode.value,
+                        token_cost=result.stats.tokens_used,
+                        duration_ms=duration_ms,
+                    )
+                    if not json_output and learn_result.get("rules_added"):
+                        console.print(
+                            f"[cyan]Learned {learn_result['rules_added']} new rules[/cyan]"
+                        )
+                    if not json_output and learn_result.get("skills_generated"):
+                        console.print(
+                            f"[cyan]Generated {learn_result['skills_generated']} new skills[/cyan]"
                         )
                 except Exception as e:
-                    logger.warning(f"ChangeCapture failed: {e}")
+                    logger.warning(f"Learning pipeline failed: {e}")
 
-        if format == "json" and review_result:
+                # Record change events after review (MUS-021)
+                if pm:
+                    try:
+                        from .change_capture import ChangeCapture
+
+                        cc = ChangeCapture(project_path)
+                        capture_result = cc.capture_and_store(pm, learn_result.get("review_run_id"))
+                        if capture_result.get("changed_files_count", 0) > 0:
+                            logger.debug(
+                                f"Captured {capture_result['changed_files_count']} changed files "
+                                f"as learning evidence"
+                            )
+                    except Exception as e:
+                        logger.warning(f"ChangeCapture failed: {e}")
+
+        if json_output and review_result:
             output_data = {
                 "session_id": review_result.session_id,
                 "target_path": review_result.target_path,
@@ -2583,7 +2970,7 @@ def review(
                 "duration_seconds": result.stats.duration_seconds,
                 "tokens_used": result.stats.tokens_used,
             }
-            console.print(json.dumps(output_data, indent=2))
+            _emit_json(output_data)
         else:
             if review_result:
                 console.print("\n[bold]Review Summary[/bold]")
@@ -2628,7 +3015,10 @@ def review(
 
         if output and result.handoff_plan:
             Path(output).write_text(result.handoff_plan.markdown, encoding="utf-8")
-            console.print(f"\n[green]Handoff plan written to {output}[/green]")
+            if not json_output:
+                console.print(f"\n[green]Handoff plan written to {output}[/green]")
+
+        _refresh_active_review_safe(project_path, reason="review-complete")
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Review interrupted by user[/yellow]")
@@ -2801,6 +3191,7 @@ def optimize_import(provider: str, since_days: int) -> None:
             str(provider_summary.get("turns_imported", 0)),
         )
     console.print(table)
+    _refresh_active_review_safe(project_root, reason="optimize-import")
 
 
 @cli.command(name="lifeline")
@@ -2808,13 +3199,30 @@ def optimize_import(provider: str, since_days: int) -> None:
 @click.option("--prompt", "-p", required=True, help="Task or question to investigate")
 @click.option("--model", "-m", default=None, help="Model to use (optional)")
 @click.option(
+    "--history/--no-history",
+    default=False,
+    help="Attach targeted git history forensics to the investigation",
+)
+@click.option(
+    "--bisect-cmd",
+    default=None,
+    help="Optional deterministic command to run via temporary git bisect",
+)
+@click.option(
     "--intensity",
     "-i",
     type=click.Choice(["minimal", "moderate", "intensive", "exhaustive"]),
     default="moderate",
     help="Investigation intensity",
 )
-def lifeline(target: str, prompt: str, model: str | None, intensity: str) -> None:
+def lifeline(
+    target: str,
+    prompt: str,
+    model: str | None,
+    history: bool,
+    bisect_cmd: str | None,
+    intensity: str,
+) -> None:
     """Throw a lifeline to M2.7 to investigate issues, propose fixes, or debug problems.
 
     Unlike review which focuses on finding issues, lifeline is for:
@@ -2840,6 +3248,23 @@ def lifeline(target: str, prompt: str, model: str | None, intensity: str) -> Non
     from .m27_client import M27Client
 
     m27_client = M27Client(api_key=api_key)
+    history_requested = history or bisect_cmd is not None
+    history_summary = ""
+    history_artifact = ""
+    if history_requested:
+        from .git_history_forensics import GitHistoryForensics
+
+        project_path, _ = _resolve_project_context(Path(target).resolve())
+        report = GitHistoryForensics(str(project_path)).analyze(target, bisect_cmd=bisect_cmd)
+        if report.get("available"):
+            history_summary = str(report.get("summary") or "")
+            report_paths = report.get("report_paths") or {}
+            if isinstance(report_paths, dict):
+                history_artifact = str(report_paths.get("json") or "")
+        else:
+            logger.info(
+                "Git history forensics unavailable for %s: %s", target, report.get("reason")
+            )
 
     system_prompt = f"""You are a debugging and investigation assistant. Your task is to:
 1. Investigate the reported issue thoroughly
@@ -2855,11 +3280,18 @@ Investigation intensity: {intensity.capitalize()}"""
 Task: {prompt}
 
 Please investigate this thoroughly and provide your findings and proposed solutions."""
+    if history_summary:
+        user_prompt += (
+            "\n\nUse this git history evidence first before requesting broader source context:\n"
+            f"{history_summary}"
+        )
 
     try:
         console.print("[cyan]Throwing lifeline to M2.7...[/cyan]")
         console.print(f"[dim]Target: {target}[/dim]")
         console.print(f"[dim]Intensity: {intensity}[/dim]")
+        if history_artifact:
+            console.print(f"[dim]History artifact: {history_artifact}[/dim]")
 
         response, usage = m27_client.chat(
             messages=[
@@ -3018,6 +3450,8 @@ def diagnosis(job_id: str | None) -> None:
     else:
         console.print(result)
 
+    _refresh_active_review_safe(Path.cwd(), reason="diagnosis")
+
 
 @cli.group(name="long-eval")
 def long_eval_group() -> None:
@@ -3058,6 +3492,43 @@ def long_eval_run(target: str | None) -> None:
             console.print(f"[red]High: {high}[/red]")
     else:
         console.print("[yellow]No report generated.[/yellow]")
+
+
+@long_eval_group.command(name="mutate")
+@click.option("--target", "-t", required=True, help="Python file or directory to mutate")
+@click.option(
+    "--test-command",
+    default=None,
+    help="Command used to evaluate each mutant (defaults to project pytest command)",
+)
+@click.option("--limit", default=12, help="Maximum number of mutants to run")
+@click.option("--timeout", default=300, help="Timeout per mutant in seconds")
+def long_eval_mutate(
+    target: str,
+    test_command: str | None,
+    limit: int,
+    timeout: int,
+) -> None:
+    """Run deterministic Python mutation testing in disposable workspaces."""
+    from .code_review.mutation_runner import MutationRunner
+
+    resolved_target = Path(target).resolve()
+    project_root, _ = _resolve_project_context(resolved_target)
+    runner = MutationRunner(str(project_root))
+    console.print(f"[cyan]Running mutation evaluation on {resolved_target}...[/cyan]")
+    report = runner.run(
+        str(resolved_target),
+        test_command=test_command,
+        limit=limit,
+        timeout_seconds=timeout,
+    )
+    console.print(
+        f"[green]Mutation run complete:[/green] "
+        f"killed={report['killed']} survived={report['survived']} timeouts={report['timeouts']}"
+    )
+    report_paths = report.get("report_paths", {})
+    if isinstance(report_paths, dict) and report_paths.get("json"):
+        console.print(f"[dim]Report: {report_paths['json']}[/dim]")
 
 
 @long_eval_group.command(name="reports")
@@ -3199,6 +3670,7 @@ def long_eval_benchmark(
     aggregate = report["aggregate"]
     thresholds = report["thresholds"]
     benchmark_gates = dict(report.get("benchmark_gates", {}))
+    meta_harness = dict(report.get("meta_harness", {}))
     console.print("[bold]Benchmark Complete[/bold]")
     console.print(
         f"High/Critical recall: {aggregate['baseline']['high_critical_recall']:.2%} -> "
@@ -3221,6 +3693,23 @@ def long_eval_benchmark(
     )
     if benchmark_gates:
         console.print(f"Benchmark gates overall: {benchmark_gates.get('overall_passed', False)}")
+    if meta_harness:
+        host_memory = dict(meta_harness.get("host_memory", {}))
+        routing = dict(meta_harness.get("routing", {}))
+        if host_memory:
+            console.print(
+                "Host-memory chars: "
+                f"{host_memory.get('baseline_chars', 0)} -> "
+                f"{host_memory.get('candidate_chars', 0)}"
+            )
+        if routing:
+            console.print(
+                "Routing quality matches: "
+                f"{routing.get('baseline_quality', 0)} -> "
+                f"{routing.get('candidate_quality', 0)}"
+            )
+        if meta_harness.get("promotion_rule"):
+            console.print(f"Promotion rule: {meta_harness['promotion_rule']}")
 
     if enforce_gates:
         console.print("[cyan]Running focused release invariant checks...[/cyan]")
@@ -4555,6 +5044,8 @@ def settings_api_key(key: str | None, source: str | None) -> None:
     if source:
         manager.update_muscle_config(project_path, api_key_source=source)
         console.print(f"[green]API key source set to: {source}[/green]")
+    if key or source:
+        _refresh_active_review_safe(project_path, reason="settings-api-key")
 
     if not key and not source:
         current_key = os.environ.get("MINIMAX_API_KEY", "")
@@ -4601,6 +5092,9 @@ def settings_hooks(enable: bool | None, gate: str | None) -> None:
 
     if not updated:
         console.print("No changes made. Use --enable/--disable or --gate to make changes.")
+        return
+
+    _refresh_active_review_safe(project_path, reason="settings-hooks")
 
 
 @settings_group.command(name="review")
@@ -4621,6 +5115,7 @@ def settings_review(execution: str | None) -> None:
             console.print("[red]Failed to update review execution mode.[/red]")
             return
         console.print(f"[green]Review execution set to: {execution}[/green]")
+        _refresh_active_review_safe(project_path, reason="settings-review")
         return
 
     current = project.review_execution if project is not None else "local"
@@ -4630,7 +5125,9 @@ def settings_review(execution: str | None) -> None:
 
 @settings_group.command(name="platform")
 @click.option(
-    "--platform", type=click.Choice(["opencode", "claude-code", "auto"]), help="Target platform"
+    "--platform",
+    type=click.Choice(["opencode", "claude-code", "codex", "auto"]),
+    help="Target platform",
 )
 @click.option("--cli-path", help="Path to muscle CLI")
 def settings_platform(platform: str | None, cli_path: str | None) -> None:
@@ -4665,6 +5162,9 @@ def settings_platform(platform: str | None, cli_path: str | None) -> None:
         console.print(f"Detected CLI: {detected_cli or 'Not found'}")
         console.print()
         console.print("Use --platform or --cli-path to configure.")
+        return
+
+    _refresh_active_review_safe(project_path, reason="settings-platform")
 
 
 @settings_group.command(name="model")
@@ -4724,6 +5224,7 @@ def settings_model(
 
     manager.update_muscle_config(project_path, **updates)
     console.print("[green]Model settings updated.[/green]")
+    _refresh_active_review_safe(project_path, reason="settings-model")
 
 
 @settings_group.command(name="reset")
@@ -4759,6 +5260,7 @@ def settings_reset(force: bool, keep_data: bool, keep_config: bool) -> None:
         model_identity_source="unresolved",
         model_manual_override="",
     )
+    _refresh_active_review_safe(project_path, reason="settings-reset")
     console.print("[green]Settings reset to defaults.[/green]")
 
 

@@ -4,7 +4,7 @@ Release date: 2026-04-16
 
 This release finishes the project-first growth, related-project transfer,
 model-identity, and model-pack initiative tracked in
-[docs/project-first-growth-model-pack-roadmap.md](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/docs/project-first-growth-model-pack-roadmap.md).
+[docs/project-first-growth-model-pack-roadmap.md](docs/project-first-growth-model-pack-roadmap.md).
 
 ## What shipped
 
@@ -47,7 +47,7 @@ model-identity, and model-pack initiative tracked in
 ## Upgrade notes
 
 Existing users should read
-[docs/migration-and-data-safety.md](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/docs/migration-and-data-safety.md)
+[docs/migration-and-data-safety.md](docs/migration-and-data-safety.md)
 before depending on overlays in production.
 
 High-signal post-upgrade checks:

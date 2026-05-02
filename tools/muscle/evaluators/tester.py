@@ -37,7 +37,12 @@ class PytestRunner(BaseEvaluator):
             output = stdout + stderr
             errors = self._parse_pytest_output(output)
 
-        return EvaluatorResult(success=code == 0, errors=errors, output=stdout)
+        return EvaluatorResult(
+            success=code == 0,
+            errors=errors,
+            output=stdout,
+            evidence=self.last_command_evidence,
+        )
 
     def _parse_pytest_output(self, output: str) -> list[str]:
         errors = []
@@ -72,7 +77,12 @@ class JestRunner(BaseEvaluator):
             output = stdout + stderr
             errors = self._parse_jest_output(output)
 
-        return EvaluatorResult(success=code == 0, errors=errors, output=stdout)
+        return EvaluatorResult(
+            success=code == 0,
+            errors=errors,
+            output=stdout,
+            evidence=self.last_command_evidence,
+        )
 
     def _parse_jest_output(self, output: str) -> list[str]:
         errors = []
@@ -105,7 +115,12 @@ class GoTestRunner(BaseEvaluator):
             output = stdout + stderr
             errors = self._parse_go_test_output(output)
 
-        return EvaluatorResult(success=code == 0, errors=errors, output=stdout)
+        return EvaluatorResult(
+            success=code == 0,
+            errors=errors,
+            output=stdout,
+            evidence=self.last_command_evidence,
+        )
 
     def _parse_go_test_output(self, output: str) -> list[str]:
         errors = []
@@ -138,7 +153,12 @@ class CargoTestRunner(BaseEvaluator):
             output = stdout + stderr
             errors = self._parse_cargo_output(output)
 
-        return EvaluatorResult(success=code == 0, errors=errors, output=stdout)
+        return EvaluatorResult(
+            success=code == 0,
+            errors=errors,
+            output=stdout,
+            evidence=self.last_command_evidence,
+        )
 
     def _parse_cargo_output(self, output: str) -> list[str]:
         errors = []
@@ -176,7 +196,12 @@ class GtestRunner(BaseEvaluator):
                 :20
             ]
 
-        return EvaluatorResult(success=code == 0, errors=errors, output=stdout)
+        return EvaluatorResult(
+            success=code == 0,
+            errors=errors,
+            output=stdout,
+            evidence=self.last_command_evidence,
+        )
 
 
 class JUnitRunner(BaseEvaluator):
@@ -202,4 +227,42 @@ class JUnitRunner(BaseEvaluator):
             errors = stderr.split("\n")
             errors = [e for e in errors if "FAILURES" in e or "Error" in e][:20]
 
-        return EvaluatorResult(success=code == 0, errors=errors, output=stdout)
+        return EvaluatorResult(
+            success=code == 0,
+            errors=errors,
+            output=stdout,
+            evidence=self.last_command_evidence,
+        )
+
+
+class NUnitRunner(BaseEvaluator):
+    @property
+    def name(self) -> str:
+        return "nunit_runner"
+
+    @property
+    def error_type(self) -> str:
+        return "test"
+
+    def evaluate(self, output_dir: str) -> EvaluatorResult:
+        if not shutil.which("dotnet"):
+            logger.warning("dotnet not found, skipping NUnit/dotnet test run")
+            return EvaluatorResult(success=True)
+
+        code, stdout, stderr = self._run_command(["dotnet", "test", "--no-build"], output_dir)
+
+        errors = []
+        if code != 0:
+            output = stdout + stderr
+            errors = [
+                line
+                for line in output.split("\n")
+                if "Failed" in line or "Error" in line or "FAILED" in line
+            ][:20]
+
+        return EvaluatorResult(
+            success=code == 0,
+            errors=errors,
+            output=stdout,
+            evidence=self.last_command_evidence,
+        )

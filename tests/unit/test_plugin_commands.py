@@ -99,6 +99,9 @@ class TestPluginJson:
         assert "model-select" in desc
         assert "model-pack-install" in desc
         assert "model-pack-submit" in desc
+        assert "discover" in desc
+        assert "filters" in desc
+        assert "savings" in desc
 
     def test_plugin_description_repeats_project_local_authority(self, plugin_json: dict):
         """The plugin description should keep the project-first memory rule visible."""
@@ -116,6 +119,9 @@ class TestCommandDocCompleteness:
         "rescue",
         "setup",
         "check",
+        "discover",
+        "doctor",
+        "filters",
         "history",
         "probe",
         "diagnosis",
@@ -133,6 +139,7 @@ class TestCommandDocCompleteness:
         "model-select",
         "model-pack-install",
         "model-pack-submit",
+        "savings",
         "status",
         "long-eval-benchmark",
         "long-eval-reports",
@@ -231,6 +238,8 @@ class TestSetupCommandDoc:
         assert "--canonical-model" in content
         assert "never auto-imported" in content or "never auto-imported" in content.lower()
         assert "defaults to `suggest`, not `auto`" in content
+        assert "muscle doctor" in content
+        assert "muscle status --refresh" in content
 
 
 class TestSettingsShowCommandDoc:
@@ -247,6 +256,20 @@ class TestSettingsShowCommandDoc:
         assert "manual model override" in content.lower()
         assert "canonical model" in content.lower()
         assert "model identity source" in content.lower()
+        assert "muscle doctor" in content
+
+
+class TestDoctorCommandDoc:
+    """doctor.md should cover refresh and JSON reporting."""
+
+    def test_doctor_doc_mentions_refresh_and_json(self):
+        doctor_doc = COMMANDS_DIR / "doctor.md"
+        if not doctor_doc.exists():
+            pytest.skip("doctor.md does not exist")
+
+        content = doctor_doc.read_text()
+        assert "muscle doctor --refresh" in content
+        assert "muscle doctor --json" in content
 
 
 class TestNewParityDocs:

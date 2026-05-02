@@ -75,7 +75,7 @@ class BackupManager:
         retention_days: int = DEFAULT_RETENTION_DAYS,
     ):
         self._pm = project_memory
-        self._project_path = Path(project_path)
+        self._project_path = Path(project_path).resolve()
         self._muscle_dir = self._project_path / ".muscle"
         self._backups_dir = self._muscle_dir / "backups"
         self._retention_days = retention_days
@@ -147,6 +147,72 @@ class BackupManager:
                     archive_path.parent.rmdir()
                 except OSError:
                     pass
+            raise
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        return BackupInfo(
+            id=backup_record,
+            backup_type=backup_type,
+            file_path=str(archive_path),
+            checksum=checksum,
+            size_bytes=size_bytes,
+            created_at=created_at,
+            retention_days=self._retention_days,
+        )
+
+    def create_file_backup(
+        self,
+        source_path: Path,
+        backup_type: BackupType = "claude_md",
+    ) -> BackupInfo:
+        """Create a backup for an explicit project file."""
+        _assert_backup_type(backup_type)
+        source = source_path.resolve()
+        try:
+            source.relative_to(self._project_path)
+        except ValueError as exc:
+            raise ValueError(f"Backup source is outside project root: {source}") from exc
+        if not source.exists():
+            raise FileNotFoundError(f"Backup source not found: {source}")
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        created_at = datetime.now().isoformat()
+        safe_name = source.relative_to(self._project_path).as_posix().replace("/", "__")
+        archive_path = (
+            self._backups_dir / backup_type / timestamp / f"{safe_name}.{backup_type}.tar.gz"
+        )
+        temp_parent = self._backups_dir / backup_type
+        temp_parent.mkdir(parents=True, exist_ok=True)
+        temp_dir = Path(tempfile.mkdtemp(prefix=f"{backup_type}-{timestamp}-", dir=temp_parent))
+        temp_archive_path = temp_dir / archive_path.name
+
+        checksum = self._create_archive(
+            archive_path=temp_archive_path,
+            source_paths=[source],
+            project_root=self._project_path,
+        )
+        size_bytes = temp_archive_path.stat().st_size
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(temp_archive_path, archive_path)
+
+        try:
+            backup_record = self._pm.insert_backup_with_action(
+                project_path=str(self._project_path),
+                created_at=created_at,
+                backup_type=backup_type,
+                file_path=str(archive_path),
+                checksum=checksum,
+                size_bytes=size_bytes,
+                retention_days=self._retention_days,
+                action_details_json=(
+                    f'{{"backup_type": "{backup_type}", '
+                    f'"source_path": "{source.relative_to(self._project_path).as_posix()}", '
+                    f'"size_bytes": {size_bytes}}}'
+                ),
+            )
+        except Exception:
+            archive_path.unlink(missing_ok=True)
             raise
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)

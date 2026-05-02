@@ -1,6 +1,5 @@
 ---
 description: Show resolved model identity, confidence, and active model-pack overlays
-args: []
 ---
 
 Inspect the effective model identity for the current project.

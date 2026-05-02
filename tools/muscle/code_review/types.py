@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from ..command_evidence import CommandEvidence, ParserTier
+
 
 class Severity(Enum):
     """Issue severity levels aligned with CWE triage taxonomy.
@@ -134,6 +136,7 @@ class ReviewConfig:
     shadow_mode: bool = False
     failsafe: bool = False
     pressure_focus: PressureFocus | None = None
+    pressure_challenge: str | None = None
     workflow_name: str | None = None
     review_profile: str = "smart"
     scope_mode: str = "auto"
@@ -158,6 +161,9 @@ class StaticAnalysisResult:
     issues: list[StaticIssue]
     duration_seconds: float
     error_output: str = ""
+    parser_tier: str = ParserTier.FULL.value
+    parse_warnings: list[str] = field(default_factory=list)
+    evidence: CommandEvidence | None = None
 
 
 @dataclass

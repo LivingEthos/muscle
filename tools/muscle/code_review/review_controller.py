@@ -29,13 +29,15 @@ from time import perf_counter
 from typing import TYPE_CHECKING, cast
 
 from ..delegation_metrics import DelegationEvent, DelegationMetrics
+from ..escalation import EscalationPolicy, EscalationRecord, EscalationRecorder
 from ..m27_client import M27Client
 from ..project_memory import ProjectMemory
+from ..routing import Recommendation, TaskRouter
 from .code_reviewer import CodeReviewer, _read_file_cached
 from .committee_reviewer import CommitteeReviewer
 from .fix_generator import FixGenerator
 from .handoff_generator import HandoffGenerator
-from .review_artifacts import ReviewArtifactStore, review_issue_to_dict
+from .review_artifacts import ReviewArtifactStore, resolve_trace_policy, review_issue_to_dict
 from .review_kb import GlobalReviewKB, ReviewKB
 from .review_scope import ReviewScopeClassifier, ScopeInputs
 from .review_workflows import ReviewWorkflowEngine, ReviewWorkflowLoader, ReviewWorkflowNode
@@ -111,6 +113,7 @@ class ReviewContext:
     fixed_issues: list[ReviewIssue] = field(default_factory=list)
     unfixed_issues: list[ReviewIssue] = field(default_factory=list)
     artifact_dir: str | None = None
+    artifact_store: ReviewArtifactStore | None = None
     scope_summary: dict | None = None
     agent_findings: dict[str, list[ReviewIssue]] = field(default_factory=dict)
     worktree_path: str | None = None
@@ -133,6 +136,7 @@ class ReviewController:
         project_path: str | None = None,
         context_budgeter: ContextBudgeter | None = None,
         lesson_resolver: object | None = None,
+        benchmark_run: bool = False,
     ):
         self.config = config
         self.m27_client = m27_client
@@ -141,6 +145,7 @@ class ReviewController:
         self.project_path = project_path or self._resolve_project_path(config.target_path)
         self.context_budgeter = context_budgeter
         self.lesson_resolver = lesson_resolver
+        self.benchmark_run = benchmark_run
         self.project_memory: ProjectMemory | None = None
         try:
             self.project_memory = ProjectMemory(self.project_path)
@@ -159,6 +164,8 @@ class ReviewController:
             context_budgeter=context_budgeter,
             project_path=self.project_path,
             lesson_resolver=lesson_resolver,
+            include_patterns=config.include_patterns,
+            exclude_patterns=config.exclude_patterns,
         )
         self.committee_reviewer = CommitteeReviewer(self.code_reviewer)
         self.fix_generator = FixGenerator(
@@ -215,22 +222,82 @@ class ReviewController:
             self.event_callback(event, data)
         logger.debug(f"Review Event: {event.value} - {data}")
 
+    def _ensure_artifact_store(self, ctx: ReviewContext) -> ReviewArtifactStore:
+        if ctx.artifact_store is None:
+            ctx.artifact_store = ReviewArtifactStore(self.project_path, ctx.session_id)
+            ctx.artifact_dir = ctx.artifact_store.artifact_dir
+        return ctx.artifact_store
+
+    def _base_trace_reasons(self) -> list[str]:
+        return ["benchmark_run"] if self.benchmark_run else []
+
     def _record_delegation_event(self, ctx: ReviewContext) -> None:
         """Record a delegation event for observability (Phase B.6)."""
         try:
+            structured_metrics = (
+                self.m27_client.consume_structured_cache_metrics()
+                if hasattr(self.m27_client, "consume_structured_cache_metrics")
+                else {"cache_hits": 0, "cache_tokens_saved": 0}
+            )
+            route_summary = (
+                ctx.scope_summary.get("delegation_route", {})
+                if isinstance(ctx.scope_summary, dict)
+                else {}
+            )
+            route_cache_hit = int(bool(route_summary.get("from_cache")))
             metrics = DelegationMetrics(self.project_path)
             metrics.record(
                 DelegationEvent(
                     session_id=ctx.session_id,
                     entry_point=f"review:{self.config.mode.value}",
+                    task_tier=route_summary.get("tier"),
                     m27_tokens_in=ctx.stats.tokens_used,
                     m27_tokens_out=0,
                     verifications_run=ctx.stats.auto_fixed + ctx.stats.failed_fixes,
                     verifications_failed=ctx.stats.failed_fixes,
+                    escalations_emitted=int(
+                        bool(
+                            isinstance(ctx.scope_summary, dict)
+                            and ctx.scope_summary.get("host_escalation")
+                        )
+                    ),
+                    cache_hits=structured_metrics["cache_hits"] + route_cache_hit,
+                    cache_tokens_saved=(
+                        structured_metrics["cache_tokens_saved"] + (256 if route_cache_hit else 0)
+                    ),
+                    pack_id=getattr(self.m27_client, "_cache_pack_id", None),
+                    pack_reused=bool(
+                        getattr(self.m27_client, "_cache_pack_id", None)
+                        and structured_metrics["cache_hits"] > 0
+                    ),
+                    metadata={
+                        "route_recommended": route_summary.get("recommended"),
+                        "route_confidence": route_summary.get("confidence"),
+                        "routing_profile": route_summary.get("routing_profile", "current"),
+                        "verification_status": self._delegation_verification_status(ctx),
+                        "verified_fix_count": ctx.stats.auto_fixed,
+                        "failed_fix_count": ctx.stats.failed_fixes,
+                        "remaining_issues": len(ctx.unfixed_issues or ctx.issues),
+                        "token_savings_signal": (
+                            structured_metrics["cache_tokens_saved"]
+                            + (256 if route_cache_hit else 0)
+                        ),
+                        "benchmark_run": self.benchmark_run,
+                    },
                 )
             )
         except Exception as exc:
             logger.debug("Failed to record delegation event: %s", exc)
+
+    @staticmethod
+    def _delegation_verification_status(ctx: ReviewContext) -> str:
+        if ctx.stats.auto_fixed and not ctx.stats.failed_fixes:
+            return "verified"
+        if ctx.stats.failed_fixes:
+            return "verification_failed"
+        if ctx.fixed_issues:
+            return "fixed_without_validation_summary"
+        return "not_applicable"
 
     def _get_fix_lock(self, file_path: str) -> Lock:
         with self._fix_locks_guard:
@@ -262,6 +329,13 @@ class ReviewController:
                 self._record_delegation_event(result)
                 return result
             except Exception as e:
+                if self._structured_workflow_mutated(ctx):
+                    logger.error(
+                        "Structured review workflow failed after applying changes; "
+                        "not falling back to legacy review mode.",
+                        exc_info=True,
+                    )
+                    raise
                 logger.warning(f"Structured review workflow failed, falling back: {e}")
 
         if self.config.mode == ReviewMode.REVIEW:
@@ -292,6 +366,16 @@ class ReviewController:
         result.stats.duration_seconds = perf_counter() - started_at
         self._record_delegation_event(result)
         return result
+
+    @staticmethod
+    def _structured_workflow_mutated(ctx: ReviewContext) -> bool:
+        """Return True once a structured workflow has changed the worktree."""
+        return bool(
+            ctx.fixed_issues
+            or ctx.stats.auto_fixed
+            or ctx.stats.failed_fixes
+            or getattr(ctx, "applied_back_files", None)
+        )
 
     @staticmethod
     def _resolve_project_path(target_path: str) -> str:
@@ -355,7 +439,7 @@ class ReviewController:
                 use_kb=self.review_kb is not None,
                 verification_loop=self.verification_loop,
                 correction_signal_callback=self.correction_signal_callback,
-                project_path=self.project_path,
+                project_path=session.worktree_path,
                 context_budgeter=self.context_budgeter,
             )
             child_ctx = child_controller.run()
@@ -489,12 +573,103 @@ class ReviewController:
             language=self.config.language,
             complexity=self._runtime_complexity(ctx),
             target_type=self._runtime_target_type(),
+            artifact_store=ctx.artifact_store,
+            trace_reasons=self._base_trace_reasons(),
         )
+
+    def _build_route_description(self, static_issue_count: int, workflow_name: str | None) -> str:
+        target = Path(self.config.target_path)
+        target_kind = "file" if target.is_file() else "directory"
+        return (
+            f"mode={self.config.mode.value}; workflow={workflow_name or 'legacy'}; "
+            f"target={target_kind}:{target}; intensity={self.config.intensity.value}; "
+            f"static_issue_count={static_issue_count}; language={self.config.language or 'auto'}; "
+            f"fetch_sources={self.config.fetch_sources}"
+        )
+
+    def _route_review_request(
+        self,
+        ctx: ReviewContext,
+        *,
+        static_issue_count: int,
+        workflow_name: str | None,
+    ) -> bool:
+        artifact_store = self._ensure_artifact_store(ctx)
+        try:
+            decision = TaskRouter(self.m27_client).route(
+                self._build_route_description(static_issue_count, workflow_name),
+                scope=Path(self.config.target_path),
+            )
+        except Exception as exc:
+            logger.warning("Task routing failed for review session %s: %s", ctx.session_id, exc)
+            return False
+
+        if ctx.scope_summary is None:
+            ctx.scope_summary = {}
+        ctx.scope_summary["delegation_route"] = {
+            "tier": decision.tier.value,
+            "recommended": decision.recommended.value,
+            "confidence": decision.confidence,
+            "rationale": decision.rationale,
+            "from_cache": decision.from_cache,
+            "routing_profile": getattr(decision, "routing_profile", "current"),
+        }
+
+        if decision.recommended != Recommendation.ESCALATE_TO_HOST:
+            return False
+
+        recorder = EscalationRecorder(self.project_path, EscalationPolicy())
+        reason = (
+            "low_confidence_route"
+            if recorder.should_escalate(
+                "low_confidence_route",
+                1,
+                route_confidence=decision.confidence,
+            )
+            else "architectural_route"
+        )
+        artifact_path = recorder.emit(
+            EscalationRecord(
+                session_id=ctx.session_id,
+                reason=reason,
+                source_module="review_controller",
+                issue_summary=(
+                    f"Route decision escalated review to host: tier={decision.tier.value}, "
+                    f"confidence={decision.confidence:.2f}, rationale={decision.rationale}"
+                ),
+                attempt_count=1,
+            )
+        )
+        escalation_diagnostic = artifact_store.write_diagnostic(
+            "host-escalation",
+            {
+                "session_id": ctx.session_id,
+                "reason": reason,
+                "route": dict(ctx.scope_summary["delegation_route"]),
+                "artifact_path": str(artifact_path),
+                "trace_policy": resolve_trace_policy("host_escalation")[0],
+            },
+        )
+        ctx.scope_summary["host_escalation"] = {
+            "reason": reason,
+            "artifact_path": str(artifact_path),
+            "diagnostic_path": str(escalation_diagnostic),
+        }
+        self._emit(
+            ReviewEvent.REVIEW_COMPLETE,
+            {
+                "session": ctx.session_id,
+                "issues": 0,
+                "escalated": True,
+                "route": ctx.scope_summary["delegation_route"],
+                "artifact_path": str(artifact_path),
+            },
+        )
+        return True
 
     def _run_structured_workflow(self, ctx: ReviewContext, workflow_name: str) -> ReviewContext:
         workflow = self.workflow_loader.load(workflow_name)
-        artifact_store = ReviewArtifactStore(self.project_path, ctx.session_id)
-        ctx.artifact_dir = artifact_store.artifact_dir
+        artifact_store = self._ensure_artifact_store(ctx)
 
         static_results = self.static_analyzer.analyze()
         all_static_issues = self._flatten_static_issues(static_results)
@@ -510,6 +685,15 @@ class ReviewController:
         ctx.scope_summary = scope.to_dict()
         artifact_store.write_scope(scope)
         self._configure_verification_runtime(ctx)
+        if self._route_review_request(
+            ctx,
+            static_issue_count=len(all_static_issues),
+            workflow_name=workflow_name,
+        ):
+            artifact_store.write_summary(
+                "# MUSCLE Review Summary\n\n- Escalated to host planner before semantic review.\n"
+            )
+            return ctx
 
         def should_run(node: ReviewWorkflowNode, outputs: dict[str, object]) -> bool:
             # Fix: RC-04. Workflow gate DSL parsed via named constants so the
@@ -550,12 +734,15 @@ class ReviewController:
                 all_static_issues,
                 scope,
                 self.config.pressure_focus,
+                self.config.pressure_challenge,
                 ctx.session_id,
                 workflow_name,
                 self.config.mode.value,
                 self.config.language,
                 self._runtime_complexity(ctx),
                 self._runtime_target_type(),
+                artifact_store=artifact_store,
+                trace_reasons=self._base_trace_reasons(),
             )
             ctx.agent_findings[node.agent or node.id] = issues
             ctx.stats.tokens_used += self.committee_reviewer.consume_agent_tokens(
@@ -886,11 +1073,30 @@ class ReviewController:
         return "\n".join(lines)
 
     def _run_review_mode(self, ctx: ReviewContext) -> ReviewContext:
+        artifact_store = self._ensure_artifact_store(ctx)
         self._configure_verification_runtime(ctx)
         static_results = self.static_analyzer.analyze()
         self._emit(ReviewEvent.STATIC_ANALYSIS_COMPLETE, {"tools": len(static_results)})
 
         all_static_issues = self._flatten_static_issues(static_results)
+        ctx.scope_summary = {
+            "mode": self.config.mode.value,
+            "workflow": self._resolve_workflow_name() or "legacy",
+            "target_path": self.config.target_path,
+            "target_type": self._runtime_target_type(),
+            "complexity": self._runtime_complexity(ctx),
+            "static_issue_count": len(all_static_issues),
+        }
+        artifact_store.write_scope(ctx.scope_summary)
+        if self._route_review_request(
+            ctx,
+            static_issue_count=len(all_static_issues),
+            workflow_name=self._resolve_workflow_name(),
+        ):
+            artifact_store.write_summary(
+                "# MUSCLE Review Summary\n\n- Escalated to host planner before semantic review.\n"
+            )
+            return ctx
 
         supplemental_context = ""
         if self.config.fetch_sources:
@@ -906,11 +1112,27 @@ class ReviewController:
             complexity=self._runtime_complexity(ctx),
             target_type=self._runtime_target_type(),
             supplemental_context=supplemental_context,
+            artifact_store=artifact_store,
+            trace_reasons=self._base_trace_reasons(),
         )
         ctx.issues = self._filter_by_severity(semantic_issues)
+        ctx.raw_issues = list(semantic_issues)
         ctx.stats.valid_issues = len(ctx.issues)
         if isinstance(summary, dict):
             ctx.stats.tokens_used += int(summary.get("token_usage", 0))
+        artifact_store.write_synthesis(ctx.issues, summary if isinstance(summary, dict) else {})
+        artifact_store.write_summary(
+            self._build_summary_markdown(
+                workflow_name=self._resolve_workflow_name() or "legacy",
+                scope=ctx.scope_summary or {},
+                synthesized_issues=ctx.issues,
+                fix_payload={
+                    "verified": ctx.stats.auto_fixed,
+                    "remaining_issues": len(ctx.unfixed_issues or ctx.issues),
+                },
+                validation_payload={"status": "review-only", "performed": False},
+            )
+        )
 
         self._emit(ReviewEvent.SEMANTIC_REVIEW_COMPLETE, {"issues": len(ctx.issues)})
 
@@ -992,6 +1214,29 @@ class ReviewController:
         if ctx.stats.fixed_issues > 0:
             re_review = self.static_analyzer.analyze()
             self._emit(ReviewEvent.FIX_VERIFIED, {"remaining_issues": len(re_review)})
+        artifact_store = self._ensure_artifact_store(ctx)
+        validation_payload = self._validate_post_fix_state(ctx)
+        artifact_store.write_fixes(
+            {
+                "applied": [review_issue_to_dict(issue) for issue in ctx.fixed_issues],
+                "failed": [review_issue_to_dict(issue) for issue in ctx.unfixed_issues],
+                "verified": ctx.stats.fixed_issues,
+                "remaining_issues": validation_payload["remaining_issues"],
+            }
+        )
+        artifact_store.write_validation(validation_payload)
+        artifact_store.write_summary(
+            self._build_summary_markdown(
+                workflow_name=self._resolve_workflow_name() or "review-fix-verify",
+                scope=ctx.scope_summary or {},
+                synthesized_issues=ctx.issues,
+                fix_payload={
+                    "verified": ctx.stats.fixed_issues,
+                    "remaining_issues": validation_payload["remaining_issues"],
+                },
+                validation_payload=validation_payload,
+            )
+        )
 
         return ctx
 
@@ -1055,12 +1300,34 @@ class ReviewController:
                     logger.warning(f"Fix application failed: {e}")
 
         ctx.stats.fixed_issues = fixed_count
+        artifact_store = self._ensure_artifact_store(ctx)
+        validation_payload = self._validate_post_fix_state(ctx)
+        artifact_store.write_fixes(
+            {
+                "applied": [review_issue_to_dict(issue) for issue in ctx.fixed_issues],
+                "failed": [review_issue_to_dict(issue) for issue in ctx.unfixed_issues],
+                "verified": ctx.stats.fixed_issues,
+                "remaining_issues": validation_payload["remaining_issues"],
+            }
+        )
+        artifact_store.write_validation(validation_payload)
+        artifact_store.write_summary(
+            self._build_summary_markdown(
+                workflow_name=self._resolve_workflow_name() or "review-fix-verify",
+                scope=ctx.scope_summary or {},
+                synthesized_issues=ctx.issues,
+                fix_payload={
+                    "verified": ctx.stats.fixed_issues,
+                    "remaining_issues": validation_payload["remaining_issues"],
+                },
+                validation_payload=validation_payload,
+            )
+        )
 
         return ctx
 
     def _run_pressure_mode(self, ctx: ReviewContext) -> ReviewContext:
-        artifact_store = ReviewArtifactStore(self.project_path, ctx.session_id)
-        ctx.artifact_dir = artifact_store.artifact_dir
+        artifact_store = self._ensure_artifact_store(ctx)
         static_results = self.static_analyzer.analyze()
         self._emit(ReviewEvent.STATIC_ANALYSIS_COMPLETE, {"tools": len(static_results)})
 
@@ -1086,6 +1353,16 @@ class ReviewController:
             }
             ext = ext_map.get(lang, ".py")
             files_to_review = list(target.rglob(f"*{ext}"))
+        ctx.scope_summary = {
+            "mode": self.config.mode.value,
+            "workflow": self._resolve_workflow_name() or "pressure-review",
+            "target_path": self.config.target_path,
+            "target_type": self._runtime_target_type(),
+            "complexity": self._runtime_complexity(ctx),
+            "source_files": [str(path) for path in files_to_review],
+            "static_tool_count": len(static_results),
+        }
+        artifact_store.write_scope(ctx.scope_summary)
 
         issues_lock = Lock()
         found_issues: list[ReviewIssue] = []
@@ -1101,11 +1378,20 @@ class ReviewController:
                         cached_content,
                         pressure_focus,
                         artifact_store=artifact_store,
+                        challenge_mode=self.config.pressure_challenge,
+                        telemetry_session_id=ctx.session_id,
+                        workflow_name=self._resolve_workflow_name(),
+                        review_mode=self.config.mode.value,
+                        language=self.config.language,
+                        complexity=self._runtime_complexity(ctx),
+                        target_type=self._runtime_target_type(),
+                        trace_reasons=self._base_trace_reasons(),
                     )
                     summary = pressure_result.get("summary", {})
                     if isinstance(summary, dict):
                         token_usage = int(summary.get("token_usage", 0))
                     findings = pressure_result.get("pressure_findings", [])
+                    source_agent = f"pressure:{self.config.pressure_challenge or 'default'}"
                     for finding in findings:
                         severity_str = finding.get("severity", "MEDIUM")
                         severity = self._parse_pressure_severity(severity_str)
@@ -1122,6 +1408,7 @@ class ReviewController:
                                     code_snippet=finding.get("code_snippet", ""),
                                     suggested_fix=finding.get("suggested_approach"),
                                     auto_fixable=False,
+                                    source_agent=source_agent,
                                 )
                             )
             except Exception as e:
@@ -1141,7 +1428,28 @@ class ReviewController:
                     logger.warning(f"Pressure review failed: {e}")
 
         ctx.issues = found_issues
+        ctx.raw_issues = list(found_issues)
+        ctx.agent_findings = {
+            f"pressure:{self.config.pressure_challenge or 'default'}": list(found_issues)
+        }
         ctx.stats.valid_issues = len(ctx.issues)
+        artifact_store.write_agent_findings(ctx.agent_findings)
+        artifact_store.write_synthesis(
+            ctx.issues,
+            {
+                "challenge_mode": self.config.pressure_challenge or "default",
+                "total": len(ctx.issues),
+            },
+        )
+        artifact_store.write_summary(
+            self._build_summary_markdown(
+                workflow_name=self._resolve_workflow_name() or "pressure-review",
+                scope=ctx.scope_summary or {},
+                synthesized_issues=ctx.issues,
+                fix_payload={"verified": 0, "remaining_issues": len(ctx.issues)},
+                validation_payload={"status": "pressure-only", "performed": False},
+            )
+        )
         self._emit(ReviewEvent.SEMANTIC_REVIEW_COMPLETE, {"issues": len(ctx.issues)})
 
         if ctx.issues:

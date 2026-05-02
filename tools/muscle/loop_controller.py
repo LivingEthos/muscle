@@ -25,8 +25,10 @@ from typing import Any
 
 from .adapters.git_adapter import GitAdapter
 from .delegation_metrics import DelegationEvent, DelegationMetrics
+from .escalation import EscalationRecord, EscalationRecorder
 from .interactive import InteractiveChoice, InteractiveHandler
 from .m27_client import TokenUsage
+from .routing import Recommendation, TaskRouter
 from .self_improver import SelfImprover
 from .types import (
     BudgetInfo,
@@ -80,6 +82,7 @@ class LoopContext:
     start_time: float = field(default_factory=time.time)
     last_evaluation: EvaluationResult | None = None
     user_hint: str | None = None
+    delegation_route: dict[str, Any] | None = None
 
 
 class LoopController:
@@ -105,6 +108,7 @@ class LoopController:
         interactive: InteractiveHandler | None = None,
         session_manager: Any = None,
         project_memory: Any = None,
+        m27_client: Any = None,
     ):
         self.config = config
         self.code_generator = code_generator
@@ -118,12 +122,55 @@ class LoopController:
         self.interactive = interactive or InteractiveHandler(enabled=config.interactive)
         self._session_manager = session_manager
         self._project_memory = project_memory
+        self._m27_client = m27_client
         self._abort_requested = False
         self._session_report: SessionReport | None = None
         self._git_commit: str | None = None
         self._self_improver = SelfImprover()
         self._running: bool = False
         self._budget_overspend_emitted: bool = False
+
+    @staticmethod
+    def _snapshot_output_files(output_path: Path) -> dict[str, str]:
+        cache_names = {
+            "__pycache__",
+            "node_modules",
+            "dist",
+            "build",
+            "muscle-main",
+        }
+        if not output_path.exists() or not output_path.is_dir():
+            return {}
+
+        snapshot: dict[str, str] = {}
+        root = output_path.resolve()
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(
+                name for name in dirnames if name not in cache_names and not name.startswith(".")
+            )
+            current_dir = Path(dirpath)
+            for filename in sorted(filenames):
+                path = current_dir / filename
+                if path.name.endswith(".pyc") or path.is_symlink():
+                    continue
+                try:
+                    snapshot[path.relative_to(root).as_posix()] = hashlib.sha256(
+                        path.read_bytes()
+                    ).hexdigest()
+                except OSError as exc:
+                    logger.warning("Could not snapshot generated artifact %s: %s", path, exc)
+        return snapshot
+
+    def _has_budget_for(self, token_cost: int) -> tuple[bool, str | None]:
+        if token_cost <= 0 or not self.budget_manager:
+            return True, None
+        owner = getattr(self.budget_manager, "__self__", None)
+        fixed_limit = getattr(owner, "fixed_limit", None)
+        mode = getattr(owner, "mode", None)
+        if fixed_limit is not None and getattr(mode, "value", None) != "unlimited":
+            if fixed_limit > 0 and fixed_limit < token_cost:
+                return False, "Budget exceeded"
+        return True, None
 
     def _emit(self, event: LoopEvent, data: dict) -> None:
         if self.event_callback:
@@ -147,8 +194,16 @@ class LoopController:
                 DelegationEvent(
                     session_id=ctx.session_id,
                     entry_point="run",
+                    task_tier=(ctx.delegation_route or {}).get("tier"),
                     m27_tokens_in=ctx.stats.total_tokens,
                     m27_tokens_out=0,
+                    escalations_emitted=int(
+                        bool(
+                            ctx.delegation_route
+                            and ctx.delegation_route.get("recommended")
+                            == Recommendation.ESCALATE_TO_HOST.value
+                        )
+                    ),
                 )
             )
         except Exception as exc:
@@ -322,6 +377,10 @@ class LoopController:
         )
 
         ctx.stats.total_tokens += usage.total
+        budget_ok, budget_reason = self._check_budget(usage.total)
+        if not budget_ok:
+            self._abort_requested = True
+            logger.warning("Budget exceeded during strategy evolution: %s", budget_reason)
         self._emit(LoopEvent.EVOLUTION_END, {"strategy": evolved[:100], "tokens": usage.total})
 
         return evolved
@@ -371,23 +430,7 @@ class LoopController:
         self._emit(LoopEvent.GENERATION_START, {"strategy": ctx.evolved_strategy})
 
         output_path = Path(ctx.config.output_dir)
-        cache_names = {
-            ".pytest_cache",
-            ".ruff_cache",
-            "__pycache__",
-            ".mypy_cache",
-            ".tox",
-            ".coverage",
-            "node_modules",
-        }
-        pre_existing = set()
-        if output_path.exists() and output_path.is_dir():
-            pre_existing = {
-                p.name
-                for p in output_path.iterdir()
-                if not (p.is_dir() and p.name in cache_names)
-                and not (p.is_file() and p.name.endswith(".pyc"))
-            }
+        pre_snapshot = self._snapshot_output_files(output_path)
 
         if streaming_callback:
             gen_streaming = getattr(self.code_generator, "generate_streaming", None)
@@ -404,6 +447,8 @@ class LoopController:
                 generate_streaming_kwargs: dict[str, Any] = {}
                 if self._supports_kwarg(gen_streaming, "progress_callback"):
                     generate_streaming_kwargs["progress_callback"] = on_stream_chunk
+                if self._supports_kwarg(gen_streaming, "language"):
+                    generate_streaming_kwargs["language"] = ctx.config.language
 
                 for chunk, usage in gen_streaming(
                     effective_task,
@@ -421,6 +466,8 @@ class LoopController:
                 generate_kwargs: dict[str, Any] = {}
                 if self._supports_kwarg(self.code_generator, "session_id"):
                     generate_kwargs["session_id"] = ctx.session_id
+                if self._supports_kwarg(self.code_generator, "language"):
+                    generate_kwargs["language"] = ctx.config.language
                 code_output, gen_usage = self.code_generator(
                     effective_task,
                     ctx.evolved_strategy or "",
@@ -431,6 +478,8 @@ class LoopController:
             generate_kwargs = {}
             if self._supports_kwarg(self.code_generator, "session_id"):
                 generate_kwargs["session_id"] = ctx.session_id
+            if self._supports_kwarg(self.code_generator, "language"):
+                generate_kwargs["language"] = ctx.config.language
             code_output, gen_usage = self.code_generator(
                 effective_task,
                 ctx.evolved_strategy or "",
@@ -438,7 +487,6 @@ class LoopController:
                 **generate_kwargs,
             )
 
-        ctx.stats.total_tokens += gen_usage.total
         self._emit(LoopEvent.GENERATION_END, {"tokens": gen_usage.total})
 
         self._emit(LoopEvent.EVALUATION_START, {})
@@ -454,22 +502,17 @@ class LoopController:
         ctx.last_evaluation = evaluation
         duration = time.time() - iter_start
 
-        post_files: set[str] = set()
-        if output_path.exists() and output_path.is_dir():
-            post_files = {
-                p.name
-                for p in output_path.iterdir()
-                if not (p.is_dir() and p.name in cache_names)
-                and not (p.is_file() and p.name.endswith(".pyc"))
-            }
-        new_files = sorted(post_files - pre_existing)
+        post_snapshot = self._snapshot_output_files(output_path)
+        changed_files = sorted(
+            path for path, digest in post_snapshot.items() if pre_snapshot.get(path) != digest
+        )
 
         result = IterationResult(
             iteration=iter_num,
             success=False,
             token_cost=gen_usage.total,
             duration_seconds=duration,
-            files_generated=new_files,
+            files_generated=changed_files,
         )
 
         if evaluation.passed or (self.config.allow_warnings and evaluation.has_warnings_only):
@@ -557,6 +600,57 @@ class LoopController:
         except OSError:
             pass
 
+    def _route_run_request(self, ctx: LoopContext) -> bool:
+        if self._m27_client is None:
+            return False
+        try:
+            decision = TaskRouter(self._m27_client).route(
+                (
+                    f"task={self.config.task}; language={self.config.language or 'auto'}; "
+                    f"eval_mode={self.config.eval_mode.value}; output_dir={self.config.output_dir}; "
+                    f"max_iterations={self.config.max_iterations}"
+                ),
+                scope=Path(self.config.output_dir),
+            )
+        except Exception as exc:
+            logger.warning("Task routing failed for run session %s: %s", ctx.session_id, exc)
+            return False
+
+        ctx.delegation_route = {
+            "tier": decision.tier.value,
+            "recommended": decision.recommended.value,
+            "confidence": decision.confidence,
+            "rationale": decision.rationale,
+            "from_cache": decision.from_cache,
+        }
+        if decision.recommended != Recommendation.ESCALATE_TO_HOST:
+            return False
+
+        project_path = str(
+            getattr(self._project_memory, "project_path", Path(self.config.output_dir).resolve())
+        )
+        artifact_path = EscalationRecorder(project_path).emit(
+            EscalationRecord(
+                session_id=ctx.session_id,
+                reason="task_route_escalation",
+                source_module="loop_controller",
+                issue_summary=(
+                    f"Run request escalated to host planner: tier={decision.tier.value}, "
+                    f"confidence={decision.confidence:.2f}, rationale={decision.rationale}"
+                ),
+                attempt_count=1,
+            )
+        )
+        self._emit(
+            LoopEvent.SESSION_ABORT,
+            {
+                "reason": f"Escalated to host planner ({artifact_path})",
+                "route": ctx.delegation_route,
+            },
+        )
+        ctx.stats.status = SessionStatus.ABORTED
+        return True
+
     def run(
         self,
         streaming_callback: Callable[[str], None] | None = None,
@@ -616,6 +710,16 @@ class LoopController:
                     },
                 )
 
+            if self._route_run_request(ctx):
+                logger.info(
+                    "Session %s escalated to host planner before first iteration", ctx.session_id
+                )
+                self._record_delegation_event(ctx)
+                self._build_session_report(ctx)
+                if self._session_manager and self._session_report:
+                    self._session_manager.save_session_report(ctx.session_id, self._session_report)
+                return ctx
+
             while True:
                 should_cont, reason = self._should_continue(ctx)
                 if not should_cont:
@@ -635,6 +739,22 @@ class LoopController:
                     else:
                         ctx.stats.status = SessionStatus.ABORTED
                         self._emit(LoopEvent.SESSION_ABORT, {"reason": "Unknown reason"})
+                    break
+
+                projected_cost = self.config.max_cost_per_iteration or 0
+                owner = getattr(self.budget_manager, "__self__", None)
+                if (
+                    projected_cost <= 0
+                    and owner is not None
+                    and hasattr(owner, "estimate_iteration_cost")
+                ):
+                    projected_cost = int(owner.estimate_iteration_cost())
+                budget_ok, budget_reason = self._has_budget_for(projected_cost)
+                if not budget_ok:
+                    ctx.stats.status = SessionStatus.BUDGET_EXCEEDED
+                    self._emit(LoopEvent.SESSION_ABORT, {"reason": budget_reason})
+                    if self.webhook_notifier and self.webhook_notifier.enabled:
+                        self.webhook_notifier.send_budget_exceeded(ctx.session_id)
                     break
 
                 ctx.current_iteration += 1

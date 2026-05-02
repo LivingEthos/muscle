@@ -1,6 +1,5 @@
 ---
 description: Install, list, or update optional model-pack overlays for the current project
-args: []
 ---
 
 Project-local memory remains authoritative. Model packs are optional overlays keyed to the resolved

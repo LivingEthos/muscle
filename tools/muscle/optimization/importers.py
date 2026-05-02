@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -34,6 +34,15 @@ class ImportSummary:
     provider: str
     sessions_imported: int = 0
     turns_imported: int = 0
+    new_turn_ids: list[int] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable summary."""
+        return {
+            "sessions_imported": self.sessions_imported,
+            "turns_imported": self.turns_imported,
+            "new_turn_ids": list(self.new_turn_ids),
+        }
 
 
 class ExternalBenchmarkImporter:
@@ -45,8 +54,23 @@ class ExternalBenchmarkImporter:
 
     def import_sessions(self, provider: str, since_days: int = 30) -> dict[str, dict[str, int]]:
         """Import Claude and/or Codex sessions tied to this project."""
+        detailed = self.import_sessions_with_deltas(provider=provider, since_days=since_days)
+        return {
+            provider_name: {
+                "sessions_imported": int(summary.get("sessions_imported", 0) or 0),
+                "turns_imported": int(summary.get("turns_imported", 0) or 0),
+            }
+            for provider_name, summary in detailed.items()
+        }
+
+    def import_sessions_with_deltas(
+        self,
+        provider: str,
+        since_days: int = 30,
+    ) -> dict[str, dict[str, Any]]:
+        """Import sessions and return per-provider delta information."""
         cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, since_days))
-        summaries: dict[str, dict[str, int]] = {}
+        summaries: dict[str, dict[str, Any]] = {}
         providers = ["claude", "codex"] if provider == "all" else [provider]
         for provider_name in providers:
             if provider_name == "claude":
@@ -55,10 +79,7 @@ class ExternalBenchmarkImporter:
                 summary = self._import_codex(cutoff)
             else:
                 continue
-            summaries[provider_name] = {
-                "sessions_imported": summary.sessions_imported,
-                "turns_imported": summary.turns_imported,
-            }
+            summaries[provider_name] = summary.as_dict()
         return summaries
 
     def _import_codex(self, cutoff: datetime) -> ImportSummary:
@@ -77,9 +98,10 @@ class ExternalBenchmarkImporter:
             if imported["session_imported"]:
                 summary.sessions_imported += 1
             summary.turns_imported += imported["turns_imported"]
+            summary.new_turn_ids.extend(imported.get("new_turn_ids", []))
         return summary
 
-    def _import_codex_file(self, file_path: Path) -> dict[str, int]:
+    def _import_codex_file(self, file_path: Path) -> dict[str, Any]:
         try:
             lines = [
                 json.loads(line)
@@ -117,6 +139,7 @@ class ExternalBenchmarkImporter:
         pending_tools: list[str] = []
         pending_user_text = ""
         turns_imported = 0
+        new_turn_ids: list[int] = []
         for entry in lines:
             payload = entry.get("payload", {})
             if entry.get("type") == "response_item" and payload.get("type") == "function_call":
@@ -171,8 +194,13 @@ class ExternalBenchmarkImporter:
             )
             if inserted:
                 turns_imported += 1
+                new_turn_ids.append(inserted)
             pending_tools = []
-        return {"session_imported": 1, "turns_imported": turns_imported}
+        return {
+            "session_imported": 1,
+            "turns_imported": turns_imported,
+            "new_turn_ids": new_turn_ids,
+        }
 
     def _import_claude(self, cutoff: datetime) -> ImportSummary:
         claude_root = Path(
@@ -190,9 +218,10 @@ class ExternalBenchmarkImporter:
             if imported["session_imported"]:
                 summary.sessions_imported += 1
             summary.turns_imported += imported["turns_imported"]
+            summary.new_turn_ids.extend(imported.get("new_turn_ids", []))
         return summary
 
-    def _import_claude_file(self, file_path: Path) -> dict[str, int]:
+    def _import_claude_file(self, file_path: Path) -> dict[str, Any]:
         try:
             entries = [
                 json.loads(line)
@@ -217,6 +246,7 @@ class ExternalBenchmarkImporter:
 
         pending_user_message = ""
         turns_imported = 0
+        new_turn_ids: list[int] = []
         for entry in entries:
             if entry.get("type") == "user":
                 pending_user_message = self._extract_user_text(entry)
@@ -258,7 +288,12 @@ class ExternalBenchmarkImporter:
             )
             if inserted:
                 turns_imported += 1
-        return {"session_imported": 1, "turns_imported": turns_imported}
+                new_turn_ids.append(inserted)
+        return {
+            "session_imported": 1,
+            "turns_imported": turns_imported,
+            "new_turn_ids": new_turn_ids,
+        }
 
     def _matches_project(self, external_cwd: str) -> bool:
         if not external_cwd:

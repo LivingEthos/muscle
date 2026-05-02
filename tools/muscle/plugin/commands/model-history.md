@@ -1,6 +1,5 @@
 ---
 description: Show recent resolved model identity history for the current project
-args: []
 ---
 
 Inspect recent model identity resolution events for this project.

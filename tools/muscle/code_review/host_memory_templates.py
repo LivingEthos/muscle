@@ -43,7 +43,7 @@ Once you've decided what needs to happen, write a concise plan and hand executio
 
 Keep the planning with you. Do not ask MUSCLE to plan the work. Do not do the bulk execution yourself. When MUSCLE reports back, integrate and decide — cite the MUSCLE session id so follow-ups stay linked. If MUSCLE's output is clearly off-target on a novel problem (empty pattern memory, low confidence across findings), fall back to direct reasoning.
 
-_These commands require the MUSCLE plugin to be active in this project (install via `muscle install`). Without it, reason directly._
+_These commands require the MUSCLE plugin bundle to be active in this project (for example, the Claude or Codex plugin bundle under `tools/muscle/plugin`). Without it, reason directly._
 
 ### Effort & Tool Guidance
 - On Claude Code (Opus 4.7): run MUSCLE fix-application flows at `xhigh` effort; summarization-only at `high`. In auto mode, proceed through delegations without confirmation prompts.

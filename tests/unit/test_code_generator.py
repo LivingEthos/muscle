@@ -302,6 +302,34 @@ class TestGenerateRetryLogic:
 
         assert mock_client.chat.called
 
+    def test_generation_prompt_and_cache_key_include_language(self, gen_with_retry, tmp_path):
+        """Requested language must reach both prompt text and cache lookup."""
+        from tools.muscle.cost_optimizer import CostOptimizer
+
+        generator, mock_client = gen_with_retry
+        cost_opt = Mock(spec=CostOptimizer)
+        cost_opt.get_from_cache.return_value = None
+        cost_opt.estimate_tier.return_value = "medium"
+        cost_opt.get_max_tokens.return_value = 4096
+        generator.cost_optimizer = cost_opt
+        generator.max_retries = 1
+        mock_client.chat.return_value = (
+            "```typescript\n// index.ts\nconst value: number = 1;\n```",
+            TokenUsage(10, 5),
+        )
+
+        generator.generate(
+            task="make a value",
+            evolved_strategy="",
+            output_dir=str(tmp_path),
+            language="typescript",
+        )
+
+        cache_key = cost_opt.get_from_cache.call_args.args[0]
+        prompt = mock_client.chat.call_args.kwargs["messages"][0]["content"]
+        assert "language=typescript" in cache_key
+        assert "Language: typescript" in prompt
+
 
 class TestParseAndWrite:
     """Tests for _parse_and_write() edge cases."""

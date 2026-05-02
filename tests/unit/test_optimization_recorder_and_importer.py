@@ -138,11 +138,12 @@ def test_codex_importer_is_project_scoped_and_idempotent(tmp_path: Path, monkeyp
     )
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
-    first = importer.import_sessions(provider="codex", since_days=30)
+    detailed_first = importer.import_sessions_with_deltas(provider="codex", since_days=30)
     second = importer.import_sessions(provider="codex", since_days=30)
 
-    assert first["codex"]["sessions_imported"] == 1
-    assert first["codex"]["turns_imported"] == 1
+    assert detailed_first["codex"]["sessions_imported"] == 1
+    assert detailed_first["codex"]["turns_imported"] == 1
+    assert len(detailed_first["codex"]["new_turn_ids"]) == 1
     assert second["codex"]["turns_imported"] == 0
     sessions = pm.list_external_benchmark_sessions(str(project_path), provider="codex")
     assert len(sessions) == 1

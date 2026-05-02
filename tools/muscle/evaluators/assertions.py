@@ -67,7 +67,12 @@ class BenchmarkEvaluator(BaseEvaluator):
                             f"Benchmark too slow: {time_value}ms > {self.max_time_seconds * 1000}ms"
                         )
 
-        return EvaluatorResult(success=len(errors) == 0, errors=errors, output=stdout)
+        return EvaluatorResult(
+            success=len(errors) == 0,
+            errors=errors,
+            output=stdout,
+            evidence=self.last_command_evidence,
+        )
 
 
 class OutputFormatEvaluator(BaseEvaluator):

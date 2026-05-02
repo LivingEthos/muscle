@@ -83,10 +83,20 @@ class TokenUsage:
         return self.input_tokens + self.output_tokens
 
 
+@dataclass(frozen=True)
+class StructuredCallMetadata:
+    """Metadata about one `chat_structured` execution."""
+
+    usage: TokenUsage
+    cache_hit: bool = False
+    cache_key: str | None = None
+    tokens_saved_estimate: int = 0
+
+
 class RateLimiter:
     def __init__(self, calls_per_second: float = 10.0):
-        self.calls_per_second = calls_per_second
-        self.min_interval = 1.0 / calls_per_second
+        self.calls_per_second = max(0.1, calls_per_second)
+        self.min_interval = 1.0 / self.calls_per_second
         self.last_call = 0.0
         self.lock = threading.Lock()
 
@@ -241,24 +251,72 @@ class M27Client:
         self._last_request_time: float | None = None
         self._telemetry_sink: Any | None = None
         self._model_identity: dict[str, Any] = {}
-        self._cache_db_path: Path | None = cache_db_path
+        from .response_cache import DEFAULT_DB
+
+        self._cache_db_path: Path | None = cache_db_path or DEFAULT_DB
         self._cache_pack_id: str | None = cache_pack_id
+        self._structured_metrics_lock = threading.Lock()
+        self._structured_cache_hits = 0
+        self._structured_cache_tokens_saved = 0
 
     def _configure_limiters(self, rate_limit: float | None, max_concurrent: int | None) -> None:
         with M27Client._init_lock:
-            if M27Client._rate_limiter is None:
-                env_rate = float(os.environ.get("MUSCLE_RATE_LIMIT", "10.0"))
-                env_concurrent = int(os.environ.get("MUSCLE_MAX_CONCURRENT", "5"))
+            env_rate = self._parse_positive_float_env("MUSCLE_RATE_LIMIT", 10.0)
+            env_concurrent = self._parse_positive_int_env("MUSCLE_MAX_CONCURRENT", 5)
 
-                M27Client._rate_limit = rate_limit if rate_limit is not None else env_rate
-                M27Client._max_concurrent = (
-                    max_concurrent if max_concurrent is not None else env_concurrent
-                )
+            requested_rate = max(0.1, rate_limit if rate_limit is not None else env_rate)
+            requested_concurrent = max(
+                1,
+                max_concurrent if max_concurrent is not None else env_concurrent,
+            )
 
+            if (
+                M27Client._rate_limiter is None
+                or M27Client._rate_limit != requested_rate
+                or M27Client._max_concurrent != requested_concurrent
+            ):
+                if M27Client._rate_limiter is not None:
+                    logger.info(
+                        "Reconfiguring M27 limiters: rate=%s concurrency=%s",
+                        requested_rate,
+                        requested_concurrent,
+                    )
+                M27Client._rate_limit = requested_rate
+                M27Client._max_concurrent = requested_concurrent
                 M27Client._rate_limiter = RateLimiter(calls_per_second=M27Client._rate_limit)
                 M27Client._concurrency_limiter = ConcurrencyLimiter(
                     max_concurrent=M27Client._max_concurrent
                 )
+
+    @staticmethod
+    def _parse_positive_float_env(name: str, default: float) -> float:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            value = float(raw)
+        except ValueError:
+            logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+            return default
+        if value <= 0:
+            logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+            return default
+        return value
+
+    @staticmethod
+    def _parse_positive_int_env(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+            return default
+        if value <= 0:
+            logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+            return default
+        return value
 
     def _get_headers(self) -> dict:
         return {
@@ -889,6 +947,26 @@ class M27Client:
     def reset_rate_limits(self) -> None:
         self._rate_limit_errors = 0
 
+    def _ensure_structured_metrics_state(self) -> None:
+        if not hasattr(self, "_structured_metrics_lock"):
+            self._structured_metrics_lock = threading.Lock()
+        if not hasattr(self, "_structured_cache_hits"):
+            self._structured_cache_hits = 0
+        if not hasattr(self, "_structured_cache_tokens_saved"):
+            self._structured_cache_tokens_saved = 0
+
+    def consume_structured_cache_metrics(self) -> dict[str, int]:
+        """Return and reset aggregate structured-call cache metrics."""
+        self._ensure_structured_metrics_state()
+        with self._structured_metrics_lock:
+            metrics = {
+                "cache_hits": self._structured_cache_hits,
+                "cache_tokens_saved": self._structured_cache_tokens_saved,
+            }
+            self._structured_cache_hits = 0
+            self._structured_cache_tokens_saved = 0
+            return metrics
+
     def chat_structured(
         self,
         schema: type[Any],
@@ -896,6 +974,8 @@ class M27Client:
         system: str = "",
         max_tokens: int = 4096,
         retries: int = 2,
+        telemetry_context: TelemetryContext | None = None,
+        include_metadata: bool = False,
     ) -> Any:
         """Call M2.7, parse response as JSON, validate against Pydantic schema.
 
@@ -929,22 +1009,42 @@ class M27Client:
             cached = cache.get(cache_key)
             if cached is not None:
                 logger.debug("ResponseCache hit for chat_structured key=%s", cache_key[:12])
-                return schema.model_validate(cached)
+                self._ensure_structured_metrics_state()
+                with self._structured_metrics_lock:
+                    self._structured_cache_hits += 1
+                    self._structured_cache_tokens_saved += max_tokens
+                validated = schema.model_validate(cached)
+                metadata = StructuredCallMetadata(
+                    usage=TokenUsage(),
+                    cache_hit=True,
+                    cache_key=cache_key,
+                    tokens_saved_estimate=max_tokens,
+                )
+                if include_metadata:
+                    return validated, metadata
+                return validated
 
         last_error: Exception | None = None
         working_messages = list(messages)
 
         for attempt in range(retries + 1):
-            response_text, _ = self.chat(
+            response_text, usage = self.chat(
                 messages=working_messages,
                 system=system_with_schema,
                 max_tokens=max_tokens,
                 temperature=0.1,
+                telemetry_context=telemetry_context,
             )
             parsed_text = _strip_json_fences(response_text)
             try:
                 data = json.loads(parsed_text)
                 validated = schema.model_validate(data)
+                if telemetry_context is not None:
+                    self.update_telemetry_call(
+                        telemetry_context.call_id,
+                        parse_success=True,
+                        validation_success=True,
+                    )
                 # --- Cache store on success ---
                 if cache is not None and cache_key is not None:
                     cache.put(
@@ -953,9 +1053,23 @@ class M27Client:
                         response=data,
                         ttl_seconds=M27Client.DEFAULT_CACHE_TTL,
                     )
+                metadata = StructuredCallMetadata(
+                    usage=usage,
+                    cache_hit=False,
+                    cache_key=cache_key,
+                )
+                if include_metadata:
+                    return validated, metadata
                 return validated
             except (json.JSONDecodeError, ValidationError) as e:
                 last_error = e
+                if telemetry_context is not None:
+                    self.update_telemetry_call(
+                        telemetry_context.call_id,
+                        parse_success=not isinstance(e, json.JSONDecodeError),
+                        validation_success=not isinstance(e, ValidationError),
+                        metadata_updates={"schema_error": str(e)},
+                    )
                 if attempt < retries:
                     working_messages.append({"role": "assistant", "content": response_text})
                     working_messages.append(

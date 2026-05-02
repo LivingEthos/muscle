@@ -1,25 +1,16 @@
 ---
 description: Run MUSCLE benchmark comparisons across review strategies
-args:
-  - name: baseline
-    description: "Baseline reviewer: legacy, review-smart, or review-comprehensive"
-    required: false
-  - name: candidate
-    description: "Candidate workflow: review-smart, review-comprehensive, or review-fix-verify"
-    required: false
-  - name: suite
-    description: "Fixture suite: all, core-review, neutral-baseline, related-project, unrelated-project, or model-pack"
-    required: false
-  - name: enforce-gates
-    description: "Fail the command if release gates or focused offline guardrails fail"
-    required: false
+argument-hint: "[baseline] [candidate] [suite] [--enforce-gates]"
 ---
 
 Run the manual benchmark harness. Execute:
 
 ```bash
-muscle long-eval benchmark ${baseline:+--baseline "$baseline"} ${candidate:+--candidate "$candidate"}
+muscle long-eval benchmark
 ```
+
+If the user specifies baseline or candidate workflows, append `--baseline <baseline>` and
+`--candidate <candidate>`.
 
 To focus on one fixture family:
 

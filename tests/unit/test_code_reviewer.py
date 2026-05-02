@@ -11,6 +11,19 @@ from unittest.mock import MagicMock
 from tools.muscle.code_review.code_reviewer import CodeReviewer
 from tools.muscle.code_review.review_artifacts import ReviewArtifactStore
 from tools.muscle.code_review.types import IssueCategory, PressureFocus, ReviewConfig, Severity
+from tools.muscle.m27_client import M27StructuredError, StructuredCallMetadata, TokenUsage
+from tools.muscle.structured_io import ReviewFindings
+
+
+def _structured_metadata(
+    total_tokens: int = 0,
+    *,
+    cache_hit: bool = False,
+) -> StructuredCallMetadata:
+    return StructuredCallMetadata(
+        usage=TokenUsage(input_tokens=0, output_tokens=total_tokens),
+        cache_hit=cache_hit,
+    )
 
 
 class TestParseSeverity:
@@ -161,7 +174,10 @@ class TestReviewFile:
                 },
             }
         )
-        mock_m27.chat.return_value = (response, MagicMock(total=100))
+        mock_m27.chat_structured.return_value = (
+            ReviewFindings.model_validate_json(response),
+            _structured_metadata(100),
+        )
         reviewer = CodeReviewer(mock_m27)
 
         reviews, summary = reviewer._review_file("test.py", "x = 1", [])
@@ -174,8 +190,14 @@ class TestReviewFile:
 
     def test_review_file_with_fenced_json_response(self):
         mock_m27 = MagicMock()
-        response = '```json\n{"reviews": [], "summary": {"total_reviewed": 0, "valid_issues": 0, "false_positives": 0, "intentional": 0, "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}}\n```'
-        mock_m27.chat.return_value = (response, MagicMock(total=50))
+        mock_m27.chat_structured.return_value = (
+            ReviewFindings.model_validate_json(
+                '{"reviews": [], "summary": {"total_reviewed": 0, "valid_issues": 0, '
+                '"false_positives": 0, "intentional": 0, "critical": 0, "high": 0, '
+                '"medium": 0, "low": 0, "info": 0}}'
+            ),
+            _structured_metadata(50),
+        )
         reviewer = CodeReviewer(mock_m27)
 
         reviews, summary = reviewer._review_file("test.py", "x = 1", [])
@@ -203,7 +225,10 @@ class TestReviewFile:
                 },
             }
         )
-        mock_m27.chat.return_value = (response, MagicMock(total=50))
+        mock_m27.chat_structured.return_value = (
+            ReviewFindings.model_validate_json(response),
+            _structured_metadata(50),
+        )
         reviewer = CodeReviewer(mock_m27)
 
         reviews, summary = reviewer._review_file("test.py", "x = 1", [])
@@ -212,7 +237,7 @@ class TestReviewFile:
 
     def test_review_file_empty_response_returns_empty(self):
         mock_m27 = MagicMock()
-        mock_m27.chat.return_value = ("", MagicMock(total=0))
+        mock_m27.chat_structured.side_effect = M27StructuredError("empty")
         reviewer = CodeReviewer(mock_m27)
 
         reviews, summary = reviewer._review_file("test.py", "x = 1", [{"line": 1}])
@@ -221,7 +246,7 @@ class TestReviewFile:
 
     def test_review_file_invalid_json_returns_empty(self):
         mock_m27 = MagicMock()
-        mock_m27.chat.return_value = ("not valid json {{{", MagicMock(total=0))
+        mock_m27.chat_structured.side_effect = M27StructuredError("invalid")
         reviewer = CodeReviewer(mock_m27)
 
         reviews, summary = reviewer._review_file("test.py", "x = 1", [{"line": 1}])
@@ -230,19 +255,22 @@ class TestReviewFile:
 
     def test_review_file_retries_on_empty_response(self):
         mock_m27 = MagicMock()
-        mock_m27.chat.side_effect = [
-            ("", MagicMock(total=0)),
-            ("", MagicMock(total=0)),
+        mock_m27.chat_structured.side_effect = [
+            M27StructuredError("empty"),
             (
-                '{"reviews": [], "summary": {"total_reviewed": 0, "valid_issues": 0, "false_positives": 0, "intentional": 0, "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}}',
-                MagicMock(total=50),
+                ReviewFindings.model_validate_json(
+                    '{"reviews": [], "summary": {"total_reviewed": 0, "valid_issues": 0, '
+                    '"false_positives": 0, "intentional": 0, "critical": 0, "high": 0, '
+                    '"medium": 0, "low": 0, "info": 0}}'
+                ),
+                _structured_metadata(50),
             ),
         ]
         reviewer = CodeReviewer(mock_m27)
 
         reviews, summary = reviewer._review_file("test.py", "x = 1", [])
         assert reviews == []
-        assert mock_m27.chat.call_count == 3
+        assert mock_m27.chat_structured.call_count == 1
 
     def test_review_file_proactive_mode(self):
         mock_m27 = MagicMock()
@@ -274,7 +302,10 @@ class TestReviewFile:
                 },
             }
         )
-        mock_m27.chat.return_value = (response, MagicMock(total=100))
+        mock_m27.chat_structured.return_value = (
+            ReviewFindings.model_validate_json(response),
+            _structured_metadata(100),
+        )
         reviewer = CodeReviewer(mock_m27)
 
         reviews, summary = reviewer._review_file("test.py", "x = 1", [], proactive=True)
@@ -288,9 +319,13 @@ class TestReview:
         test_file.write_text("x = 1\ny = 2\n")
 
         mock_m27 = MagicMock()
-        mock_m27.chat.return_value = (
-            '{"reviews": [], "summary": {"total_reviewed": 2, "valid_issues": 0, "false_positives": 2, "intentional": 0, "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}}',
-            MagicMock(total=50),
+        mock_m27.chat_structured.return_value = (
+            ReviewFindings.model_validate_json(
+                '{"reviews": [], "summary": {"total_reviewed": 2, "valid_issues": 0, '
+                '"false_positives": 2, "intentional": 0, "critical": 0, "high": 0, '
+                '"medium": 0, "low": 0, "info": 0}}'
+            ),
+            _structured_metadata(50),
         )
         reviewer = CodeReviewer(mock_m27)
 
@@ -299,13 +334,17 @@ class TestReview:
             {"file_path": "sample.py", "line": 2, "message": "unused variable"},
         ]
         reviews, summary = reviewer.review(str(tmp_path), issues)
-        assert mock_m27.chat.called
+        assert mock_m27.chat_structured.called
 
     def test_review_with_no_issues_and_no_files(self, tmp_path):
         mock_m27 = MagicMock()
-        mock_m27.chat.return_value = (
-            '{"reviews": [], "summary": {"total_reviewed": 0, "valid_issues": 0, "false_positives": 0, "intentional": 0, "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}}',
-            MagicMock(total=50),
+        mock_m27.chat_structured.return_value = (
+            ReviewFindings.model_validate_json(
+                '{"reviews": [], "summary": {"total_reviewed": 0, "valid_issues": 0, '
+                '"false_positives": 0, "intentional": 0, "critical": 0, "high": 0, '
+                '"medium": 0, "low": 0, "info": 0}}'
+            ),
+            _structured_metadata(50),
         )
         reviewer = CodeReviewer(mock_m27)
 
@@ -318,9 +357,13 @@ class TestReview:
         test_file.write_text("x = 1\n")
 
         mock_m27 = MagicMock()
-        mock_m27.chat.return_value = (
-            '{"reviews": [], "summary": {"total_reviewed": 0, "valid_issues": 0, "false_positives": 0, "intentional": 0, "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}}',
-            MagicMock(total=50),
+        mock_m27.chat_structured.return_value = (
+            ReviewFindings.model_validate_json(
+                '{"reviews": [], "summary": {"total_reviewed": 0, "valid_issues": 0, '
+                '"false_positives": 0, "intentional": 0, "critical": 0, "high": 0, '
+                '"medium": 0, "low": 0, "info": 0}}'
+            ),
+            _structured_metadata(50),
         )
         reviewer = CodeReviewer(mock_m27)
 
@@ -333,12 +376,15 @@ class TestReview:
 
         mock_m27 = MagicMock()
         response_text = '{"reviews": [], "summary": {"total_reviewed": 5, "valid_issues": 0, "false_positives": 5, "intentional": 0, "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}}'
-        mock_m27.chat.return_value = (response_text, MagicMock(total=50))
+        mock_m27.chat_structured.return_value = (
+            ReviewFindings.model_validate_json(response_text),
+            _structured_metadata(50),
+        )
         reviewer = CodeReviewer(mock_m27, max_issues_per_batch=3)
 
         issues = [{"file_path": "sample.py", "line": i} for i in range(1, 6)]
         reviewer.review(str(test_file), issues)
-        assert mock_m27.chat.call_count == 1
+        assert mock_m27.chat_structured.call_count == 1
 
 
 class TestPressureReview:
@@ -368,7 +414,10 @@ class TestPressureReview:
                 },
             }
         )
-        mock_m27.chat.return_value = (response, MagicMock(total=150))
+        mock_m27.chat_structured.return_value = (
+            MagicMock(model_dump=lambda: json.loads(response)),
+            _structured_metadata(150),
+        )
         reviewer = CodeReviewer(mock_m27)
 
         focus = PressureFocus(
@@ -387,10 +436,74 @@ class TestPressureReview:
         assert len(result["pressure_findings"]) == 1
         assert result["pressure_findings"][0]["severity"] == "HIGH"
 
+    def test_pressure_review_fragility_challenge_normalizes_hardening_guidance(self):
+        mock_m27 = MagicMock()
+        mock_m27.chat_structured.return_value = (
+            MagicMock(
+                model_dump=lambda: {
+                    "pressure_findings": [
+                        {
+                            "file_path": "test.py",
+                            "line_number": 7,
+                            "severity": "MEDIUM",
+                            "title": "Retry storm after harmless refactor",
+                            "description": "The retry budget depends on call ordering.",
+                            "incident_title": "Retries overwhelm downstream service",
+                            "fragility_type": "ordering_dependency",
+                            "plausible_triggering_change": "Move the retry hook below logging.",
+                            "failure_surface": "Timeouts spike and duplicate writes appear.",
+                            "hardening_suggestions": [
+                                "Make retries idempotent.",
+                                "Persist retry state before side effects.",
+                            ],
+                            "challenge_question": "What guarantees the ordering here?",
+                        }
+                    ],
+                    "summary": {
+                        "total_examined": 1,
+                        "critical_findings": 0,
+                        "high_findings": 0,
+                        "concerns_addressed": 0,
+                        "confidence_score": 6,
+                    },
+                }
+            ),
+            _structured_metadata(120),
+        )
+        reviewer = CodeReviewer(mock_m27)
+
+        result = reviewer.pressure_review(
+            "test.py",
+            "if should_retry:\n    run_once()\n",
+            PressureFocus(failure_modes=True, reliability=True),
+            challenge_mode="fragility",
+            telemetry_session_id="sess-1",
+            review_mode="pressure",
+        )
+
+        assert result["summary"]["challenge_mode"] == "fragility"
+        assert result["pressure_findings"][0]["finding_type"] == "fragility"
+        assert result["pressure_findings"][0]["suggested_approach"].startswith(
+            "Make retries idempotent."
+        )
+
     def test_pressure_review_with_fenced_json(self):
         mock_m27 = MagicMock()
-        response = '```json\n{"pressure_findings": [], "summary": {"total_examined": 0, "critical_findings": 0, "high_findings": 0, "concerns_addressed": 0, "confidence_score": 0}}\n```'
-        mock_m27.chat.return_value = (response, MagicMock(total=50))
+        mock_m27.chat_structured.return_value = (
+            MagicMock(
+                model_dump=lambda: {
+                    "pressure_findings": [],
+                    "summary": {
+                        "total_examined": 0,
+                        "critical_findings": 0,
+                        "high_findings": 0,
+                        "concerns_addressed": 0,
+                        "confidence_score": 0,
+                    },
+                }
+            ),
+            _structured_metadata(50),
+        )
         reviewer = CodeReviewer(mock_m27)
 
         focus = PressureFocus()
@@ -399,7 +512,7 @@ class TestPressureReview:
 
     def test_pressure_review_empty_response(self):
         mock_m27 = MagicMock()
-        mock_m27.chat.return_value = ("", MagicMock(total=0))
+        mock_m27.chat_structured.side_effect = M27StructuredError("empty")
         reviewer = CodeReviewer(mock_m27)
 
         focus = PressureFocus()
@@ -409,10 +522,7 @@ class TestPressureReview:
 
     def test_pressure_review_invalid_json_fails_closed(self, tmp_path):
         mock_m27 = MagicMock()
-        mock_m27.chat.return_value = (
-            '{"pressure_findings": [{"title": "Found it", "severity": "HIGH"',
-            MagicMock(total=50),
-        )
+        mock_m27.chat_structured.side_effect = M27StructuredError("invalid pressure response")
         reviewer = CodeReviewer(mock_m27)
         artifact_store = ReviewArtifactStore(str(tmp_path), "sess-1")
 
@@ -430,7 +540,10 @@ class TestPressureReview:
     def test_pressure_review_all_focus_areas(self):
         mock_m27 = MagicMock()
         response = '{"pressure_findings": [], "summary": {"total_examined": 0, "critical_findings": 0, "high_findings": 0, "concerns_addressed": 0, "confidence_score": 0}}'
-        mock_m27.chat.return_value = (response, MagicMock(total=50))
+        mock_m27.chat_structured.return_value = (
+            MagicMock(model_dump=lambda: json.loads(response)),
+            _structured_metadata(50),
+        )
         reviewer = CodeReviewer(mock_m27)
 
         focus = PressureFocus(
@@ -445,12 +558,15 @@ class TestPressureReview:
         )
         result = reviewer.pressure_review("test.py", "x = 1", focus)
         assert "pressure_findings" in result
-        assert mock_m27.chat.called
+        assert mock_m27.chat_structured.called
 
     def test_pressure_review_no_focus_defaults_to_general(self):
         mock_m27 = MagicMock()
         response = '{"pressure_findings": [], "summary": {"total_examined": 0, "critical_findings": 0, "high_findings": 0, "concerns_addressed": 0, "confidence_score": 0}}'
-        mock_m27.chat.return_value = (response, MagicMock(total=50))
+        mock_m27.chat_structured.return_value = (
+            MagicMock(model_dump=lambda: json.loads(response)),
+            _structured_metadata(50),
+        )
         reviewer = CodeReviewer(mock_m27)
 
         focus = PressureFocus()
@@ -497,7 +613,10 @@ class TestCR05MaxIssuesPerBatch:
                 },
             }
         )
-        mock_m27.chat.return_value = (empty_response, MagicMock(total=10))
+        mock_m27.chat_structured.return_value = (
+            ReviewFindings.model_validate_json(empty_response),
+            _structured_metadata(10),
+        )
 
         # Construct reviewer with a very small batch limit
         reviewer = CodeReviewer(mock_m27, max_issues_per_batch=3)
@@ -509,9 +628,8 @@ class TestCR05MaxIssuesPerBatch:
         reviewer.review(str(test_file), issues)
 
         # The M2.7 call must have been made (batch not empty after truncation)
-        assert mock_m27.chat.call_count == 1
-        # The user-prompt argument must contain at most 3 issues
-        call_args = mock_m27.chat.call_args
+        assert mock_m27.chat_structured.call_count == 1
+        call_args = mock_m27.chat_structured.call_args
         messages = call_args.kwargs.get("messages") or call_args.args[0]
         user_message = next(m["content"] for m in messages if m["role"] == "user")
         # The truncated issues list should contain exactly 3 entries

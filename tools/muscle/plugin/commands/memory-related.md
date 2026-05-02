@@ -1,6 +1,5 @@
 ---
 description: Show the most related MUSCLE projects that can share provisional lessons
-args: []
 ---
 
 Suggest related MUSCLE projects for this repo without importing anything automatically.

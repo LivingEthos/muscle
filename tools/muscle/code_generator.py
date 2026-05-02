@@ -163,6 +163,7 @@ class CodeGenerator:
         output_dir: str,
         project_structure: str | None = None,
         session_id: str | None = None,
+        language: str | None = None,
     ) -> tuple[str, TokenUsage]:
         if not task or not task.strip():
             logger.error("Empty task provided to generate()")
@@ -195,6 +196,7 @@ class CodeGenerator:
             safe_task,
             trimmed_strategy,
             trimmed_structure,
+            language,
         )
         if self.cost_optimizer:
             cached = self.cost_optimizer.get_from_cache(cache_lookup_task)
@@ -222,7 +224,7 @@ class CodeGenerator:
             safe_task,
             trimmed_strategy,
             str(output_path),
-            None,
+            language,
             trimmed_structure,
         )
         base_context_strategy = (
@@ -319,9 +321,12 @@ class CodeGenerator:
         task: str,
         evolved_strategy: str,
         project_structure: str | None,
+        language: str | None = None,
     ) -> str:
         """Build a stable cache key payload that includes retry-relevant generation context."""
         cache_parts = [f"task={task.strip()}"]
+        if language and language.strip():
+            cache_parts.append(f"language={language.strip().lower()}")
         if evolved_strategy.strip():
             cache_parts.append(f"strategy={evolved_strategy.strip()}")
         if project_structure and project_structure.strip():
@@ -465,12 +470,13 @@ class CodeGenerator:
         output_dir: str,
         progress_callback: Callable[[str], None] | None = None,
         project_structure: str | None = None,
+        language: str | None = None,
     ) -> Iterator[tuple[str, TokenUsage]]:
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
         user_prompt = _build_user_prompt(
-            task, evolved_strategy, output_dir, None, project_structure
+            task, evolved_strategy, output_dir, language, project_structure
         )
 
         logger.info(f"Generating code for task: {task[:50]}... (streaming)")

@@ -37,6 +37,7 @@ class DelegationEvent:
     cache_tokens_saved: int = 0
     pack_id: str | None = None
     pack_reused: bool = False
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -49,6 +50,7 @@ class DelegationReport:
     escalation_rate: float = 0.0
     estimated_host_tokens_avoided: int = 0
     m27_usd_cents: int = 0
+    route_breakdown: dict[str, dict[str, float | int]] = field(default_factory=dict)
 
 
 class DelegationMetrics:
@@ -74,10 +76,10 @@ class DelegationMetrics:
                     """INSERT INTO delegation_events
                        (session_id, created_at, task_tier, entry_point,
                         m27_tokens_in, m27_tokens_out, m27_usd_cents,
-                        verifications_run, verifications_failed,
-                        escalations_emitted, cache_hits, cache_tokens_saved,
-                        pack_id, pack_reused)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       verifications_run, verifications_failed,
+                       escalations_emitted, cache_hits, cache_tokens_saved,
+                        pack_id, pack_reused, metadata_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         event.session_id,
                         datetime.now(timezone.utc).isoformat(),
@@ -93,6 +95,7 @@ class DelegationMetrics:
                         event.cache_tokens_saved,
                         event.pack_id,
                         1 if event.pack_reused else 0,
+                        json.dumps(event.metadata, sort_keys=True),
                     ),
                 )
         except sqlite3.OperationalError:
@@ -112,7 +115,7 @@ class DelegationMetrics:
             with self._connect() as conn:
                 rows = conn.execute(
                     """SELECT task_tier, m27_tokens_in, m27_tokens_out, m27_usd_cents,
-                          cache_hits, cache_tokens_saved, escalations_emitted
+                          cache_hits, cache_tokens_saved, escalations_emitted, metadata_json
                    FROM delegation_events
                    WHERE created_at >= ?""",
                     (cutoff.isoformat(),),
@@ -130,11 +133,45 @@ class DelegationMetrics:
             rpt.m27_tokens_by_tier[tier] = rpt.m27_tokens_by_tier.get(tier, 0) + r[1] + r[2]
             rpt.m27_usd_cents += r[3]
             rpt.cache_tokens_saved += r[5]
+            metadata = _load_json_dict(r[7] if len(r) > 7 else None)
+            route_key = str(metadata.get("route_recommended") or "unknown")
+            route_bucket = rpt.route_breakdown.setdefault(
+                route_key,
+                {
+                    "events": 0,
+                    "cache_tokens_saved": 0,
+                    "verification_failures": 0,
+                    "verification_verified": 0,
+                    "avg_route_confidence": 0.0,
+                },
+            )
+            route_bucket["events"] = _as_int(route_bucket["events"]) + 1
+            route_bucket["cache_tokens_saved"] = _as_int(
+                route_bucket["cache_tokens_saved"]
+            ) + _as_int(metadata.get("token_savings_signal", 0))
+            verification_status = str(metadata.get("verification_status") or "")
+            if verification_status == "verification_failed":
+                route_bucket["verification_failures"] = (
+                    _as_int(route_bucket["verification_failures"]) + 1
+                )
+            if verification_status == "verified":
+                route_bucket["verification_verified"] = (
+                    _as_int(route_bucket["verification_verified"]) + 1
+                )
+            route_bucket["avg_route_confidence"] = _as_float(
+                route_bucket["avg_route_confidence"]
+            ) + (_as_float(metadata.get("route_confidence", 0.0)))
 
         total = rpt.total_events
         rpt.cache_hit_rate = sum(r[4] for r in rows) / total if total else 0.0
         total_escalations = sum(1 for r in rows if r[6] > 0)
         rpt.escalation_rate = total_escalations / total if total else 0.0
+        for route_bucket in rpt.route_breakdown.values():
+            events = _as_int(route_bucket["events"]) or 1
+            route_bucket["avg_route_confidence"] = round(
+                _as_float(route_bucket["avg_route_confidence"]) / events,
+                3,
+            )
 
         avg = HOST_TOKEN_ESTIMATES.get(host_model, 8000)
         rpt.estimated_host_tokens_avoided = total * avg
@@ -161,6 +198,16 @@ class DelegationMetrics:
                 "  avoided (NOT measured):",
             ]
         )
+        if rpt.route_breakdown:
+            lines.extend(["", "Route outcomes:"])
+            for route_name, route_stats in sorted(rpt.route_breakdown.items()):
+                lines.append(
+                    "  "
+                    f"{route_name:20s} events={int(route_stats['events']):>3} "
+                    f"verified={int(route_stats['verification_verified']):>3} "
+                    f"failed={int(route_stats['verification_failures']):>3} "
+                    f"saved={int(route_stats['cache_tokens_saved']):>6}"
+                )
         return "\n".join(lines)
 
     def format_json(self, rpt: DelegationReport) -> str:
@@ -175,6 +222,43 @@ class DelegationMetrics:
                 "cache_tokens_saved": rpt.cache_tokens_saved,
                 "escalation_rate": rpt.escalation_rate,
                 "estimated_host_tokens_avoided": rpt.estimated_host_tokens_avoided,
+                "route_breakdown": rpt.route_breakdown,
             },
             indent=2,
         )
+
+
+def _load_json_dict(raw: str | None) -> dict[str, object]:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _as_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
+def _as_float(value: object) -> float:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    return 0.0

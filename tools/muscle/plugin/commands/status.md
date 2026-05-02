@@ -1,6 +1,5 @@
 ---
 description: Show MUSCLE status including recent long evaluation reports
-args: []
 ---
 
 Show MUSCLE status. Execute:
@@ -10,6 +9,18 @@ muscle status
 ```
 
 Displays whether MUSCLE is enabled and the current project configuration.
+
+To refresh external catchup and regenerate `.muscle/active-review.md` before reading status:
+
+```bash
+muscle status --refresh
+```
+
+To diagnose manifests, hooks, and snapshot freshness in more detail:
+
+```bash
+muscle doctor --refresh
+```
 
 To see recent long evaluation reports:
 

@@ -57,21 +57,21 @@ These rules must remain true through every phase:
 The following foundation is already implemented in the current repo:
 
 - [x] additive migration for cross-project learning:
-  [tools/muscle/migrations/_0010_cross_project_learning.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/migrations/_0010_cross_project_learning.py)
+  [tools/muscle/migrations/_0010_cross_project_learning.py](tools/muscle/migrations/_0010_cross_project_learning.py)
 - [x] global system database:
-  [tools/muscle/system_db.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/system_db.py)
+  [tools/muscle/system_db.py](tools/muscle/system_db.py)
 - [x] project fingerprinting and relatedness scoring:
-  [tools/muscle/project_fingerprint.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/project_fingerprint.py)
+  [tools/muscle/project_fingerprint.py](tools/muscle/project_fingerprint.py)
 - [x] conservative model identity resolver:
-  [tools/muscle/model_identity.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/model_identity.py)
+  [tools/muscle/model_identity.py](tools/muscle/model_identity.py)
 - [x] lesson resolution across local, related, model-pack, and global tiers:
-  [tools/muscle/lesson_resolver.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/lesson_resolver.py)
+  [tools/muscle/lesson_resolver.py](tools/muscle/lesson_resolver.py)
 - [x] local model-pack export, install, update, and draft PR submission:
-  [tools/muscle/model_packs.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/model_packs.py)
+  [tools/muscle/model_packs.py](tools/muscle/model_packs.py)
 - [x] CLI and plugin command surface for related memory and model operations:
-  [tools/muscle/cli.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/cli.py)
+  [tools/muscle/cli.py](tools/muscle/cli.py)
   and
-  [tools/muscle/plugin/commands](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/plugin/commands)
+  [tools/muscle/plugin/commands](tools/muscle/plugin/commands)
 - [x] targeted tests for migrations, CLI flows, resolver behavior, plugin docs,
   and GitHub submission support
 
@@ -161,9 +161,9 @@ Implementation steps:
    names, repo names, or project-specific identifiers.
 3. Add a reason code for each rejected lesson.
 4. Use the scrubber in:
-   [tools/muscle/project_memory.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/project_memory.py)
+   [tools/muscle/project_memory.py](tools/muscle/project_memory.py)
    import flows and
-   [tools/muscle/model_packs.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/model_packs.py)
+   [tools/muscle/model_packs.py](tools/muscle/model_packs.py)
    export flows.
 5. Record scrubber decisions in metadata for auditability.
 
@@ -189,15 +189,15 @@ Acceptance criteria:
 Implementation notes:
 
 - implemented shared scrubber module:
-  [tools/muscle/transferable_lesson_scrubber.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/transferable_lesson_scrubber.py)
+  [tools/muscle/transferable_lesson_scrubber.py](tools/muscle/transferable_lesson_scrubber.py)
 - wired shared scrubbing into related-project snapshot imports in
-  [tools/muscle/project_memory.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/project_memory.py)
+  [tools/muscle/project_memory.py](tools/muscle/project_memory.py)
   with deterministic rejection reasons and action-log audit events
 - wired the same scrubber into model-pack candidate export in
-  [tools/muscle/model_packs.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/model_packs.py)
+  [tools/muscle/model_packs.py](tools/muscle/model_packs.py)
   so export and import enforce the same portability rules
 - added focused verification in
-  [tests/unit/test_cross_project_learning.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tests/unit/test_cross_project_learning.py)
+  [tests/unit/test_cross_project_learning.py](tests/unit/test_cross_project_learning.py)
   covering portable lesson preservation, deterministic rejection, related-project
   import filtering, and model-pack export audit logging
 
@@ -250,24 +250,24 @@ Acceptance criteria:
 Implementation notes:
 
 - added shared optimization-layer prompt assembly in
-  [tools/muscle/optimization/prompt_context.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/optimization/prompt_context.py)
+  [tools/muscle/optimization/prompt_context.py](tools/muscle/optimization/prompt_context.py)
   with one interface for lesson-aware prompt composition and telemetry context creation
 - extended
-  [tools/muscle/lesson_resolver.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/lesson_resolver.py)
+  [tools/muscle/lesson_resolver.py](tools/muscle/lesson_resolver.py)
   with explicit render budgets, per-tier token caps, and usage recording only for
   lessons that actually make it into the rendered prompt
 - routed generation, evolve, review, fix, and handoff flows through the shared
   optimization path in:
-  [tools/muscle/code_generator.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/code_generator.py),
-  [tools/muscle/evolver.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/evolver.py),
-  [tools/muscle/code_review/code_reviewer.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/code_review/code_reviewer.py),
-  [tools/muscle/code_review/fix_generator.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/code_review/fix_generator.py),
+  [tools/muscle/code_generator.py](tools/muscle/code_generator.py),
+  [tools/muscle/evolver.py](tools/muscle/evolver.py),
+  [tools/muscle/code_review/code_reviewer.py](tools/muscle/code_review/code_reviewer.py),
+  [tools/muscle/code_review/fix_generator.py](tools/muscle/code_review/fix_generator.py),
   and
-  [tools/muscle/code_review/handoff_generator.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/code_review/handoff_generator.py)
+  [tools/muscle/code_review/handoff_generator.py](tools/muscle/code_review/handoff_generator.py)
 - added focused tests in
-  [tests/unit/test_optimization_prompt_context.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tests/unit/test_optimization_prompt_context.py)
+  [tests/unit/test_optimization_prompt_context.py](tests/unit/test_optimization_prompt_context.py)
   and expanded
-  [tests/unit/test_cross_project_learning.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tests/unit/test_cross_project_learning.py)
+  [tests/unit/test_cross_project_learning.py](tests/unit/test_cross_project_learning.py)
   to cover explicit render budgets and usage accounting
 
 Validation evidence:
@@ -312,18 +312,18 @@ Acceptance criteria:
 Implementation notes:
 
 - expanded project fingerprinting in
-  [tools/muscle/project_fingerprint.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/project_fingerprint.py)
+  [tools/muscle/project_fingerprint.py](tools/muscle/project_fingerprint.py)
   to infer languages more conservatively and detect common framework ecosystems
   from richer manifest and config-file signals
 - added overlap explanations with explicit shared languages, frameworks,
   dependencies, and archetype markers so relatedness is explainable rather than
   a single opaque score
 - extended the global catalog in
-  [tools/muscle/system_db.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/system_db.py)
+  [tools/muscle/system_db.py](tools/muscle/system_db.py)
   to mark stale registrations when listed and to prune missing or stale project
   registrations explicitly
 - updated
-  [tools/muscle/cli.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/cli.py)
+  [tools/muscle/cli.py](tools/muscle/cli.py)
   so related-project commands refresh the current project fingerprint, can prune
   stale catalog entries, show traceable overlap reasons in CLI output, and
   expose an explicit `memory refresh-catalog` maintenance command
@@ -377,19 +377,19 @@ Acceptance criteria:
 Implementation notes:
 
 - extended
-  [tools/muscle/project_memory.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/project_memory.py)
+  [tools/muscle/project_memory.py](tools/muscle/project_memory.py)
   with lesson-usage outcome updates, related-lesson outcome application, and
   explicit manual confirmation or rejection support
 - wired successful and failed fix verification in
-  [tools/muscle/code_review/review_controller.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/code_review/review_controller.py)
+  [tools/muscle/code_review/review_controller.py](tools/muscle/code_review/review_controller.py)
   to record positive and negative evidence for related lessons used in review
   and fix stages
 - wired successful and failed generation iterations in
-  [tools/muscle/loop_controller.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/loop_controller.py)
+  [tools/muscle/loop_controller.py](tools/muscle/loop_controller.py)
   to record positive and negative evidence for related lessons used during
   generation
 - added explicit CLI feedback capture in
-  [tools/muscle/cli.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/cli.py)
+  [tools/muscle/cli.py](tools/muscle/cli.py)
   so a user can confirm or reject a transferred lesson directly
 
 Validation evidence:
@@ -434,16 +434,16 @@ Acceptance criteria:
 Implementation notes:
 
 - extended
-  [tools/muscle/project_memory.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/project_memory.py)
+  [tools/muscle/project_memory.py](tools/muscle/project_memory.py)
   with explicit recommendation logic for transferred lessons, including
   project-first thresholds for `observe`, `promote`, and `archive`, plus
   decision and action-log provenance for promotion and archival events
 - tightened
-  [tools/muscle/lesson_resolver.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/lesson_resolver.py)
+  [tools/muscle/lesson_resolver.py](tools/muscle/lesson_resolver.py)
   so only active provisional or validated transferred lessons participate in
   prompt context; archived and already promoted external lessons are excluded
 - added reviewable CLI flows in
-  [tools/muscle/cli.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/cli.py)
+  [tools/muscle/cli.py](tools/muscle/cli.py)
   for `memory promotion-candidates`, `memory promote-lesson`, and
   `memory archive-lesson`, and expanded `memory status` with transferred-lesson
   lifecycle counts and candidate totals
@@ -490,22 +490,22 @@ Acceptance criteria:
 Implementation notes:
 
 - extended
-  [tools/muscle/project_memory.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/project_memory.py)
+  [tools/muscle/project_memory.py](tools/muscle/project_memory.py)
   with human-readable transferred-lesson status explanations plus explicit audit
   entries for related-project import, attach, unlink, and transferred-lesson
   validation transitions
 - added shared audit rendering in
-  [tools/muscle/audit_presenter.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/audit_presenter.py)
+  [tools/muscle/audit_presenter.py](tools/muscle/audit_presenter.py)
   so CLI and TUI surfaces use the same compact provenance-aware wording
 - expanded
-  [tools/muscle/cli.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/cli.py)
+  [tools/muscle/cli.py](tools/muscle/cli.py)
   memory status and history views to show transferred-lesson snapshots,
   lifecycle explanations, and external-lesson audit trails with source-project
   provenance
 - extended
-  [tools/muscle/tui/data_provider.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/tui/data_provider.py)
+  [tools/muscle/tui/data_provider.py](tools/muscle/tui/data_provider.py)
   and
-  [tools/muscle/tui/views.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/tui/views.py)
+  [tools/muscle/tui/views.py](tools/muscle/tui/views.py)
   so the Knowledge view shows external overlays and the Audit view renders the
   same provenance summaries as the CLI
 
@@ -557,36 +557,36 @@ Acceptance criteria:
 Implementation notes:
 
 - added additive telemetry schema migration:
-  [tools/muscle/migrations/_0011_llm_call_model_identity.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/migrations/_0011_llm_call_model_identity.py)
+  [tools/muscle/migrations/_0011_llm_call_model_identity.py](tools/muscle/migrations/_0011_llm_call_model_identity.py)
   plus migration registration in
-  [tools/muscle/migrations/__init__.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/migrations/__init__.py)
+  [tools/muscle/migrations/__init__.py](tools/muscle/migrations/__init__.py)
   so `llm_calls` now stores first-class requested label, provider endpoint,
   provider fingerprint, canonical model key, identity source, confidence, and
   manual-override fields
 - extended
-  [tools/muscle/project_memory.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/project_memory.py)
+  [tools/muscle/project_memory.py](tools/muscle/project_memory.py)
   to persist and self-heal the new llm-call identity columns for drifted
   databases instead of relying on metadata JSON only
 - extended
-  [tools/muscle/optimization/recorder.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/optimization/recorder.py)
+  [tools/muscle/optimization/recorder.py](tools/muscle/optimization/recorder.py)
   and
-  [tools/muscle/m27_client.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/m27_client.py)
+  [tools/muscle/m27_client.py](tools/muscle/m27_client.py)
   so the client attaches resolved model identity once at runtime and all
   telemetry writes carry both configured and canonical model identity
 - wired the runtime attach point in
-  [tools/muscle/cli.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/cli.py)
+  [tools/muscle/cli.py](tools/muscle/cli.py)
   so optimization-enabled sessions set the client identity centrally
 - updated
-  [tools/muscle/optimization/optimizer.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/optimization/optimizer.py)
+  [tools/muscle/optimization/optimizer.py](tools/muscle/optimization/optimizer.py)
   to prefer canonical-model buckets when building context and token-savings
   comparisons, preventing one model family from polluting another model's
   optimization history when canonical identity is available
 - added focused validation in:
-  [tests/unit/test_m27_client.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tests/unit/test_m27_client.py),
-  [tests/unit/test_optimization_recorder_and_importer.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tests/unit/test_optimization_recorder_and_importer.py),
-  [tests/unit/test_optimization_optimizer.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tests/unit/test_optimization_optimizer.py),
+  [tests/unit/test_m27_client.py](tests/unit/test_m27_client.py),
+  [tests/unit/test_optimization_recorder_and_importer.py](tests/unit/test_optimization_recorder_and_importer.py),
+  [tests/unit/test_optimization_optimizer.py](tests/unit/test_optimization_optimizer.py),
   and
-  [tests/unit/test_project_memory_migrations.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tests/unit/test_project_memory_migrations.py)
+  [tests/unit/test_project_memory_migrations.py](tests/unit/test_project_memory_migrations.py)
   for persistence, repair, and optimizer bucketing behavior
 
 Validation evidence:
@@ -628,7 +628,7 @@ Acceptance criteria:
 Implementation notes:
 
 - extended
-  [tools/muscle/model_identity.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/model_identity.py)
+  [tools/muscle/model_identity.py](tools/muscle/model_identity.py)
   with trusted provider-response introspection helpers for MiniMax, Anthropic,
   OpenAI, and Google, using first-party endpoint ownership plus provider-declared
   response model names to map onto canonical MUSCLE model keys
@@ -637,18 +637,18 @@ Implementation notes:
   spoofed response payloads, and manual overrides still outrank any introspected
   response evidence
 - extended
-  [tools/muscle/m27_client.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/m27_client.py)
+  [tools/muscle/m27_client.py](tools/muscle/m27_client.py)
   so successful non-streaming and streaming responses can refine model identity
   from trustworthy provider payloads without adding new network calls
 - extended
-  [tools/muscle/optimization/recorder.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/optimization/recorder.py)
+  [tools/muscle/optimization/recorder.py](tools/muscle/optimization/recorder.py)
   so introspected identity upgrades are persisted into model-identity history
   through the existing background recorder
 - added focused validation in
-  [tests/unit/test_cross_project_learning.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tests/unit/test_cross_project_learning.py),
-  [tests/unit/test_m27_client.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tests/unit/test_m27_client.py),
+  [tests/unit/test_cross_project_learning.py](tests/unit/test_cross_project_learning.py),
+  [tests/unit/test_m27_client.py](tests/unit/test_m27_client.py),
   and
-  [tests/unit/test_optimization_recorder_and_importer.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tests/unit/test_optimization_recorder_and_importer.py)
+  [tests/unit/test_optimization_recorder_and_importer.py](tests/unit/test_optimization_recorder_and_importer.py)
   for trusted introspection, spoofed/untrusted fallback, manual-override
   precedence, and persisted history writes
 
@@ -689,29 +689,29 @@ Acceptance criteria:
 Implementation notes:
 
 - added shared compatibility and schema enforcement in
-  [tools/muscle/model_pack_validation.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/model_pack_validation.py)
+  [tools/muscle/model_pack_validation.py](tools/muscle/model_pack_validation.py)
   covering canonical model key parsing, model-family/version compatibility,
   lesson schema validation, allowed safety scopes, and portability rules
 - extended
-  [tools/muscle/model_packs.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/model_packs.py)
+  [tools/muscle/model_packs.py](tools/muscle/model_packs.py)
   so export, install, and update all validate manifests and lessons, reject
   incompatible bundles for the current project model when known, and ensure
   exported lessons always receive at least one applicability tag
 - extended
-  [tools/muscle/system_db.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/system_db.py)
+  [tools/muscle/system_db.py](tools/muscle/system_db.py)
   so direct pack persistence cannot bypass lesson-schema or metadata validation
 - extended
-  [tools/muscle/lesson_resolver.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/lesson_resolver.py)
+  [tools/muscle/lesson_resolver.py](tools/muscle/lesson_resolver.py)
   so model-pack lessons are gated by safety scope at runtime and review-only
   lessons no longer leak into generation stages
 - extended
-  [tools/muscle/cli.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tools/muscle/cli.py)
+  [tools/muscle/cli.py](tools/muscle/cli.py)
   so install and update surface validation failures as CLI errors instead of
   silently accepting incompatible or malformed bundles
 - added focused validation in
-  [tests/unit/test_cross_project_learning.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tests/unit/test_cross_project_learning.py)
+  [tests/unit/test_cross_project_learning.py](tests/unit/test_cross_project_learning.py)
   and
-  [tests/unit/test_cli_model_memory.py](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/tests/unit/test_cli_model_memory.py)
+  [tests/unit/test_cli_model_memory.py](tests/unit/test_cli_model_memory.py)
   for incompatible-family rejection, missing scope tags, invalid portability,
   runtime stage gating, and CLI bundle mismatch failures
 
@@ -1078,9 +1078,9 @@ Validation evidence:
   `project_memory.db`, shared `system.db`, live TUI history/knowledge/audit
   visibility, and the current runtime/operator boundaries
 - added release notes in
-  [docs/release-notes-2026-04-16-project-first-growth.md](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/docs/release-notes-2026-04-16-project-first-growth.md)
+  [docs/release-notes-2026-04-16-project-first-growth.md](docs/release-notes-2026-04-16-project-first-growth.md)
   and expanded
-  [docs/migration-and-data-safety.md](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/docs/migration-and-data-safety.md)
+  [docs/migration-and-data-safety.md](docs/migration-and-data-safety.md)
   with an explicit upgrade checklist for existing users
 - aligned CLI and plugin help surfaces by updating CLI docstrings and plugin
   command docs for cancellation guidance plus model/memory history inspection

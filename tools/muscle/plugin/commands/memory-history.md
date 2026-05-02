@@ -1,6 +1,5 @@
 ---
 description: Show recent lesson usage and validation history for the current project
-args: []
 ---
 
 Inspect recent lesson-usage events for the current project.

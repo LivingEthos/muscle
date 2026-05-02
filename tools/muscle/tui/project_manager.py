@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import yaml
+
 if TYPE_CHECKING:
     pass
 
@@ -103,8 +105,8 @@ class ProjectManager:
         }
         for lang, patterns in indicators.items():
             for pattern in patterns:
-                if pattern.startswith("*."):
-                    if any(path.rglob(pattern[1:])):
+                if any(char in pattern for char in "*?[]"):
+                    if any(path.rglob(pattern)):
                         languages.append(lang)
                         break
                 elif (path / pattern).exists():
@@ -154,8 +156,7 @@ class ProjectManager:
                 "model_manual_override": config.model_manual_override,
             }
         }
-        with open(config_path, "w") as f:
-            json.dump(config_data, f, indent=2)
+        config_path.write_text(json.dumps(config_data, indent=2), encoding="utf-8")
 
     def _create_memory_files(self, muscle_dir: Path) -> None:
         claude_md = muscle_dir / CLAUDE_MEMORY
@@ -229,9 +230,19 @@ class ProjectManager:
             return None
 
         try:
-            with open(config_path) as f:
-                data = json.load(f)["project"]
-        except (json.JSONDecodeError, KeyError):
+            text = config_path.read_text(encoding="utf-8")
+            loaded = json.loads(text)
+        except json.JSONDecodeError:
+            try:
+                loaded = yaml.safe_load(text) or {}
+            except yaml.YAMLError:
+                return None
+        except OSError:
+            return None
+
+        try:
+            data = loaded["project"]
+        except (KeyError, TypeError):
             return None
 
         return ProjectConfig(
@@ -320,12 +331,20 @@ class ProjectManager:
     def detect_platform() -> str:
         import os
 
+        forced_platform = os.environ.get("MUSCLE_FORCE_PLATFORM")
+        if forced_platform:
+            return forced_platform
         if os.environ.get("OPENCODE_SESSION"):
             return "opencode"
         if os.environ.get("CLAUDE_CODE"):
             return "claude-code"
-        if os.environ.get("MUSCLE_FORCE_PLATFORM"):
-            return os.environ["MUSCLE_FORCE_PLATFORM"]
+        codex_originator = os.environ.get("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "")
+        if (
+            os.environ.get("CODEX_SHELL")
+            or os.environ.get("CODEX_THREAD_ID")
+            or codex_originator.startswith("Codex")
+        ):
+            return "codex"
         return "auto"
 
     def init_opencode_config(self, config: ProjectConfig, muscle_dir: Path) -> bool:
@@ -399,9 +418,14 @@ class ProjectManager:
             return False
 
         try:
-            with open(config_path) as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
+            text = config_path.read_text(encoding="utf-8")
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            try:
+                data = yaml.safe_load(text) or {}
+            except yaml.YAMLError:
+                return False
+        except OSError:
             return False
 
         if api_key is not None:
@@ -430,8 +454,7 @@ class ProjectManager:
         if model_manual_override is not None:
             data["project"]["model_manual_override"] = model_manual_override
 
-        with open(config_path, "w") as f:
-            json.dump(data, f, indent=2)
+        config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
         return True
 

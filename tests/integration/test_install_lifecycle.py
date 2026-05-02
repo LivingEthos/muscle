@@ -244,6 +244,17 @@ class TestProjectManagerDetection:
         with patch.dict(os.environ, env, clear=True):
             assert ProjectManager.detect_platform() == "claude-code"
 
+    def test_detect_platform_codex(self):
+        """Should detect Codex from CODEX_* env markers."""
+        env = os.environ.copy()
+        env.pop("OPENCODE_SESSION", None)
+        env.pop("CLAUDE_CODE", None)
+        env["CODEX_SHELL"] = "1"
+        env["CODEX_THREAD_ID"] = "thread-123"
+        env["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] = "Codex Desktop"
+        with patch.dict(os.environ, env, clear=True):
+            assert ProjectManager.detect_platform() == "codex"
+
 
 class TestCLIInitCommand:
     """Tests the `muscle init` CLI command."""
@@ -293,6 +304,29 @@ class TestCLIInitCommand:
         assert result.exit_code == 0
         assert (tmp_path / ".muscle").exists()
 
+    def test_init_platform_codex_creates_active_review_snapshot(self, tmp_path: Path):
+        """Codex init should persist the platform and generate active-review.md."""
+        runner = CliRunner()
+
+        with patch("tools.muscle.tui.project_manager.ProjectManager.detect_project") as mock_detect:
+            mock_detect.return_value = ProjectConfig(
+                name="codex-project",
+                path=tmp_path,
+                languages=["Python"],
+            )
+
+            result = runner.invoke(
+                cli,
+                ["init", "--non-interactive", "--platform", "codex"],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0
+        config = json.loads((tmp_path / ".muscle" / "config.yaml").read_text(encoding="utf-8"))
+        assert config["project"]["platform"] == "codex"
+        assert (tmp_path / ".muscle" / "active-review.md").exists()
+        assert "Codex plugin bundle" in result.output
+
 
 class TestCLIUninstallCommand:
     """Tests the `muscle uninstall` CLI command."""
@@ -334,6 +368,29 @@ class TestCLIUninstallCommand:
 
         assert result.exit_code == 0
         assert muscle_dir.exists()  # Should be preserved
+
+    def test_uninstall_does_not_touch_global_codex_home(self, tmp_path: Path):
+        """Uninstall should not mutate a user-global ~/.codex directory."""
+        runner = CliRunner()
+
+        muscle_dir = tmp_path / ".muscle"
+        muscle_dir.mkdir()
+        (muscle_dir / "config.yaml").write_text("{}")
+
+        codex_home = tmp_path / "home" / ".codex"
+        codex_home.mkdir(parents=True)
+        marker = codex_home / "marker.txt"
+        marker.write_text("keep me")
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            with patch("pathlib.Path.home", return_value=tmp_path / "home"):
+                result = runner.invoke(
+                    cli,
+                    ["uninstall", "--force", "--keep-config"],
+                )
+
+        assert result.exit_code == 0
+        assert marker.exists()
 
     def test_uninstall_removes_opencode_dir(self, tmp_path: Path):
         """muscle uninstall should also remove .opencode/ directory."""
@@ -380,6 +437,38 @@ class TestCLIUninstallCommand:
             )
 
         assert muscle_dir.exists()  # Should NOT be removed
+
+
+class TestDoctorAndStatusCommands:
+    """Tests doctor and refresh-aware status surfaces."""
+
+    def test_status_refresh_and_doctor(self, tmp_path: Path):
+        runner = CliRunner()
+        manager = ProjectManager(tmp_path)
+        config = ProjectConfig(name="status-project", path=tmp_path, platform="codex")
+        manager.init_project(config)
+        manager.set_project_enabled(tmp_path, True)
+        fake_home = tmp_path / "ext-home"
+        (fake_home / "sessions").mkdir(parents=True)
+        (fake_home / "claude" / "projects").mkdir(parents=True)
+
+        with patch.dict(
+            os.environ,
+            {
+                "CODEX_HOME": str(fake_home),
+                "CLAUDE_CONFIG_DIR": str(fake_home / "claude"),
+            },
+            clear=False,
+        ):
+            with patch("pathlib.Path.cwd", return_value=tmp_path):
+                status_result = runner.invoke(cli, ["status", "--refresh"], catch_exceptions=False)
+                doctor_result = runner.invoke(cli, ["doctor"], catch_exceptions=False)
+
+        assert status_result.exit_code == 0
+        assert "Active Review Snapshot" in status_result.output
+        assert "Last Catchup Summary" in status_result.output
+        assert doctor_result.exit_code == 0
+        assert "MUSCLE Doctor" in doctor_result.output
 
 
 class TestCLISettingsReset:
@@ -724,6 +813,26 @@ class TestCLIStatusCommand:
         assert "status-test" in result.output
         assert "claude-code" in result.output
         assert "Enabled" in result.output
+
+    def test_status_uses_persisted_platform_without_detection_patch(self, tmp_path: Path):
+        """muscle status should prefer .muscle/config.yaml over fresh detection defaults."""
+        runner = CliRunner()
+        manager = ProjectManager(tmp_path)
+        config = ProjectConfig(
+            name="persisted-platform-test",
+            path=tmp_path,
+            languages=["Python"],
+            platform="claude-code",
+        )
+        manager.init_project(config)
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(cli, ["status"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        assert "persisted-platform-test" in result.output
+        assert "claude-code" in result.output
+        assert "│ Platform               │ auto" not in result.output
 
     def test_status_not_initialized(self, tmp_path: Path):
         """muscle status should indicate not initialized."""

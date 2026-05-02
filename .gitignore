@@ -55,6 +55,7 @@ Thumbs.db
 .opencode/
 .serena/
 EVALUATION_REPORT.md
+muscle-main/
 
 # Claude Code / assistant working artifacts (per-session, not project state)
 .claude/

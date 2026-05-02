@@ -41,6 +41,7 @@ from .code_review.host_memory_templates import (
     SECTION_EFFORT,
     SECTION_METHODOLOGY,
 )
+from .optimization.prompt_compactor import compact_prompt_text
 
 logger = logging.getLogger(__name__)
 
@@ -408,11 +409,8 @@ Return ONLY the JSON array, nothing else."""
                 )
                 continue
 
-            # Per-file backup before write. Reuse the "claude_md" backup_type
-            # for both CLAUDE.md and AGENTS.md — BackupManager validates a fixed
-            # enum of types, and both host-memory files serve the same role.
             try:
-                self._backup_manager.create_backup("claude_md")
+                self._backup_manager.create_file_backup(target_path, "claude_md")
             except FileNotFoundError:
                 logger.warning(f"{filename} not found at {target_path}, cannot backup")
                 continue
@@ -446,6 +444,26 @@ Return ONLY the JSON array, nothing else."""
                 continue
 
         return any_written
+
+    def render_preview(
+        self,
+        *,
+        critical_rules: list[dict[str, Any]] | None = None,
+        mistake_corrections: list[dict[str, Any]] | None = None,
+        agent_calls: list[dict[str, Any]] | None = None,
+        skill_calls: list[dict[str, Any]] | None = None,
+        tooling_notes: list[str] | None = None,
+        compact_host_memory: bool = True,
+    ) -> str:
+        """Render the managed content without touching disk."""
+        return self._build_published_content(
+            critical_rules or [],
+            mistake_corrections or [],
+            agent_calls or [],
+            skill_calls or [],
+            tooling_notes or [],
+            compact_host_memory=compact_host_memory,
+        )
 
     def _update_published_section(
         self,
@@ -485,6 +503,8 @@ Return ONLY the JSON array, nothing else."""
         agent_calls: list[dict],
         skill_calls: list[dict],
         tooling_notes: list[str],
+        *,
+        compact_host_memory: bool = True,
     ) -> str:
         """Build the compact published content section.
 
@@ -508,7 +528,10 @@ Return ONLY the JSON array, nothing else."""
                 reverse=True,
             )
             for rule in sorted_rules[:MAX_SECTION_LINES]:
-                text = rule.get("text", "")
+                text = self._compile_host_memory_text(
+                    str(rule.get("text", "")),
+                    compact_host_memory=compact_host_memory,
+                )
                 score = rule.get("score", 0)
                 validated = rule.get("validated_count", 0)
                 lines.append(f"- {text} (score: {score}, validated: {validated}x)")
@@ -523,8 +546,16 @@ Return ONLY the JSON array, nothing else."""
                 reverse=True,
             )
             for mistake in sorted_mistakes[:MAX_SECTION_LINES]:
-                lines.append(f"- Avoid: {mistake.get('mistake', '')}")
-                lines.append(f"  Fix: {mistake.get('correction', '')}")
+                avoid_text = self._compile_host_memory_text(
+                    str(mistake.get("mistake", "")),
+                    compact_host_memory=compact_host_memory,
+                )
+                fix_text = self._compile_host_memory_text(
+                    str(mistake.get("correction", "")),
+                    compact_host_memory=compact_host_memory,
+                )
+                lines.append(f"- Avoid: {avoid_text}")
+                lines.append(f"  Fix: {fix_text}")
             lines.append("")
 
         # Active Agent Calls
@@ -561,10 +592,22 @@ Return ONLY the JSON array, nothing else."""
         if tooling_notes:
             lines.append(SECTION_TOOLING_NOTES)
             for note in tooling_notes[:MAX_SECTION_LINES]:
-                lines.append(f"- {note}")
+                compiled_note = self._compile_host_memory_text(
+                    note,
+                    compact_host_memory=compact_host_memory,
+                )
+                lines.append(f"- {compiled_note}")
             lines.append("")
 
         return "\n".join(lines).strip()
+
+    @staticmethod
+    def _compile_host_memory_text(text: str, *, compact_host_memory: bool) -> str:
+        """Apply safe render-time compaction without mutating stored rules."""
+        if not compact_host_memory:
+            return text
+        compacted, _ = compact_prompt_text(text)
+        return compacted
 
     def _insert_markers(self, content: str, published_content: str) -> str:
         """Insert markers with published content into CLAUDE.md."""

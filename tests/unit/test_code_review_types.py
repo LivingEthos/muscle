@@ -90,6 +90,7 @@ def test_review_config_defaults():
     assert config.max_iterations == 10
     assert config.max_fixes_per_round == 5
     assert config.timeout_seconds == 3600
+    assert config.pressure_challenge is None
 
 
 def test_review_config_custom():
@@ -103,6 +104,7 @@ def test_review_config_custom():
         timeout_seconds=7200,
         include_patterns=["*.py"],
         exclude_patterns=["test_*.py"],
+        pressure_challenge="fragility",
     )
 
     assert config.language == "python"
@@ -112,6 +114,7 @@ def test_review_config_custom():
     assert config.max_fixes_per_round == 10
     assert config.include_patterns == ["*.py"]
     assert config.exclude_patterns == ["test_*.py"]
+    assert config.pressure_challenge == "fragility"
 
 
 def test_review_mode_values():

@@ -1,6 +1,5 @@
 ---
 description: Configure canonical model selection plus related-project and model-pack policy
-args: []
 ---
 
 Project-local memory remains authoritative. Use this to control optional overlay behavior for the

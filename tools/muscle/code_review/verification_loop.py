@@ -19,14 +19,27 @@ from __future__ import annotations
 import logging
 import shutil
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from ..escalation import EscalationPolicy, EscalationRecord, EscalationRecorder
 from ..m27_client import M27Client
+from ..optimization.prompt_context import build_telemetry_context, compose_prompt_envelope
+from .review_artifacts import ReviewArtifactStore, resolve_trace_policy
 from .types import ReviewIssue
 
 logger = logging.getLogger(__name__)
+
+
+class VerificationStatus(Enum):
+    """Strict semantic verification statuses accepted from M2.7."""
+
+    VERIFIED = "VERIFIED"
+    BREAKS = "BREAKS"
+    NEEDS_WORK = "NEEDS_WORK"
+    ERROR = "ERROR"
+    UNKNOWN = "UNKNOWN"
 
 
 @dataclass
@@ -49,7 +62,7 @@ class VerificationLoop:
     auto_revert: bool = True
     _verified_fixes: list[VerificationResult] = field(default_factory=list)
     _failed_fixes: list[VerificationResult] = field(default_factory=list)
-    _runtime_context: dict[str, str | None] = field(default_factory=dict)
+    _runtime_context: dict[str, Any] = field(default_factory=dict)
 
     def configure_runtime(
         self,
@@ -60,6 +73,8 @@ class VerificationLoop:
         language: str | None = None,
         complexity: str | None = None,
         target_type: str | None = None,
+        artifact_store: ReviewArtifactStore | None = None,
+        trace_reasons: list[str] | None = None,
     ) -> None:
         """Attach runtime metadata used for telemetry on verification calls."""
         self._runtime_context = {
@@ -70,6 +85,8 @@ class VerificationLoop:
             "language": language,
             "complexity": complexity,
             "target_type": target_type,
+            "artifact_store": artifact_store,
+            "trace_reasons": list(trace_reasons or []),
         }
 
     def _check_escalation(self, result: VerificationResult) -> None:
@@ -124,14 +141,13 @@ class VerificationLoop:
                 result.verification_details = verification_text
                 result.tokens_spent = usage.total if usage else 0
 
-                if "BREAKS" in verification_text or "FAILS" in verification_text:
+                verification_status = self._parse_verification_status(verification_text)
+                if verification_status is not VerificationStatus.VERIFIED:
                     if self.auto_revert and not fix_already_applied:
                         self._revert_fix(file_path, backup_path, original_content)
                         result.reverted = True
-                        result.fix_verified = False
-                        result.failure_analysis = self._m27_analyze_failure(
-                            issue, verification_text
-                        )
+                    result.fix_verified = False
+                    result.failure_analysis = self._m27_analyze_failure(issue, verification_text)
                     return result
 
             verification_passed = self._run_validation(file_path, issue)
@@ -164,6 +180,23 @@ class VerificationLoop:
             self._check_escalation(result)
 
         return result
+
+    @staticmethod
+    def _parse_verification_status(verification_text: str) -> VerificationStatus:
+        """Parse the first verifier status token and fail closed on ambiguity."""
+        normalized = verification_text.strip().upper()
+        if not normalized:
+            return VerificationStatus.UNKNOWN
+        first_line = normalized.splitlines()[0].strip()
+        if first_line.startswith("VERIFIED"):
+            return VerificationStatus.VERIFIED
+        if first_line.startswith("BREAKS") or first_line.startswith("FAILS"):
+            return VerificationStatus.BREAKS
+        if first_line.startswith("NEEDS_WORK"):
+            return VerificationStatus.NEEDS_WORK
+        if first_line.startswith("VERIFICATION_ERROR"):
+            return VerificationStatus.ERROR
+        return VerificationStatus.UNKNOWN
 
     def _m27_verify(self, issue: ReviewIssue, fixed_content: str) -> tuple[str, Any]:
         """Use M2.7 to verify the fix doesn't break anything."""
@@ -201,42 +234,122 @@ Respond with:
 
 Be conservative - if you're not sure, say NEEDS_WORK."""
 
-        telemetry_context = None
-        if self._runtime_context.get("session_id"):
-            from ..optimization.types import TelemetryContext
-
-            telemetry_context = TelemetryContext(
-                project_path=str(self._runtime_context.get("project_path") or Path.cwd()),
-                session_id=str(self._runtime_context.get("session_id")),
+        prompt_envelope = compose_prompt_envelope(
+            base_prompt=prompt,
+            lesson_resolver=None,
+            query_text=f"{issue.file_path}\n{issue.title}",
+            stage="verification",
+            base_context_strategy="verification_issue_context",
+            session_id=str(self._runtime_context.get("session_id") or ""),
+            language=self._runtime_context.get("language"),
+        )
+        trace_reasons = list(self._runtime_context.get("trace_reasons", []) or [])
+        artifact_store = self._runtime_context.get("artifact_store")
+        trace_policy, active_trace_reasons = resolve_trace_policy(*trace_reasons)
+        trace_metadata: dict[str, Any] = {
+            "trace_capture_policy": trace_policy,
+            "trace_capture_reasons": active_trace_reasons,
+            "trace_pointers": {},
+        }
+        if isinstance(artifact_store, ReviewArtifactStore) and prompt_envelope.call_id:
+            trace_metadata = artifact_store.prepare_llm_trace(
+                call_id=prompt_envelope.call_id,
                 stage="verification",
-                workflow_name=self._runtime_context.get("workflow_name"),
-                review_mode=self._runtime_context.get("review_mode"),
-                language=self._runtime_context.get("language"),
-                complexity=self._runtime_context.get("complexity"),
-                target_type=self._runtime_context.get("target_type"),
-                context_chars=len(prompt),
-                context_strategy="verification_issue_context",
-                metadata={"file_path": issue.file_path, "line_number": issue.line_number},
+                prompt_text=prompt_envelope.prompt,
+                context_strategy=prompt_envelope.context_strategy,
+                context_chars=prompt_envelope.context_chars,
+                prompt_metadata=prompt_envelope.metadata,
+                trace_policy=trace_policy,
+                trace_reasons=active_trace_reasons,
             )
+        telemetry_context = build_telemetry_context(
+            project_path=str(self._runtime_context.get("project_path") or Path.cwd()),
+            session_id=str(self._runtime_context.get("session_id") or ""),
+            stage="verification",
+            prompt_envelope=prompt_envelope,
+            trace_artifacts=trace_metadata["trace_pointers"],
+            trace_policy=trace_metadata["trace_capture_policy"],
+            trace_reasons=trace_metadata["trace_capture_reasons"],
+            workflow_name=self._runtime_context.get("workflow_name"),
+            review_mode=self._runtime_context.get("review_mode"),
+            language=self._runtime_context.get("language"),
+            complexity=self._runtime_context.get("complexity"),
+            target_type=self._runtime_context.get("target_type"),
+            metadata={"file_path": issue.file_path, "line_number": issue.line_number},
+        )
 
         try:
             response_text, usage = self.m27_client.chat(
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": prompt_envelope.prompt}],
                 system="You are a code verification expert. Be thorough and conservative.",
                 max_tokens=1024,
                 temperature=0.3,
                 telemetry_context=telemetry_context,
             )
+            verification_status = self._parse_verification_status(response_text)
+            verification_failed = verification_status is not VerificationStatus.VERIFIED
+            final_reasons = trace_reasons + (
+                ["verification_failure"] if verification_failed else []
+            )
+            final_policy, final_active_reasons = resolve_trace_policy(*final_reasons)
+            if isinstance(artifact_store, ReviewArtifactStore) and telemetry_context is not None:
+                artifact_store.finalize_llm_trace(
+                    call_id=telemetry_context.call_id,
+                    stage="verification",
+                    validation_payload={
+                        "call_id": telemetry_context.call_id,
+                        "stage": "verification",
+                        "status": (
+                            "verified"
+                            if verification_status is VerificationStatus.VERIFIED
+                            else f"verification_{verification_status.value.lower()}"
+                        ),
+                        "parse_success": bool(response_text.strip()),
+                        "validation_success": not verification_failed,
+                        "trace_policy": final_policy,
+                        "trace_reasons": final_active_reasons,
+                        "file_path": issue.file_path,
+                        "line_number": issue.line_number,
+                        "verification_text": (
+                            response_text.strip() if final_policy == "thick" else None
+                        ),
+                    },
+                )
             if telemetry_context:
                 self.m27_client.update_telemetry_call(
                     telemetry_context.call_id,
                     parse_success=bool(response_text.strip()),
-                    validation_success="BREAKS" not in response_text
-                    and "FAILS" not in response_text,
+                    validation_success=not verification_failed,
+                    metadata_updates={
+                        "trace_capture_policy": final_policy,
+                        "trace_capture_reasons": final_active_reasons,
+                        "trace_pointers": trace_metadata["trace_pointers"],
+                    },
                 )
             return response_text.strip(), usage
         except Exception as e:
             logger.warning(f"M27 verification failed: {e}")
+            if isinstance(artifact_store, ReviewArtifactStore) and telemetry_context is not None:
+                final_policy, final_active_reasons = resolve_trace_policy(
+                    *trace_reasons,
+                    "verification_failure",
+                )
+                artifact_store.finalize_llm_trace(
+                    call_id=telemetry_context.call_id,
+                    stage="verification",
+                    validation_payload={
+                        "call_id": telemetry_context.call_id,
+                        "stage": "verification",
+                        "status": "verification_error",
+                        "parse_success": False,
+                        "validation_success": False,
+                        "trace_policy": final_policy,
+                        "trace_reasons": final_active_reasons,
+                        "file_path": issue.file_path,
+                        "line_number": issue.line_number,
+                        "error": str(e),
+                    },
+                )
             return f"VERIFICATION_ERROR: {e}", None
 
     def _m27_analyze_failure(self, issue: ReviewIssue, verification_text: str) -> str:
@@ -268,27 +381,31 @@ Why did the fix fail? What should be done differently?
 
 Return a brief analysis (2-3 sentences)."""
 
-        telemetry_context = None
-        if self._runtime_context.get("session_id"):
-            from ..optimization.types import TelemetryContext
-
-            telemetry_context = TelemetryContext(
-                project_path=str(self._runtime_context.get("project_path") or Path.cwd()),
-                session_id=str(self._runtime_context.get("session_id")),
-                stage="verification",
-                workflow_name=self._runtime_context.get("workflow_name"),
-                review_mode=self._runtime_context.get("review_mode"),
-                language=self._runtime_context.get("language"),
-                complexity=self._runtime_context.get("complexity"),
-                target_type=self._runtime_context.get("target_type"),
-                context_chars=len(prompt),
-                context_strategy="verification_failure_analysis",
-                metadata={"file_path": issue.file_path, "line_number": issue.line_number},
-            )
+        prompt_envelope = compose_prompt_envelope(
+            base_prompt=prompt,
+            lesson_resolver=None,
+            query_text=f"{issue.file_path}\n{issue.title}\nverification_failure_analysis",
+            stage="verification",
+            base_context_strategy="verification_failure_analysis",
+            session_id=str(self._runtime_context.get("session_id") or ""),
+            language=self._runtime_context.get("language"),
+        )
+        telemetry_context = build_telemetry_context(
+            project_path=str(self._runtime_context.get("project_path") or Path.cwd()),
+            session_id=str(self._runtime_context.get("session_id") or ""),
+            stage="verification",
+            prompt_envelope=prompt_envelope,
+            workflow_name=self._runtime_context.get("workflow_name"),
+            review_mode=self._runtime_context.get("review_mode"),
+            language=self._runtime_context.get("language"),
+            complexity=self._runtime_context.get("complexity"),
+            target_type=self._runtime_context.get("target_type"),
+            metadata={"file_path": issue.file_path, "line_number": issue.line_number},
+        )
 
         try:
             response_text, _ = self.m27_client.chat(
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": prompt_envelope.prompt}],
                 system="You are a code debugging expert.",
                 max_tokens=512,
                 temperature=0.5,
@@ -360,7 +477,7 @@ Return a brief analysis (2-3 sentences)."""
             return True
         except Exception as e:
             logger.warning(f"Compilation check error: {e}")
-            return True
+            return False
 
     def _check_linter(self, file_path: Path, language: str) -> bool:
         import subprocess
@@ -386,7 +503,7 @@ Return a brief analysis (2-3 sentences)."""
             return True
         except Exception as e:
             logger.warning(f"Linter check error: {e}")
-            return True
+            return False
 
     def _check_tests(self, file_path: Path) -> bool:
         import subprocess
@@ -409,7 +526,7 @@ Return a brief analysis (2-3 sentences)."""
             return True
         except Exception as e:
             logger.warning(f"Test check error: {e}")
-            return True
+            return False
 
     def _revert_fix(self, file_path: Path, backup_path: Path, original_content: str) -> None:
         """Revert the fix by restoring original content."""

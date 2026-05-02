@@ -19,9 +19,11 @@ import shutil
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
+from ..command_evidence import ParserTier, build_command_evidence
 from .types import StaticAnalysisResult, StaticIssue
 
 logger = logging.getLogger(__name__)
@@ -161,6 +163,28 @@ LANGUAGE_TOOLS: dict[str, list[dict[str, Any]]] = {
 
 AUTO_FIXABLE_TOOLS = {"ruff", "eslint", "golangci-lint", "clippy"}
 
+LANGUAGE_EXTENSIONS = {
+    "python": {".py"},
+    "javascript": {".js", ".jsx", ".mjs", ".cjs"},
+    "typescript": {".ts", ".tsx"},
+    "svelte": {".svelte"},
+    "go": {".go"},
+    "rust": {".rs"},
+    "cpp": {".cpp", ".cc", ".cxx", ".c", ".h", ".hpp"},
+    "java": {".java"},
+}
+
+STRICT_JSON_PARSERS = {
+    "_parse_pyright_json",
+    "_parse_bandit_json",
+    "_parse_eslint_json",
+    "_parse_golangci_json",
+    "_parse_cppcheck_json",
+    "_parse_svelte_check_json",
+}
+FALLBACK_JSON_PARSERS = {"_parse_ruff_json"}
+NDJSON_PARSERS = {"_parse_clippy_json"}
+
 
 class StaticAnalyzer:
     def __init__(
@@ -171,9 +195,8 @@ class StaticAnalyzer:
         exclude_patterns: list[str] | None = None,
     ):
         self.target_path = Path(target_path)
-        self.language = language or self._detect_language()
         self.include_patterns = include_patterns or ["*"]
-        self.exclude_patterns = exclude_patterns or [
+        default_excludes = [
             "node_modules",
             ".git",
             "__pycache__",
@@ -181,6 +204,11 @@ class StaticAnalyzer:
             ".venv",
             "venv",
         ]
+        self.exclude_patterns = exclude_patterns or default_excludes
+        self._effective_exclude_patterns = list(
+            dict.fromkeys([*default_excludes, *(exclude_patterns or [])])
+        )
+        self.language = language or self._detect_language()
 
     def _detect_language(self) -> str | None:
         path = self.target_path
@@ -203,7 +231,7 @@ class StaticAnalyzer:
             }
             return ext_to_lang.get(suffix)
         else:
-            files = list(path.rglob("*"))
+            files = self._iter_included_files(path)
             extensions = {f.suffix.lower() for f in files if f.is_file() and f.suffix}
 
             if ".svelte" in extensions:
@@ -226,10 +254,39 @@ class StaticAnalyzer:
         return None
 
     def _should_include(self, file_path: Path) -> bool:
-        for pattern in self.exclude_patterns:
-            if pattern in str(file_path):
+        path = Path(file_path)
+        try:
+            rel_path = path.relative_to(
+                self.target_path if self.target_path.is_dir() else self.target_path.parent
+            )
+        except ValueError:
+            rel_path = path
+        normalized = rel_path.as_posix()
+        name = path.name
+
+        for pattern in self._effective_exclude_patterns:
+            if pattern in path.parts or fnmatch(name, pattern) or fnmatch(normalized, pattern):
                 return False
-        return True
+
+        return any(
+            fnmatch(name, pattern) or fnmatch(normalized, pattern)
+            for pattern in self.include_patterns
+        )
+
+    def _iter_included_files(self, root: Path | None = None) -> list[Path]:
+        target = root or self.target_path
+        if target.is_file():
+            return [target] if self._should_include(target) else []
+        if not target.exists():
+            return []
+        extensions = LANGUAGE_EXTENSIONS.get(getattr(self, "language", None) or "")
+        return [
+            path
+            for path in sorted(target.rglob("*"))
+            if path.is_file()
+            and self._should_include(path)
+            and (extensions is None or path.suffix.lower() in extensions)
+        ]
 
     def analyze(self) -> list[StaticAnalysisResult]:
         if not self.language:
@@ -274,10 +331,33 @@ class StaticAnalyzer:
             return None
 
         if self.target_path.is_file():
+            if not self._should_include(self.target_path):
+                return StaticAnalysisResult(
+                    tool_name=tool_name,
+                    language=self.language or "unknown",
+                    issues=[],
+                    duration_seconds=0,
+                    error_output="Target excluded by review scope",
+                    parser_tier=ParserTier.FULL.value,
+                )
             cmd.append(str(self.target_path.name))
             working_dir = str(self.target_path.parent)
         else:
             working_dir = str(self.target_path)
+            files_to_analyze = self._iter_included_files()
+            if not files_to_analyze:
+                return StaticAnalysisResult(
+                    tool_name=tool_name,
+                    language=self.language or "unknown",
+                    issues=[],
+                    duration_seconds=0,
+                    error_output="No files matched review scope",
+                    parser_tier=ParserTier.FULL.value,
+                )
+            relative_files = [str(path.relative_to(self.target_path)) for path in files_to_analyze]
+            if cmd and cmd[-1] == ".":
+                cmd = cmd[:-1]
+            cmd.extend(relative_files)
 
         start_time = time.time()
         try:
@@ -290,11 +370,19 @@ class StaticAnalyzer:
             )
             duration = time.time() - start_time
 
-            parser_method = getattr(self, tool["parser"], None)
-            if parser_method:
-                issues = parser_method(result.stdout + result.stderr, tool["severity_map"])
-            else:
-                issues = self._parse_generic(result.stdout, tool["severity_map"])
+            output = result.stdout + result.stderr
+            issues, parser_tier, parse_warnings = self._parse_tool_output(tool, output)
+            issues = [issue for issue in issues if self._should_include(Path(issue.file_path))]
+            evidence = build_command_evidence(
+                command=cmd,
+                cwd=working_dir,
+                exit_code=result.returncode,
+                duration_ms=int(duration * 1000),
+                raw_stdout=result.stdout,
+                raw_stderr=result.stderr,
+                parser_tier=parser_tier,
+                warnings=parse_warnings,
+            )
 
             return StaticAnalysisResult(
                 tool_name=tool_name,
@@ -302,29 +390,139 @@ class StaticAnalyzer:
                 issues=issues,
                 duration_seconds=duration,
                 error_output=result.stderr if result.returncode != 0 else "",
+                parser_tier=parser_tier.value,
+                parse_warnings=parse_warnings,
+                evidence=evidence,
             )
 
         except subprocess.TimeoutExpired:
             logger.warning(f"{tool_name} timed out")
+            evidence = build_command_evidence(
+                command=cmd,
+                cwd=working_dir,
+                exit_code=-1,
+                duration_ms=300_000,
+                raw_stdout="",
+                raw_stderr="Tool timed out after 300 seconds",
+                parser_tier=ParserTier.PASSTHROUGH,
+                warnings=["tool timed out after 300 seconds"],
+                force_raw_artifact=True,
+            )
             return StaticAnalysisResult(
                 tool_name=tool_name,
                 language=self.language or "unknown",
                 issues=[],
                 duration_seconds=300,
                 error_output="Tool timed out after 300 seconds",
+                parser_tier=ParserTier.PASSTHROUGH.value,
+                parse_warnings=["tool timed out after 300 seconds"],
+                evidence=evidence,
             )
         except FileNotFoundError:
             logger.warning(f"{tool_name} not found")
             return None
         except Exception as e:
             logger.error(f"{tool_name} failed: {e}")
+            duration = time.time() - start_time
+            evidence = build_command_evidence(
+                command=cmd,
+                cwd=working_dir,
+                exit_code=-3,
+                duration_ms=int(duration * 1000),
+                raw_stdout="",
+                raw_stderr=str(e),
+                parser_tier=ParserTier.PASSTHROUGH,
+                warnings=[str(e)],
+                force_raw_artifact=True,
+            )
             return StaticAnalysisResult(
                 tool_name=tool_name,
                 language=self.language or "unknown",
                 issues=[],
-                duration_seconds=time.time() - start_time,
+                duration_seconds=duration,
                 error_output=str(e),
+                parser_tier=ParserTier.PASSTHROUGH.value,
+                parse_warnings=[str(e)],
+                evidence=evidence,
             )
+
+    def _parse_tool_output(
+        self,
+        tool: dict[str, Any],
+        output: str,
+    ) -> tuple[list[StaticIssue], ParserTier, list[str]]:
+        """Parse one analyzer output and classify parse confidence."""
+        parser_name = str(tool.get("parser") or "")
+        severity_map = tool.get("severity_map", {})
+        parser_method = getattr(self, parser_name, None)
+        warnings: list[str] = []
+
+        if not parser_method:
+            issues = self._parse_generic(output, severity_map)
+            if not output.strip():
+                return issues, ParserTier.FULL, warnings
+            if issues:
+                return (
+                    issues,
+                    ParserTier.DEGRADED,
+                    [f"{parser_name or 'unknown'} used generic parser"],
+                )
+            return (
+                issues,
+                ParserTier.PASSTHROUGH,
+                [f"{parser_name or 'unknown'} parser unavailable"],
+            )
+
+        issues = parser_method(output, severity_map)
+        if not output.strip():
+            return issues, ParserTier.FULL, warnings
+
+        if parser_name in STRICT_JSON_PARSERS | FALLBACK_JSON_PARSERS:
+            try:
+                json.loads(output)
+            except json.JSONDecodeError:
+                if issues:
+                    return (
+                        issues,
+                        ParserTier.DEGRADED,
+                        [f"{tool['name']} JSON parse failed; used fallback extraction"],
+                    )
+                return (
+                    issues,
+                    ParserTier.PASSTHROUGH,
+                    [f"{tool['name']} JSON parse failed; raw output preserved"],
+                )
+            else:
+                return issues, ParserTier.FULL, warnings
+
+        if parser_name in NDJSON_PARSERS:
+            malformed_lines = 0
+            json_lines = 0
+            for line in output.splitlines():
+                if not line.strip() or not line.lstrip().startswith("{"):
+                    continue
+                json_lines += 1
+                try:
+                    json.loads(line)
+                except json.JSONDecodeError:
+                    malformed_lines += 1
+            if malformed_lines and issues:
+                return (
+                    issues,
+                    ParserTier.DEGRADED,
+                    [f"{tool['name']} NDJSON parse had {malformed_lines} malformed line(s)"],
+                )
+            if malformed_lines or (not json_lines and output.strip()):
+                return (
+                    issues,
+                    ParserTier.PASSTHROUGH,
+                    [f"{tool['name']} NDJSON parse failed; raw output preserved"],
+                )
+            return issues, ParserTier.FULL, warnings
+
+        if issues or not output.strip():
+            return issues, ParserTier.FULL, warnings
+        return issues, ParserTier.PASSTHROUGH, [f"{tool['name']} text parse produced no issues"]
 
     def _parse_ruff_json(self, output: str, severity_map: dict[str, str]) -> list[StaticIssue]:
         issues: list[StaticIssue] = []
@@ -475,10 +673,19 @@ class StaticAnalyzer:
         try:
             data = json.loads(output)
             for issue in data.get("Issues", []):
+                pos = issue.get("Pos", {}) if isinstance(issue.get("Pos"), dict) else {}
+                file_path = (
+                    pos.get("Filename")
+                    or issue.get("File")
+                    or issue.get("Filename")
+                    or issue.get("Path")
+                    or ""
+                )
+                line_number = pos.get("Line") or issue.get("Line") or 0
                 issues.append(
                     StaticIssue(
-                        file_path=issue.get("FromLinter", ""),
-                        line_number=issue.get("Line", 0),
+                        file_path=file_path,
+                        line_number=line_number,
                         severity=severity_map.get(issue.get("Severity", "warning"), "MEDIUM"),
                         rule_id=issue.get("Linter", ""),
                         message=f"{issue.get('Linter', '')}: {issue.get('Text', '')}",

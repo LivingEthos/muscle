@@ -1,15 +1,14 @@
 ---
 description: Get results from the most recent completed shadow job
-args:
-  - name: job-id
-    description: Specific job ID to get results for (shows most recent if not specified)
-    required: false
+argument-hint: "[job-id]"
 ---
 
 Get review results from a completed MUSCLE shadow job. Execute:
 
 ```bash
-muscle diagnosis ${job_id:+--job-id "$job_id"}
+muscle diagnosis
 ```
+
+If the user provided a job id, append `--job-id <job-id>`.
 
 For completed jobs, this presents findings organized by severity (CRITICAL, HIGH, MEDIUM) with issue counts and top issues.

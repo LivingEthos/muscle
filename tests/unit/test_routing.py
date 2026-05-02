@@ -7,13 +7,16 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from click.testing import CliRunner
 
+from tools.muscle.cli import cli
 from tools.muscle.routing import (
     Recommendation,
     RouteDecision,
     TaskRouter,
     TaskTier,
     _parse_json_response,
+    benchmark_routing_profiles,
 )
 
 
@@ -40,6 +43,7 @@ class TestRouteDecision:
             rationale="simple task",
         )
         assert rd.from_cache is False
+        assert rd.routing_profile == "current"
 
 
 class TestParseJsonResponse:
@@ -151,11 +155,6 @@ class TestTaskRouter:
         assert "Scope hint" in user_msg
 
 
-from click.testing import CliRunner
-
-from tools.muscle.cli import cli
-
-
 class TestRouteCLI:
     @pytest.fixture()
     def runner(self) -> CliRunner:
@@ -191,3 +190,11 @@ class TestRouteCLI:
         output = json.loads(result.output)
         assert output["tier"] == "reasoning"
         assert output["recommended"] == "m27"
+
+
+def test_benchmark_routing_profiles_prefers_candidate_without_quality_regression() -> None:
+    result = benchmark_routing_profiles()
+
+    assert result["candidate_quality"] >= result["baseline_quality"]
+    assert "promotion_rule" in result
+    assert result["cases"]

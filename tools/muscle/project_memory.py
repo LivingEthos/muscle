@@ -347,6 +347,11 @@ class ProjectMemory:
             if conn:
                 conn.close()
 
+    def get_latest_review_run(self, project_path: str) -> dict | None:
+        """Return the most recent review run for a project."""
+        runs = self.list_review_runs(project_path=project_path, limit=1)
+        return runs[0] if runs else None
+
     # -------------------------------------------------------------------------
     # Review finding helpers
     # -------------------------------------------------------------------------
@@ -439,6 +444,42 @@ class ProjectMemory:
             )
             conn.commit()
             return cursor.lastrowid or 0
+        finally:
+            if conn:
+                conn.close()
+
+    def get_latest_verification_summary(self, project_path: str) -> dict | None:
+        """Return the most recent verification/fix attempt summary for a project."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    fa.*,
+                    rf.review_run_id,
+                    rf.rule_id,
+                    rf.severity,
+                    rf.file_path,
+                    rf.line_number,
+                    rf.message,
+                    rr.review_mode,
+                    rr.target_path,
+                    rr.created_at AS review_created_at
+                FROM fix_attempts AS fa
+                JOIN review_findings AS rf
+                    ON rf.id = fa.finding_id
+                JOIN review_runs AS rr
+                    ON rr.id = rf.review_run_id
+                WHERE rr.project_path = ?
+                ORDER BY fa.created_at DESC, fa.id DESC
+                LIMIT 1
+                """,
+                (project_path,),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
         finally:
             if conn:
                 conn.close()
@@ -3300,6 +3341,51 @@ class ProjectMemory:
                 query += " AND provider = ?"
                 params.append(provider)
             query += " ORDER BY created_at DESC LIMIT ?"
+            params.append(limit)
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            if conn:
+                conn.close()
+
+    def list_external_benchmark_turns(
+        self,
+        project_path: str,
+        provider: str | None = None,
+        min_turn_id: int | None = None,
+        turn_ids: list[int] | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        """List imported external benchmark turns joined with session metadata."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            query = """
+                SELECT
+                    ebt.*,
+                    ebs.provider,
+                    ebs.external_session_id,
+                    ebs.source_path,
+                    ebs.project_hint,
+                    ebs.normalized_project_path
+                FROM external_benchmark_turns AS ebt
+                JOIN external_benchmark_sessions AS ebs
+                    ON ebs.id = ebt.benchmark_session_id
+                WHERE ebs.project_path = ?
+            """
+            params: list[Any] = [project_path]
+            if provider:
+                query += " AND ebs.provider = ?"
+                params.append(provider)
+            if min_turn_id is not None:
+                query += " AND ebt.id > ?"
+                params.append(min_turn_id)
+            if turn_ids:
+                placeholders = ",".join("?" for _ in turn_ids)
+                query += f" AND ebt.id IN ({placeholders})"
+                params.extend(turn_ids)
+            query += " ORDER BY ebt.id ASC LIMIT ?"
             params.append(limit)
             cursor.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]

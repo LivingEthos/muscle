@@ -30,6 +30,9 @@ TOP_LEVEL_COMMANDS = {
     "enable",
     "disable",
     "status",
+    "doctor",
+    "discover",
+    "savings",
     "route",
     "optimize-host-docs",
     "pack",
@@ -48,6 +51,7 @@ CLI_GROUPS = {
     "memory",
     "model",
     "settings",
+    "filters",
 }
 
 # Known subcommands per group (verified from cli.py)
@@ -59,6 +63,7 @@ CLI_SUBCOMMANDS = {
     "memory": {"status", "history", "related", "import-project", "linked", "unlink"},
     "model": {"status", "history", "select", "packs"},
     "settings": {"show", "api-key", "hooks", "platform", "reset", "review", "model"},
+    "filters": {"verify", "trust", "untrust"},
 }
 
 # Commands documented but known NOT to exist in CLI
@@ -177,6 +182,19 @@ class TestPluginDocsFrontmatter:
         assert fm is not None, f"{doc_file.name} has invalid YAML frontmatter"
         assert "description" in fm, f"{doc_file.name} frontmatter missing `description` field"
         assert fm["description"], f"{doc_file.name} `description` must not be empty"
+        assert "args" not in fm, (
+            f"{doc_file.name} uses unsupported `args:` frontmatter; use "
+            "`argument-hint` for Claude Code commands"
+        )
+
+    @pytest.mark.parametrize("doc_file", sorted(COMMANDS_DIR.glob("*.md")), ids=lambda p: p.name)
+    def test_no_shell_parameter_expansion_placeholders(self, doc_file: Path):
+        """Bash examples should not depend on shell parameter expansion placeholders."""
+        content = doc_file.read_text()
+        matches = re.findall(r"\$\{[A-Za-z_][A-Za-z0-9_]*[:+]", content)
+        assert not matches, (
+            f"{doc_file.name} contains shell parameter expansion placeholders: {matches}"
+        )
 
     @pytest.mark.parametrize("doc_file", sorted(COMMANDS_DIR.glob("*.md")), ids=lambda p: p.name)
     def test_has_bash_code_block(self, doc_file: Path):

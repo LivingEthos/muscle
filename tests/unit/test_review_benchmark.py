@@ -261,6 +261,7 @@ class TestReviewBenchmarkRunner:
         assert json_payload["candidate"] == "review-smart"
         assert json_payload["suite"] == "all"
         assert json_payload["fixture_manifest_version"] == runner.fixture_manifest_version
+        assert "meta_harness" in json_payload
 
     def test_release_gates_pass_with_required_evidence(self, tmp_path: Path):
         runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
@@ -386,6 +387,7 @@ class TestReviewBenchmarkRunner:
 
         assert report["suite_aggregates"]["related-project"]["candidate_measurable_wins"] == 1
         assert report["benchmark_gates"]["overall_passed"] is True
+        assert "promotion_rule" in report["meta_harness"]
         release_evidence = runner.build_release_evidence(
             report,
             operational_invariants={
@@ -508,6 +510,18 @@ class TestReviewBenchmarkRunner:
             },
         )
         assert release_evidence["release_gates"]["overall_passed"] is False
+
+    def test_meta_harness_comparisons_include_host_memory_and_routing(self, tmp_path: Path):
+        runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
+
+        comparisons = runner._run_meta_harness_comparisons()
+
+        assert (
+            comparisons["host_memory"]["candidate_chars"]
+            <= comparisons["host_memory"]["baseline_chars"]
+        )
+        assert "cases" in comparisons["routing"]
+        assert "promotion_rule" in comparisons
 
     def test_report_persists_gate_evidence_in_json_and_markdown(self, tmp_path: Path):
         runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]

@@ -7,6 +7,7 @@ static analysis, semantic review, fixes, and handoff generation.
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from threading import Lock
@@ -141,6 +142,28 @@ class TestReviewModes:
         assert ctx is not None
         assert ctx.session_id is not None
         assert ctx.stats is not None
+
+    def test_run_review_mode_writes_artifact_manifest(self, tmp_path):
+        target = tmp_path / "module.py"
+        target.write_text("print('hello')\n", encoding="utf-8")
+        config = ReviewConfig(target_path=str(target), mode=ReviewMode.REVIEW)
+        mock_client = MockM27Client()
+        controller = ReviewController(config=config, m27_client=mock_client, use_kb=False)
+
+        with patch.object(controller.static_analyzer, "analyze", return_value=[]):
+            with patch.object(
+                controller.code_reviewer,
+                "review",
+                return_value=([self._make_review_issue(file_path=str(target))], {"token_usage": 0}),
+            ):
+                ctx = controller.run()
+
+        assert ctx.artifact_dir is not None
+        manifest = json.loads(
+            (Path(ctx.artifact_dir) / "manifest.json").read_text(encoding="utf-8")
+        )
+        assert manifest["artifact_count"] >= 3
+        assert "summary.md" in manifest["artifacts"]
 
     def test_run_plan_mode(self):
         config = ReviewConfig(target_path="/tmp/test", mode=ReviewMode.PLAN)
@@ -286,9 +309,48 @@ class TestReviewModes:
 
         assert ctx is not None
 
-    def _make_review_issue(self, auto_fixable: bool = False) -> ReviewIssue:
+    def test_pressure_mode_threads_fragility_challenge_into_committee(self, tmp_path):
+        target = tmp_path / "service.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+        config = ReviewConfig(
+            target_path=str(target),
+            mode=ReviewMode.PRESSURE,
+            pressure_challenge="fragility",
+        )
+        mock_client = MockM27Client()
+        controller = ReviewController(config=config, m27_client=mock_client, use_kb=False)
+        pressure_issue = ReviewIssue(
+            file_path=str(target),
+            line_number=1,
+            severity=Severity.MEDIUM,
+            category=IssueCategory.BEST_PRACTICE,
+            cwe_id=None,
+            title="Retry storm after refactor",
+            description="Ordering dependency hidden in retries.",
+            code_snippet="value = 1",
+            auto_fixable=False,
+            source_agent="pressure:fragility",
+        )
+
+        with patch.object(controller.static_analyzer, "analyze", return_value=[]):
+            with patch.object(controller, "_route_review_request", return_value=False):
+                with patch.object(
+                    controller.committee_reviewer,
+                    "run_agent",
+                    return_value=[pressure_issue],
+                ) as mock_run_agent:
+                    ctx = controller.run()
+
+        assert ctx.issues[0].source_agent == "pressure:fragility"
+        assert mock_run_agent.call_args.args[5] == "fragility"
+
+    def _make_review_issue(
+        self,
+        auto_fixable: bool = False,
+        file_path: str = "/tmp/test/test.py",
+    ) -> ReviewIssue:
         return ReviewIssue(
-            file_path="/tmp/test/test.py",
+            file_path=file_path,
             line_number=10,
             severity=Severity.MEDIUM,
             category=IssueCategory.STYLE,

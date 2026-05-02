@@ -173,6 +173,10 @@ class EvaluatorRegistry:
                 from .evaluators.compiler import GppCompiler
 
                 self._evaluators[name] = GppCompiler()
+            elif name == "gcc_compiler":
+                from .evaluators.compiler import GccCompiler
+
+                self._evaluators[name] = GccCompiler()
             elif name == "gtest_runner":
                 from .evaluators.tester import GtestRunner
 
@@ -181,6 +185,30 @@ class EvaluatorRegistry:
                 from .evaluators.linter import CppcheckLinter
 
                 self._evaluators[name] = CppcheckLinter()
+            elif name == "javac_compiler":
+                from .evaluators.compiler import JavacCompiler
+
+                self._evaluators[name] = JavacCompiler()
+            elif name == "junit_runner":
+                from .evaluators.tester import JUnitRunner
+
+                self._evaluators[name] = JUnitRunner()
+            elif name == "checkstyle_linter":
+                from .evaluators.linter import CheckstyleLinter
+
+                self._evaluators[name] = CheckstyleLinter()
+            elif name == "csc_compiler":
+                from .evaluators.compiler import CscCompiler
+
+                self._evaluators[name] = CscCompiler()
+            elif name == "nunit_runner":
+                from .evaluators.tester import NUnitRunner
+
+                self._evaluators[name] = NUnitRunner()
+            elif name == "dotnet_linter":
+                from .evaluators.linter import DotnetLinter
+
+                self._evaluators[name] = DotnetLinter()
             else:
                 logger.warning(f"Unknown evaluator: {name}")
                 return None

@@ -1,29 +1,31 @@
 {
-  "name": "muscle",
+  "name": "muscle-marketplace",
   "owner": {
-    "name": "MUSCLE Team"
+    "name": "MUSCLE Team",
+    "email": "muscle@minimax.io"
   },
   "metadata": {
-    "description": "MUSCLE - Self-learning code review that gets smarter with every task. Powered by MiniMax M2.7."
+    "description": "MUSCLE Claude Code plugin marketplace for project-local review memory, lifecycle hooks, diagnostics, local evidence, savings, discovery, filters, and command documentation."
   },
   "plugins": [
     {
-      "name": "muscle-marketplace",
+      "name": "muscle",
       "source": {
         "source": "git-subdir",
         "url": "https://github.com/LivingEthos/muscle.git",
         "path": "tools/muscle/plugin"
       },
-      "description": "Self-learning code review companion. Slash commands: /muscle:review, /muscle:pressure, /muscle:rescue, /muscle:setup",
+      "description": "Self-learning code review with project-local memory, lifecycle hooks, diagnostics, evidence surfaces, savings, discovery, filters, and operator visibility.",
       "version": "0.1.0",
       "author": {
-        "name": "MUSCLE Team"
+        "name": "MUSCLE Team",
+        "email": "muscle@minimax.io"
       },
       "homepage": "https://github.com/LivingEthos/muscle",
       "repository": "https://github.com/LivingEthos/muscle",
       "license": "MIT",
-      "keywords": ["code-review", "self-improving", "ai", "minimax", "quality"],
-      "category": "code-quality"
+      "keywords": ["code-review", "self-improving", "ai", "minimax", "quality", "auto-fix"],
+      "category": "development"
     }
   ]
 }

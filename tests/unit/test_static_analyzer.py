@@ -13,6 +13,7 @@ from tools.muscle.code_review.static_analyzer import (
     LANGUAGE_TOOLS,
     StaticAnalyzer,
 )
+from tools.muscle.command_evidence import ParserTier
 
 
 @pytest.fixture
@@ -376,6 +377,39 @@ class TestParserMethods:
         assert issues[0].file_path == "test.py"
         assert issues[0].line_number == 10
 
+    def test_parse_tool_output_full_json_tier(self, analyzer):
+        """Valid machine-readable output is FULL."""
+        output = json.dumps(
+            [
+                {
+                    "filename": "test.py",
+                    "code": "F401",
+                    "message": "Unused import",
+                    "location": {"row": 5, "column": 1},
+                }
+            ]
+        )
+        issues, tier, warnings = analyzer._parse_tool_output(LANGUAGE_TOOLS["python"][0], output)
+        assert len(issues) == 1
+        assert tier == ParserTier.FULL
+        assert warnings == []
+
+    def test_parse_tool_output_degraded_json_fallback(self, analyzer):
+        """Malformed JSON with fallback extraction is DEGRADED."""
+        output = "test.py:10:5: E501 Line too long"
+        issues, tier, warnings = analyzer._parse_tool_output(LANGUAGE_TOOLS["python"][0], output)
+        assert len(issues) == 1
+        assert tier == ParserTier.DEGRADED
+        assert "fallback" in warnings[0].lower()
+
+    def test_parse_tool_output_passthrough_on_unparseable_json(self, analyzer):
+        """Malformed output with no issues is PASSTHROUGH."""
+        output = "not json"
+        issues, tier, warnings = analyzer._parse_tool_output(LANGUAGE_TOOLS["python"][1], output)
+        assert issues == []
+        assert tier == ParserTier.PASSTHROUGH
+        assert "raw output preserved" in warnings[0]
+
     def test_parse_pyright_json(self, analyzer):
         """Test pyright JSON parser."""
         output = json.dumps(
@@ -498,8 +532,7 @@ test.ts(10,5): warning TS6032: File change detected. Starting fresh analysis."""
                 "Issues": [
                     {
                         "FromLinter": "golint",
-                        "File": "test.go",
-                        "Line": 10,
+                        "Pos": {"Filename": "test.go", "Line": 10},
                         "Severity": "error",
                         "Text": " exported function TestFunc should have comment",
                         "Linter": "golint",
@@ -510,7 +543,7 @@ test.ts(10,5): warning TS6032: File change detected. Starting fresh analysis."""
         severity_map = {"error": "HIGH", "warning": "MEDIUM"}
         issues = analyzer._parse_golangci_json(output, severity_map)
         assert len(issues) == 1
-        assert issues[0].file_path == "golint"
+        assert issues[0].file_path == "test.go"
         assert issues[0].line_number == 10
         assert issues[0].severity == "HIGH"
         assert "golint" in issues[0].message
@@ -521,6 +554,50 @@ test.ts(10,5): warning TS6032: File change detected. Starting fresh analysis."""
         severity_map = {"error": "HIGH", "warning": "MEDIUM"}
         issues = analyzer._parse_golangci_json(output, severity_map)
         assert issues == []
+
+    def test_run_tool_passes_only_included_files(self, tmp_path, monkeypatch):
+        """Review scope filters should affect tool invocation, not just storage."""
+        included = tmp_path / "src.py"
+        excluded = tmp_path / "generated.py"
+        included.write_text("print('ok')\n", encoding="utf-8")
+        excluded.write_text("print('skip')\n", encoding="utf-8")
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["cwd"] = kwargs["cwd"]
+
+            class Result:
+                returncode = 0
+                stdout = "[]"
+                stderr = ""
+
+            return Result()
+
+        monkeypatch.setattr(
+            "tools.muscle.code_review.static_analyzer.shutil.which",
+            lambda _: "/bin/tool",
+        )
+        monkeypatch.setattr(
+            "tools.muscle.code_review.static_analyzer.subprocess.run",
+            fake_run,
+        )
+
+        analyzer = StaticAnalyzer(
+            target_path=str(tmp_path),
+            language="python",
+            include_patterns=["*.py"],
+            exclude_patterns=["generated.py"],
+        )
+        result = analyzer._run_tool(LANGUAGE_TOOLS["python"][0])
+
+        assert result is not None
+        assert "src.py" in captured["cmd"]
+        assert "generated.py" not in captured["cmd"]
+        assert captured["cwd"] == str(tmp_path)
+        assert result.parser_tier == ParserTier.FULL.value
+        assert result.evidence is not None
 
     def test_parse_clippy_json(self, analyzer):
         """Test clippy JSON parser (newline-delimited JSON with compiler-message)."""

@@ -1,18 +1,15 @@
 ---
 description: Quick validation check - runs compiler, linter, and tests without full review
-args:
-  - name: target
-    description: Path to check (defaults to current directory)
-    required: false
-  - name: language
-    description: Programming language (auto-detected if not specified)
-    required: false
+argument-hint: "[target] [language]"
 ---
 
 Run a quick MUSCLE validation check (compiler + linter + tests). Execute:
 
 ```bash
-muscle check --target "${target:-.}" ${language:+--language "$language"}
+muscle check --target .
 ```
+
+If the user provided a target, replace `.` with that path. If they provided a language,
+append `--language <language>`.
 
 Report pass/fail status for each check type. If issues are found, offer to run a full `/muscle:review` for detailed analysis.

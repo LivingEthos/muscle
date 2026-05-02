@@ -7,6 +7,7 @@ arguments and calls the ReviewController.
 
 from __future__ import annotations
 
+import json
 import os
 from unittest.mock import MagicMock, patch
 
@@ -119,7 +120,7 @@ class TestReviewCommand:
         assert result.exit_code == 0
 
     def test_review_json_format(self, runner, mock_review_controller):
-        """Test review command with JSON output format."""
+        """JSON review output should be parseable and free of progress text."""
         env = os.environ.copy()
         env["MINIMAX_API_KEY"] = "test-key"
 
@@ -130,8 +131,12 @@ class TestReviewCommand:
         )
 
         assert result.exit_code == 0
-        assert "critical" in result.output
-        assert "high" in result.output
+        payload = json.loads(result.output)
+        assert payload["session_id"] == "abc123"
+        assert payload["summary"]["critical"] == 0
+        assert payload["summary"]["high"] == 0
+        assert "Starting code review session" not in result.output
+        assert "Review Complete" not in result.output
 
     def test_review_does_not_trigger_remote_model_pack_fetch(
         self,
@@ -219,6 +224,56 @@ class TestReviewCommand:
         )
 
         assert result.exit_code == 0
+
+    def test_review_pressure_challenge_threads_into_config(self, runner):
+        env = os.environ.copy()
+        env["MINIMAX_API_KEY"] = "test-key"
+
+        mock_result = MagicMock()
+        mock_result.session_id = "abc123"
+        mock_result.target_path = "/tmp/test"
+        mock_result.issues = []
+        mock_result.critical_count = 0
+        mock_result.high_count = 0
+        mock_result.medium_count = 0
+        mock_result.low_count = 0
+        mock_result.info_count = 0
+        mock_result.workflow_name = "pressure-review"
+        mock_result.execution_mode = "local"
+
+        mock_run_result = MagicMock()
+        mock_run_result.handoff_plan = None
+        mock_run_result.stats.duration_seconds = 0.0
+        mock_run_result.stats.tokens_used = 0
+
+        mock_instance = MagicMock()
+        mock_instance.run.return_value = mock_run_result
+        mock_instance.get_review_result.return_value = mock_result
+
+        with patch("tools.muscle.code_review.ReviewController") as mock_class:
+            mock_class.return_value = mock_instance
+            result = runner.invoke(
+                cli,
+                [
+                    "review",
+                    "--target",
+                    "/tmp/test",
+                    "--mode",
+                    "pressure",
+                    "--challenge",
+                    "fragility",
+                    "--focus",
+                    "failure,reliability",
+                ],
+                env=env,
+            )
+
+        assert result.exit_code == 0
+        config = mock_class.call_args.kwargs["config"]
+        assert config.pressure_challenge == "fragility"
+        assert config.pressure_focus is not None
+        assert config.pressure_focus.failure_modes is True
+        assert config.pressure_focus.reliability is True
 
     def test_review_shadow_uses_detached_worker(self, runner):
         """Shadow review should launch a detached background worker process."""

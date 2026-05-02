@@ -1,18 +1,6 @@
 ---
 description: Build a content-addressed context pack so repeated MUSCLE subtasks reuse the same distilled scope
-args:
-  - name: task
-    description: Task description the pack will serve
-    required: true
-  - name: scope
-    description: File or directory to include in the pack
-    required: true
-  - name: acceptance
-    description: Acceptance criteria from the host planner
-    required: false
-  - name: out
-    description: Optional path to copy the rendered pack markdown to
-    required: false
+argument-hint: "[task] [scope] [acceptance] [out]"
 ---
 
 > **Plan-then-hand-off:** Use MUSCLE for bulk execution; you retain planning and synthesis. Build the pack once for a delegation, then let `/muscle:review`, `/muscle:rescue`, and the verification agent consume the same pack id so the response cache short-circuits identical calls.

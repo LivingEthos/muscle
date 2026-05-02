@@ -1,124 +1,223 @@
-# 💪 MUSCLE
+<p align="center">
+  <img src="docs/assets/muscle-github-hero.svg" alt="MUSCLE project-first code review loop" width="100%">
+</p>
 
-### *MiniMax Unified Self-Correcting Learning Engine*
+<h1 align="center">MUSCLE</h1>
+
+<p align="center">
+  <strong>MiniMax Unified Self-Correcting Learning Engine</strong>
+</p>
+
+<p align="center">
+  Project-local code review memory, Claude/Codex plugin workflows, and evidence-backed
+  diagnostics for AI-assisted software teams.
+</p>
+
+<p align="center">
+  <a href="https://github.com/LivingEthos/muscle"><img alt="GitHub" src="https://img.shields.io/badge/GitHub-LivingEthos%2Fmuscle-113B2C?logo=github"></a>
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-2E6F95?logo=python&logoColor=white">
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-8A6F3D">
+  <img alt="Plugin" src="https://img.shields.io/badge/Claude%20%2B%20Codex-plugin-1F7A5B">
+</p>
 
 ---
 
-> **Give your code more muscle.**  
-> A local-first, project-first code review and iterative code-generation CLI
-> that compounds useful memory per repo while keeping cross-project and
-> model-specific knowledge optional and bounded.
+## What MUSCLE Is
 
----
+MUSCLE is a local-first review companion for AI coding workflows. It lets a host
+agent such as Claude Code or Codex delegate focused review work to MUSCLE, then
+keeps the useful lessons inside the current repository instead of turning one
+project's history into a global default.
 
-## ⚡ What Is MUSCLE?
+It is built around one rule:
 
-MUSCLE is a CLI tool that makes your AI coding workflow improve over time
-without turning one project's lessons into another project's defaults.
+> **Project-local memory stays primary.** Related-project lessons, model packs,
+> filters, and discovery reports are optional overlays until they are trusted or
+> validated for the current repo.
 
-| What it does | Why it matters |
+## Why It Is Different
+
+| Capability | What it gives you |
 |---|---|
-| 🔍 **Reviews code** with static analyzers + M2.7 semantic analysis | Catches bugs, risky fixes, and design flaws |
-| 🧠 **Stores project-owned memory** in `.muscle/project_memory.db` and bounded markdown files | Keeps the current repo authoritative |
-| 🔄 **Runs generate → evaluate → evolve loops** | Produces working, validated code instead of one-shot drafts |
-| 🔗 **Suggests related-project lessons** | Reuses overlap when helpful without auto-importing it |
-| 📦 **Supports model-specific packs** | Applies portable model lessons only when identity is confident or manually selected |
-| 📊 **Enforces benchmark gates** | Proves overlays help without regressing the default project-only path |
+| **Self-learning review** | Static analyzers plus MiniMax semantic review, with bounded project memory that improves future runs. |
+| **Claude and Codex plugin bundle** | Slash-command workflows, hooks, command docs, assets, and diagnostics packaged together. |
+| **Evidence over vibes** | Command evidence records parser tier, exit state, compact excerpts, digests, and token-saving estimates. |
+| **Release-oriented diagnostics** | `muscle doctor` checks plugin manifests, hooks, command-doc parity, assets, runtime state, and local setup warnings. |
+| **Cost visibility** | `muscle savings` summarizes local token, cache, parser, and command-output compaction evidence. |
+| **Safe discovery** | `muscle discover` reports missed review/check opportunities without mutating project memory. |
+| **Trust-gated filters** | `muscle filters verify` only accepts project-local output filters after digest-backed trust checks. |
 
-**Core rule:** project-local memory always stays primary. Related-project lessons
-and model packs are overlays, not replacements.
+## Quick Start
 
----
-
-## 🎬 Quick Start
+### 1. Install the CLI
 
 ```bash
-# 1. Install
 curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/install.sh | bash
+```
 
-# 2. Set your API key
+For development from a checkout:
+
+```bash
+uv sync --extra dev
+uv run muscle --help
+```
+
+### 2. Configure an API key
+
+MUSCLE review and generation flows call a model API. Claude Code subscription
+access is useful as the host UI, but it is separate from the API key MUSCLE uses
+for its own review calls.
+
+```bash
 export MINIMAX_API_KEY="your-token-plan-api-key"
 export ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic"
+```
 
-# 3. Initialize this project
+China endpoint:
+
+```bash
+export ANTHROPIC_BASE_URL="https://api.minimaxi.com/anthropic"
+```
+
+### 3. Initialize a project
+
+```bash
 muscle init --related-mode suggest --pack-mode suggest
-
-# 4. Inspect the project-first state
 muscle status
-muscle settings show
-muscle model status
+muscle doctor
+```
 
-# 5. Review code
+### 4. Review code
+
+```bash
 muscle review --target ./src --mode review
-
-# 6. Or run the generation loop
-muscle run --task "Build a REST API with auth" --language python --output ./out
 ```
 
----
-
-## 🚀 Core Workflows
-
-### Review and Fix
+Machine-readable output:
 
 ```bash
-muscle review --target ./src --mode auto-fix
+muscle review --target ./src --mode review --format json
 ```
 
-- Runs local static analysis plus M2.7 semantic review
-- Classifies issues by severity, category, and fixability
-- Auto-fixes safe issues and hands off risky ones
-- Learns from the review and updates bounded project memory
-
-### Project-First Growth
+### 5. Inspect evidence
 
 ```bash
-muscle memory related --refresh
-muscle memory import-project --project /path/to/other/project --mode snapshot
-muscle memory history
+muscle savings
+muscle discover
+muscle filters verify
+muscle doctor --json
 ```
 
-- Related-project overlap is suggested, never auto-imported
-- Imported lessons stay provisional until current-project validation or explicit
-  user promotion
-- Audit and history views show where external lessons came from and whether they
-  helped
+## Claude Code Plugin
 
-### Model Identity and Packs
+Install from the marketplace:
+
+```text
+/plugin marketplace add LivingEthos/muscle
+/plugin install muscle@muscle-marketplace
+```
+
+Or load a local checkout while developing:
 
 ```bash
-muscle model status
-muscle model select --canonical-model minimax/m2.7@1
-muscle model packs install --canonical-model minimax/m2.7@1
-muscle model history
+claude --plugin-dir ./tools/muscle/plugin
 ```
 
-- MUSCLE stores both the requested model label and the resolved canonical model
-- Anthropic-compatible custom endpoints stay unresolved unless MUSCLE gets
-  trustworthy provider evidence or you pick the model manually
-- Model packs are explicit overlays keyed to canonical model families
+High-value slash commands:
 
-### Benchmarks and Release Gates
+| Command | Use it for |
+|---|---|
+| `/muscle:review` | Standard project review with severity-ranked findings. |
+| `/muscle:pressure` | Adversarial review that challenges assumptions and failure modes. |
+| `/muscle:rescue` | Deep investigation when a bug needs focused analysis. |
+| `/muscle:doctor` | Plugin lifecycle, manifest, hook, asset, and local-state diagnostics. |
+| `/muscle:savings` | Token, cache, parser, and command-output savings evidence. |
+| `/muscle:discover` | Read-only missed-opportunity discovery from imported host sessions. |
+| `/muscle:filters` | Trust-gated command-output filter verification. |
+| `/muscle:status` | Shadow review and runtime status. |
+| `/muscle:setup` | Review-gate and hook configuration. |
 
-```bash
-muscle long-eval benchmark --enforce-gates
+The plugin bundle lives in `tools/muscle/plugin/` and includes:
+
+```text
+tools/muscle/plugin/
+├── .claude-plugin/
+│   ├── plugin.json
+│   └── marketplace.json
+├── .codex-plugin/
+│   └── plugin.json
+├── assets/
+│   └── muscle-mark.svg
+├── commands/
+├── hooks/
+│   └── hooks.json
+└── hooks.json
 ```
 
-- Runs project-only, related-project, neutral, and model-pack benchmark suites
-- Writes release evidence under `.muscle/reports/release_evidence/`
-- Fails when overlays regress baseline behavior or violate offline/runtime
-  guardrails
+## Codex Plugin Bundle
 
----
+The same plugin directory also carries a Codex manifest and root hook file.
+MUSCLE does not create repo-local `.codex/` assets during setup; the bundle is
+kept inside `tools/muscle/plugin/` so packaging and diagnostics can verify it.
 
-## 🗂️ Storage Model
+If your local Codex build has a plugin validator, run it against:
 
-### Per-project state
+```text
+tools/muscle/plugin/.codex-plugin/plugin.json
+tools/muscle/plugin/hooks.json
+```
+
+If no Codex validator command is available, treat that check as skipped rather
+than failed. `muscle doctor --json` still reports manifest, hook, asset, and
+command-doc parity evidence.
+
+## How The Review Loop Works
+
+```text
+Host agent plans scope
+        |
+        v
+MUSCLE reviews targeted code
+        |
+        v
+Static analyzers + model review produce findings
+        |
+        v
+Command evidence, savings, and parser tiers are recorded locally
+        |
+        v
+Useful lessons update bounded project memory
+        |
+        v
+doctor / long-eval / tests validate release readiness
+```
+
+Generated `.muscle/active-review.md` files are convenience snapshots. The
+authoritative state remains in project-local databases and bounded memory files.
+
+## Command Families
+
+Use `muscle --help` for the complete command tree.
+
+| Surface | Main commands |
+|---|---|
+| Project control | `muscle init`, `muscle enable`, `muscle disable`, `muscle status`, `muscle settings show` |
+| Review and generation | `muscle review`, `muscle run`, `muscle check`, `muscle history`, `muscle resume`, `muscle abort` |
+| Evidence and operations | `muscle doctor`, `muscle savings`, `muscle discover`, `muscle filters verify` |
+| Memory and overlays | `muscle memory status`, `muscle memory history`, `muscle memory related`, `muscle memory import-project` |
+| Model and packs | `muscle model status`, `muscle model history`, `muscle model select`, `muscle model packs install` |
+| Evaluation | `muscle long-eval run`, `muscle long-eval reports`, `muscle long-eval benchmark --enforce-gates` |
+| Utilities | `muscle kb`, `muscle cost`, `muscle improve`, `muscle notes`, `muscle skills list`, `muscle agents list` |
+
+## Storage Model
+
+Per-project state:
 
 ```text
 .muscle/
 ├── config.yaml
 ├── project_memory.db
+├── active-review.md
 ├── CLAUDE.md
 ├── AGENT.md
 ├── MEMORY.md
@@ -133,7 +232,7 @@ muscle long-eval benchmark --enforce-gates
     └── review_kb.db
 ```
 
-### Shared global state
+Shared state:
 
 ```text
 ~/.muscle/
@@ -145,102 +244,52 @@ muscle long-eval benchmark --enforce-gates
 └── prompts/
 ```
 
-Project-local `project_memory.db` is authoritative for one repo. Shared
-`~/.muscle/system.db` stores project fingerprints, model aliases, installed
-packs, and submission metadata that are not owned by a single project.
+## Privacy And Safety
 
----
+- API keys are read from environment variables or explicit local settings; they
+  should not be committed to the repository.
+- Project memory stays in the project unless you explicitly import, export, or
+  submit a model-pack candidate.
+- Discovery is read-only by default.
+- Project-local output filters are ignored until they pass trust checks.
+- `muscle doctor` is observational unless you ask it to refresh local snapshots.
 
-## 🧠 Memory Rules
-
-MUSCLE manages three bounded markdown files alongside its database state:
-
-| File | What it stores |
-|---|---|
-| `.muscle/CLAUDE.md` | Project conventions, anti-patterns, high-signal learned rules |
-| `.muscle/AGENT.md` | Repo-specific agent guidance |
-| `.muscle/MEMORY.md` | General learned context, recurring issues, and retained notes |
-
-Only project-local lessons can publish directly into authoritative local memory.
-Transferred lessons and model-pack lessons must prove themselves first.
-
----
-
-## 🔌 Claude Code Plugin
-
-Install as a plugin for day-to-day use inside Claude Code:
+## Development
 
 ```bash
-/plugin marketplace add LivingEthos/muscle
-/plugin install muscle@muscle-marketplace
+uv sync --extra dev
+uv run mypy tools/muscle/
+uv run ruff check tools/muscle/
+uv run ruff format --check tools/muscle/
+uv run pytest tests/ -v
 ```
 
-High-value slash commands:
+Build and inspect a package:
 
-```text
-/muscle:review
-/muscle:pressure
-/muscle:setup
-/muscle:status
-/muscle:memory-related
-/muscle:memory-history
-/muscle:model-status
-/muscle:model-history
-/muscle:model-select
-/muscle:model-pack-install
-/muscle:model-pack-submit
-/muscle:long-eval-benchmark
+```bash
+uv build --out-dir /tmp/muscle-dist
+python -m zipfile -l /tmp/muscle-dist/*.whl | rg 'plugin|savings|discover|filters'
 ```
 
-The plugin follows the same rule as the CLI: project-local memory stays primary;
-related-project lessons and model packs are overlays.
+## Release Evidence
 
----
+The current plugin-readiness pass validates:
 
-## 🛠️ Command Families
+- Claude plugin manifest and marketplace metadata
+- Codex manifest, root hooks, and shared assets
+- command-doc parity across plugin commands
+- `muscle review --format json` as parseable JSON from the first stdout byte
+- `muscle savings --json`, `muscle discover --json`, and `muscle filters verify --json`
+- full type, lint, format, package, and test gates
 
-MUSCLE now has a broader surface than the original review-only workflow. Use
-`muscle --help` for the complete command tree.
+See [release notes: plugin readiness and evidence surfaces](docs/release-notes-2026-05-01-plugin-readiness.md).
 
-| Surface | Main commands |
-|---|---|
-| Project control | `muscle init`, `muscle enable`, `muscle disable`, `muscle status`, `muscle settings show`, `muscle settings model` |
-| Review and generation | `muscle review`, `muscle run`, `muscle check`, `muscle history`, `muscle resume`, `muscle abort` |
-| Memory and overlays | `muscle memory status`, `muscle memory history`, `muscle memory related`, `muscle memory import-project`, `muscle memory linked` |
-| Model and packs | `muscle model status`, `muscle model history`, `muscle model select`, `muscle model packs list/install/update/export-candidate/submit` |
-| Evidence and operations | `muscle long-eval run`, `muscle long-eval reports`, `muscle long-eval benchmark --enforce-gates`, `muscle audit list`, `muscle backups list/show/restore` |
-| Auxiliary surfaces | `muscle kb`, `muscle cost`, `muscle improve`, `muscle notes`, `muscle skills list`, `muscle agents list`, `muscle optimize` |
+## License
 
----
+MUSCLE is released under the [MIT License](LICENSE).
 
-## 📚 Additional Docs
+Related policy docs:
 
-- [Architecture guide](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/docs/architecture.md)
-- [Migration and data safety](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/docs/migration-and-data-safety.md)
-- [Project-first growth and model-pack roadmap](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/docs/project-first-growth-model-pack-roadmap.md)
-- [Release notes: project-first growth and model-pack release](/Users/frisson1/Desktop/PROJECTS/Minimax-Self-Improving/docs/release-notes-2026-04-16-project-first-growth.md)
-
----
-
-## 🌐 Supported Languages
-
-![Python](https://img.shields.io/badge/Python-3.10+-blue) ![JavaScript](https://img.shields.io/badge/JavaScript-ES2024+-yellow) ![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue) ![Go](https://img.shields.io/badge/Go-1.21+-00ADD8) ![Rust](https://img.shields.io/badge/Rust-1.70+-orange) ![Java](https://img.shields.io/badge/Java-17+-red) ![C++](https://img.shields.io/badge/C++-17+-00599C)
-
----
-
-## 🔒 Security & Privacy
-
-- **Local-first**: normal review and run flows stay local and do not add new
-  overlay network calls
-- **Project-first**: one project's memory does not silently become another
-  project's policy
-- **Explicit sharing only**: related-project import and model-pack submission
-  are opt-in
-- **Memory is yours**: `.muscle/` stays in your repo, while shared state lives
-  in `~/.muscle/`
-
----
-
-## 📄 License
-
-MIT — see [LICENSE](LICENSE) for details.
+- [Privacy notes](docs/PRIVACY.md)
+- [Security policy](SECURITY.md)
+- [Terms](docs/TERMS.md)

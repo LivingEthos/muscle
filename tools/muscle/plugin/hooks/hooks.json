@@ -1,10 +1,36 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "muscle _host-hook --platform claude-code --event session_start || true",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "muscle _host-hook --platform claude-code --event user_prompt_submit || true",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
-        "type": "command",
-        "command": "muscle review --target . --mode review --severity low 2>&1 || true",
-        "timeout": 120
+        "hooks": [
+          {
+            "type": "command",
+            "command": "muscle _host-hook --platform claude-code --event stop || true",
+            "timeout": 150
+          }
+        ]
       }
     ]
   }

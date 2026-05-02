@@ -1,12 +1,6 @@
 ---
 description: Classify a task and decide where it should run (M2.7 vs host model)
-args:
-  - name: task
-    description: Task description to classify
-    required: true
-  - name: scope
-    description: Optional path scope hint for classification
-    required: false
+argument-hint: "[task] [scope]"
 ---
 
 > **Plan-then-hand-off:** Use MUSCLE for bulk execution; you retain planning and synthesis. Pass a focused scope — don't ask MUSCLE to plan the work.
@@ -14,8 +8,10 @@ args:
 Classify a task and decide whether MUSCLE's M2.7 agents should handle it directly or escalate to the host model. Execute:
 
 ```bash
-muscle route --task "<task>" [--scope <path>] [--json]
+muscle route --task "$ARGUMENTS" --json
 ```
+
+If the user supplied a separate scope, append `--scope <path>`.
 
 The classifier returns:
 - **tier**: `mechanical` (pattern/boilerplate/test), `reasoning` (debug/trace/refactor), or `architectural` (design/decision/multi-module)

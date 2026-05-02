@@ -1,9 +1,6 @@
 ---
 description: Initialize or enable MUSCLE for the current project
-args:
-  - name: action
-    description: "Action: init, enable, disable, status"
-    required: false
+argument-hint: "[init|enable|disable|status]"
 ---
 
 Configure MUSCLE for the current project.
@@ -56,6 +53,8 @@ muscle disable
 To check current status:
 ```bash
 muscle status
+muscle status --refresh
+muscle doctor
 ```
 
 To inspect related-project memory suggestions:
@@ -80,4 +79,9 @@ For hook configuration:
 ```bash
 muscle settings hooks --enable
 muscle settings hooks --disable
+```
+
+For lifecycle, manifest, and snapshot diagnostics:
+```bash
+muscle doctor --refresh
 ```

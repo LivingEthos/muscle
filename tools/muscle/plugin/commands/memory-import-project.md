@@ -1,9 +1,6 @@
 ---
 description: Import or attach provisional lessons from a related MUSCLE project
-args:
-  - name: project
-    description: Path to the source MUSCLE project
-    required: true
+argument-hint: "[project-path]"
 ---
 
 Project-local memory remains primary. Imported or attached lessons stay provisional until they

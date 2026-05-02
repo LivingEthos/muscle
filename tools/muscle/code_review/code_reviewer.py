@@ -15,13 +15,18 @@ from __future__ import annotations
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from fnmatch import fnmatch
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
 from ..escalation import EscalationRecord, EscalationRecorder
-from ..m27_client import M27Client
+from ..m27_client import M27Client, M27StructuredError, StructuredCallMetadata
 from ..optimization.prompt_context import build_telemetry_context, compose_prompt_envelope
+from ..structured_io import ReviewFindings
+from .review_artifacts import resolve_trace_policy
 from .types import IssueCategory, PressureFocus, ReviewIssue, Severity
 
 if TYPE_CHECKING:
@@ -32,6 +37,8 @@ logger = logging.getLogger(__name__)
 
 MAX_PARALLEL_FILE_REVIEWS = 5
 FILE_CONTENT_CACHE_SIZE = 100
+_PRESSURE_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW"}
+FRAGILITY_CHALLENGE = "fragility"
 
 
 @lru_cache(maxsize=FILE_CONTENT_CACHE_SIZE)
@@ -150,9 +157,128 @@ Your response MUST be valid JSON with this exact structure:
     "high_findings": 3,
     "concerns_addressed": 2,
     "confidence_score": 7
+}}
+}}
+"""
+
+FRAGILITY_PRESSURE_PROMPT = """You are performing a FRAGILITY PRE-MORTEM review.
+Assume this code works today but is likely to fail after a plausible future change.
+
+Your job is to identify fragile implementation details that normal bug reviews miss:
+1. Hidden invariants
+2. Load-bearing defaults
+3. Shared mutable state
+4. Ordering dependencies
+5. Non-atomic updates
+6. Assumptions about timing, retries, or caller behaviour
+7. Future edits that look safe but would trigger production incidents
+
+Focus areas for this review:
+{focus_areas}
+
+Return valid JSON with this exact structure:
+{{
+  "pressure_findings": [
+    {{
+      "file_path": "src/service.py",
+      "line_number": 42,
+      "finding_type": "fragility",
+      "severity": "CRITICAL|HIGH|MEDIUM|LOW",
+      "title": "Short incident title",
+      "description": "Why the current code is fragile",
+      "incident_title": "Human-readable future incident title",
+      "fragility_type": "hidden_invariant|ordering_dependency|load_bearing_default|shared_mutable_state|non_atomic_update|reliability_gap",
+      "plausible_triggering_change": "A realistic future edit or scale change",
+      "failure_surface": "How the failure would show up in production",
+      "hardening_suggestions": [
+        "Concrete hardening step 1",
+        "Concrete hardening step 2"
+      ],
+      "suggested_approach": "Concise hardening direction",
+      "challenge_question": "Question the team should answer before shipping"
+    }}
+  ],
+  "summary": {{
+    "total_examined": 15,
+    "critical_findings": 2,
+    "high_findings": 3,
+    "concerns_addressed": 0,
+    "confidence_score": 7
   }}
 }}
 """
+
+
+class PressureFinding(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    file_path: str = ""
+    line_number: int = Field(default=1, ge=1)
+    finding_type: str = "design_tradeoff"
+    severity: str
+    title: str
+    description: str
+    exploit_scenario: str = ""
+    suggested_approach: str = ""
+    challenge_question: str = ""
+
+    @field_validator("severity")
+    @classmethod
+    def validate_severity(cls, value: str) -> str:
+        normalized = value.upper()
+        if normalized not in _PRESSURE_SEVERITIES:
+            raise ValueError(f"Unsupported severity: {value}")
+        return normalized
+
+
+class PressureSummary(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    total_examined: int = 0
+    critical_findings: int = 0
+    high_findings: int = 0
+    concerns_addressed: int = 0
+    confidence_score: int = 0
+
+
+class PressureReviewResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    pressure_findings: list[PressureFinding] = Field(default_factory=list)
+    summary: PressureSummary = Field(default_factory=PressureSummary)
+
+
+class FragilityPressureFinding(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    file_path: str = ""
+    line_number: int = Field(default=1, ge=1)
+    finding_type: str = "fragility"
+    severity: str
+    title: str
+    description: str
+    incident_title: str = ""
+    fragility_type: str = "hidden_invariant"
+    plausible_triggering_change: str = ""
+    failure_surface: str = ""
+    hardening_suggestions: list[str] = Field(default_factory=list)
+    suggested_approach: str = ""
+    challenge_question: str = ""
+
+    @field_validator("severity")
+    @classmethod
+    def validate_severity(cls, value: str) -> str:
+        normalized = value.upper()
+        if normalized not in _PRESSURE_SEVERITIES:
+            raise ValueError(f"Unsupported severity: {value}")
+        return normalized
+
+
+class FragilityPressureReviewResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    pressure_findings: list[FragilityPressureFinding] = Field(default_factory=list)
+    summary: PressureSummary = Field(default_factory=PressureSummary)
 
 
 class CodeReviewer:
@@ -163,12 +289,45 @@ class CodeReviewer:
         context_budgeter: ContextBudgeter | None = None,
         project_path: str | None = None,
         lesson_resolver: object | None = None,
+        include_patterns: list[str] | None = None,
+        exclude_patterns: list[str] | None = None,
     ):
         self.m27_client = m27_client
         self.max_issues_per_batch = max_issues_per_batch
         self.context_budgeter = context_budgeter
         self.project_path = project_path or str(Path.cwd())
         self.lesson_resolver = lesson_resolver
+        self.include_patterns = include_patterns or ["*"]
+        default_excludes = [
+            ".git",
+            ".hg",
+            ".svn",
+            ".muscle",
+            ".venv",
+            "venv",
+            "node_modules",
+            "dist",
+            "build",
+            "__pycache__",
+            ".mypy_cache",
+            ".pytest_cache",
+        ]
+        self.exclude_patterns = list(dict.fromkeys([*default_excludes, *(exclude_patterns or [])]))
+
+    def _should_review_file(self, file_path: Path, base_dir: Path) -> bool:
+        try:
+            rel_path = file_path.relative_to(base_dir)
+        except ValueError:
+            rel_path = file_path
+        normalized = rel_path.as_posix()
+        name = file_path.name
+        for pattern in self.exclude_patterns:
+            if pattern in file_path.parts or fnmatch(name, pattern) or fnmatch(normalized, pattern):
+                return False
+        return any(
+            fnmatch(name, pattern) or fnmatch(normalized, pattern)
+            for pattern in self.include_patterns
+        )
 
     def _emit_schema_escalation(
         self, file_path: str, attempt_count: int, telemetry_session_id: str | None = None
@@ -189,6 +348,69 @@ class CodeReviewer:
             )
         )
 
+    @staticmethod
+    def _prepare_trace_metadata(
+        artifact_store: ReviewArtifactStore | None,
+        *,
+        prompt_envelope: Any,
+        telemetry_stage: str,
+        trace_reasons: list[str] | None,
+    ) -> dict[str, Any]:
+        if artifact_store is None or not prompt_envelope.call_id:
+            return {
+                "trace_capture_policy": resolve_trace_policy(*(trace_reasons or []))[0],
+                "trace_capture_reasons": list(trace_reasons or []),
+                "trace_pointers": {},
+            }
+        trace_policy, active_trace_reasons = resolve_trace_policy(*(trace_reasons or []))
+        return artifact_store.prepare_llm_trace(
+            call_id=prompt_envelope.call_id,
+            stage=telemetry_stage,
+            prompt_text=prompt_envelope.prompt,
+            context_strategy=prompt_envelope.context_strategy,
+            context_chars=prompt_envelope.context_chars,
+            prompt_metadata=prompt_envelope.metadata,
+            trace_policy=trace_policy,
+            trace_reasons=active_trace_reasons,
+        )
+
+    @staticmethod
+    def _finalize_trace_metadata(
+        artifact_store: ReviewArtifactStore | None,
+        *,
+        call_id: str | None,
+        telemetry_stage: str,
+        trace_metadata: dict[str, Any],
+        status: str,
+        parse_success: bool | None,
+        validation_success: bool | None,
+        trace_reasons: list[str] | None,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        trace_policy, active_trace_reasons = resolve_trace_policy(*(trace_reasons or []))
+        payload = {
+            "call_id": call_id,
+            "stage": telemetry_stage,
+            "status": status,
+            "parse_success": parse_success,
+            "validation_success": validation_success,
+            "trace_policy": trace_policy,
+            "trace_reasons": active_trace_reasons,
+        }
+        if details:
+            payload.update(details)
+        if artifact_store is not None and call_id:
+            artifact_store.finalize_llm_trace(
+                call_id=call_id,
+                stage=telemetry_stage,
+                validation_payload=payload,
+            )
+        return {
+            "trace_capture_policy": trace_policy,
+            "trace_capture_reasons": active_trace_reasons,
+            "trace_pointers": dict(trace_metadata.get("trace_pointers", {})),
+        }
+
     def review(
         self,
         target_path: str,
@@ -201,6 +423,8 @@ class CodeReviewer:
         complexity: str | None = None,
         target_type: str | None = None,
         supplemental_context: str = "",
+        artifact_store: ReviewArtifactStore | None = None,
+        trace_reasons: list[str] | None = None,
     ) -> tuple[list[ReviewIssue], dict]:
         target = Path(target_path)
         if target.is_file():
@@ -227,14 +451,30 @@ class CodeReviewer:
             "low": 0,
             "info": 0,
             "token_usage": 0,
+            "files_failed": 0,
+            "files_skipped": 0,
+            "scope_limited": False,
         }
 
         if issues_by_file:
-            files_to_review = issues_by_file
+            files_to_review = {}
+            for file_path, file_issues in issues_by_file.items():
+                full_path = (
+                    base_dir / file_path if not Path(file_path).is_absolute() else Path(file_path)
+                )
+                if self._should_review_file(full_path, base_dir):
+                    files_to_review[file_path] = file_issues
+                else:
+                    summary["files_skipped"] += 1
+                    summary["scope_limited"] = True
         else:
             files_to_review = {}
             if target.is_file():
-                files_to_review[str(target)] = []
+                if self._should_review_file(target, base_dir):
+                    files_to_review[str(target)] = []
+                else:
+                    summary["files_skipped"] += 1
+                    summary["scope_limited"] = True
             else:
                 for ext in (
                     ".py",
@@ -250,6 +490,10 @@ class CodeReviewer:
                     ".java",
                 ):
                     for f in sorted(target.rglob(f"*{ext}")):
+                        if not self._should_review_file(f, base_dir):
+                            summary["files_skipped"] += 1
+                            summary["scope_limited"] = True
+                            continue
                         rel = str(f.relative_to(base_dir)) if f.parent != base_dir else f.name
                         files_to_review[rel] = []
 
@@ -280,6 +524,8 @@ class CodeReviewer:
                 complexity=complexity,
                 target_type=target_type,
                 supplemental_context=supplemental_context,
+                artifact_store=artifact_store,
+                trace_reasons=trace_reasons,
             )
 
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FILE_REVIEWS) as executor:
@@ -306,6 +552,7 @@ class CodeReviewer:
                     summary["token_usage"] += file_summary.get("token_usage", 0)
                 except Exception as e:
                     logger.warning(f"File review failed for {file_path}: {e}")
+                    summary["files_failed"] += 1
 
         return all_reviews, summary
 
@@ -323,6 +570,8 @@ class CodeReviewer:
         complexity: str | None = None,
         target_type: str | None = None,
         supplemental_context: str = "",
+        artifact_store: ReviewArtifactStore | None = None,
+        trace_reasons: list[str] | None = None,
     ) -> tuple[list[ReviewIssue], dict]:
         review_budget = (
             self.context_budgeter.build_semantic_review_budget(
@@ -390,83 +639,87 @@ Provide your review in JSON format."""
             language=language or self._get_lang_from_ext(file_path),
         )
         user_prompt = prompt_envelope.prompt
+        trace_metadata = self._prepare_trace_metadata(
+            artifact_store,
+            prompt_envelope=prompt_envelope,
+            telemetry_stage=telemetry_stage,
+            trace_reasons=trace_reasons,
+        )
 
-        max_retries = 3
-        response_text = ""
-        usage = None
-        telemetry_context = None
-
-        for attempt in range(max_retries):
-            telemetry_context = build_telemetry_context(
-                project_path=self.project_path,
-                session_id=telemetry_session_id,
-                stage=telemetry_stage,
-                prompt_envelope=prompt_envelope,
-                workflow_name=workflow_name,
-                review_mode=review_mode,
-                language=language or self._get_lang_from_ext(file_path),
-                complexity=complexity,
-                target_type=target_type,
-                metadata={
-                    "file_path": file_path,
-                    "issue_count": len(issues),
-                    "proactive": proactive,
-                },
-            )
-            response_text, usage = self.m27_client.chat(
+        telemetry_context = build_telemetry_context(
+            project_path=self.project_path,
+            session_id=telemetry_session_id,
+            stage=telemetry_stage,
+            prompt_envelope=prompt_envelope,
+            trace_artifacts=trace_metadata["trace_pointers"],
+            trace_policy=trace_metadata["trace_capture_policy"],
+            trace_reasons=trace_metadata["trace_capture_reasons"],
+            workflow_name=workflow_name,
+            review_mode=review_mode,
+            language=language or self._get_lang_from_ext(file_path),
+            complexity=complexity,
+            target_type=target_type,
+            metadata={
+                "file_path": file_path,
+                "issue_count": len(issues),
+                "proactive": proactive,
+            },
+        )
+        try:
+            result, metadata = self.m27_client.chat_structured(
+                schema=ReviewFindings,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
                 telemetry_context=telemetry_context,
+                include_metadata=True,
             )
-
             logger.info(
-                f"CodeReviewer used {usage.total} tokens for {file_path} (attempt {attempt + 1})"
+                "CodeReviewer used %s tokens for %s (cache_hit=%s)",
+                metadata.usage.total,
+                file_path,
+                metadata.cache_hit,
             )
-
-            if response_text and response_text.strip():
-                break
-
-            logger.warning(
-                f"Empty response from M2.7 for {file_path}, attempt {attempt + 1}/{max_retries}"
+            final_trace = self._finalize_trace_metadata(
+                artifact_store,
+                call_id=telemetry_context.call_id if telemetry_context else prompt_envelope.call_id,
+                telemetry_stage=telemetry_stage,
+                trace_metadata=trace_metadata,
+                status="validated",
+                parse_success=True,
+                validation_success=True,
+                trace_reasons=trace_reasons,
+                details={
+                    "file_path": file_path,
+                    "issue_count": len(issues),
+                    "token_usage": metadata.usage.total,
+                    "cache_hit": metadata.cache_hit,
+                },
             )
-
-        if not response_text or not response_text.strip():
-            logger.warning(f"All {max_retries} attempts returned empty response for {file_path}")
-            return [], {
-                "total_reviewed": len(issues),
-                "valid_issues": 0,
-                "false_positives": len(issues),
-                "intentional": 0,
-                "critical": 0,
-                "high": 0,
-                "medium": 0,
-                "low": 0,
-                "info": 0,
-                "token_usage": usage.total if usage else 0,
-            }
-
-        try:
-            data = self._load_json_response(response_text)
-            reviews = self._reviews_from_payload(data, file_path)
-            summary = data.get("summary", {})
-            summary["token_usage"] = usage.total if usage else 0
-            if telemetry_context:
+            if telemetry_context is not None:
                 self.m27_client.update_telemetry_call(
                     telemetry_context.call_id,
-                    parse_success=True,
-                    metadata_updates={"review_count": len(reviews), "proactive": proactive},
+                    metadata_updates=final_trace,
                 )
-            return reviews, summary
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse M2.7 response: {e}")
-            if telemetry_context:
+            return self._structured_review_result(result, metadata, file_path, proactive)
+        except M27StructuredError as exc:
+            logger.error("Structured review failed for %s: %s", file_path, exc)
+            final_trace = self._finalize_trace_metadata(
+                artifact_store,
+                call_id=telemetry_context.call_id if telemetry_context else prompt_envelope.call_id,
+                telemetry_stage=telemetry_stage,
+                trace_metadata=trace_metadata,
+                status="schema_failure",
+                parse_success=False,
+                validation_success=False,
+                trace_reasons=[*(trace_reasons or []), "schema_failure"],
+                details={"file_path": file_path, "schema_error": str(exc)},
+            )
+            if telemetry_context is not None:
                 self.m27_client.update_telemetry_call(
                     telemetry_context.call_id,
-                    parse_success=False,
-                    metadata_updates={"json_error": str(e)},
+                    metadata_updates=final_trace,
                 )
             if (
                 self.context_budgeter
@@ -501,12 +754,20 @@ Provide your review in JSON format."""
                     session_id=telemetry_session_id,
                     language=language or self._get_lang_from_ext(file_path),
                 )
-                retry_prompt = retry_envelope.prompt
+                retry_trace_metadata = self._prepare_trace_metadata(
+                    artifact_store,
+                    prompt_envelope=retry_envelope,
+                    telemetry_stage=telemetry_stage,
+                    trace_reasons=[*(trace_reasons or []), "schema_failure"],
+                )
                 retry_context = build_telemetry_context(
                     project_path=self.project_path,
                     session_id=telemetry_session_id,
                     stage=telemetry_stage,
                     prompt_envelope=retry_envelope,
+                    trace_artifacts=retry_trace_metadata["trace_pointers"],
+                    trace_policy=retry_trace_metadata["trace_capture_policy"],
+                    trace_reasons=retry_trace_metadata["trace_capture_reasons"],
                     workflow_name=workflow_name,
                     review_mode=review_mode,
                     language=language or self._get_lang_from_ext(file_path),
@@ -514,55 +775,138 @@ Provide your review in JSON format."""
                     target_type=target_type,
                     metadata={
                         "file_path": file_path,
-                        "retry_reason": "json_parse_failure",
+                        "retry_reason": "schema_failure",
                         "proactive": proactive,
                     },
                 )
-                retry_response, retry_usage = self.m27_client.chat(
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": retry_prompt},
-                    ],
-                    telemetry_context=retry_context,
-                )
                 try:
-                    retry_data = self._load_json_response(retry_response)
-                    retry_reviews = self._reviews_from_payload(retry_data, file_path)
-                    retry_summary = retry_data.get("summary", {})
-                    retry_summary["token_usage"] = retry_usage.total if retry_usage else 0
-                    if retry_context:
+                    result, metadata = self.m27_client.chat_structured(
+                        schema=ReviewFindings,
+                        messages=[
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": retry_envelope.prompt},
+                        ],
+                        telemetry_context=retry_context,
+                        include_metadata=True,
+                    )
+                    retry_final_trace = self._finalize_trace_metadata(
+                        artifact_store,
+                        call_id=retry_context.call_id if retry_context is not None else None,
+                        telemetry_stage=telemetry_stage,
+                        trace_metadata=retry_trace_metadata,
+                        status="validated_after_retry",
+                        parse_success=True,
+                        validation_success=True,
+                        trace_reasons=[*(trace_reasons or []), "schema_failure"],
+                        details={
+                            "file_path": file_path,
+                            "issue_count": len(issues),
+                            "retry_reason": "schema_failure",
+                            "token_usage": metadata.usage.total,
+                            "cache_hit": metadata.cache_hit,
+                        },
+                    )
+                    if retry_context is not None:
                         self.m27_client.update_telemetry_call(
                             retry_context.call_id,
-                            parse_success=True,
-                            metadata_updates={
-                                "review_count": len(retry_reviews),
-                                "escalated": True,
-                            },
+                            metadata_updates=retry_final_trace,
                         )
-                    return retry_reviews, retry_summary
-                except json.JSONDecodeError:
-                    if retry_context:
+                    return self._structured_review_result(result, metadata, file_path, proactive)
+                except M27StructuredError as retry_exc:
+                    logger.error(
+                        "Escalated structured review failed for %s: %s", file_path, retry_exc
+                    )
+                    retry_final_trace = self._finalize_trace_metadata(
+                        artifact_store,
+                        call_id=retry_context.call_id if retry_context is not None else None,
+                        telemetry_stage=telemetry_stage,
+                        trace_metadata=retry_trace_metadata,
+                        status="schema_failure",
+                        parse_success=False,
+                        validation_success=False,
+                        trace_reasons=[*(trace_reasons or []), "schema_failure"],
+                        details={
+                            "file_path": file_path,
+                            "retry_reason": "schema_failure",
+                            "schema_error": str(retry_exc),
+                        },
+                    )
+                    if retry_context is not None:
                         self.m27_client.update_telemetry_call(
                             retry_context.call_id,
-                            parse_success=False,
+                            metadata_updates=retry_final_trace,
                         )
                     self._emit_schema_escalation(
                         file_path=file_path,
-                        attempt_count=attempt + 2,
+                        attempt_count=4,
                         telemetry_session_id=telemetry_session_id,
                     )
-            return [], {
-                "total_reviewed": len(issues),
-                "valid_issues": 0,
-                "false_positives": len(issues),
-                "intentional": 0,
-                "critical": 0,
-                "high": 0,
-                "medium": 0,
-                "low": 0,
-                "info": 0,
-                "token_usage": usage.total if usage else 0,
-            }
+            else:
+                self._emit_schema_escalation(
+                    file_path=file_path,
+                    attempt_count=3,
+                    telemetry_session_id=telemetry_session_id,
+                )
+            return self._empty_review_summary(len(issues), 0)
+
+    def _structured_review_result(
+        self,
+        result: ReviewFindings,
+        metadata: StructuredCallMetadata,
+        default_file_path: str,
+        proactive: bool,
+    ) -> tuple[list[ReviewIssue], dict[str, int]]:
+        reviews = self._reviews_from_structured(result, default_file_path)
+        summary = result.summary.model_dump()
+        summary["token_usage"] = metadata.usage.total
+        summary["cache_hit"] = int(metadata.cache_hit)
+        summary["proactive"] = int(proactive)
+        return reviews, summary
+
+    @classmethod
+    def _reviews_from_structured(
+        cls,
+        payload: ReviewFindings,
+        default_file_path: str,
+    ) -> list[ReviewIssue]:
+        reviews: list[ReviewIssue] = []
+        for item in payload.reviews:
+            if not item.valid:
+                continue
+
+            reviews.append(
+                ReviewIssue(
+                    file_path=item.file_path or default_file_path,
+                    line_number=item.line_number,
+                    severity=cls._parse_severity(item.severity),
+                    category=cls._parse_category(item.category),
+                    cwe_id=item.cwe_id,
+                    title=item.title or "Code issue",
+                    description=item.description,
+                    code_snippet=item.code_snippet,
+                    suggested_fix=item.suggested_fix,
+                    auto_fixable=item.auto_fixable,
+                )
+            )
+        return reviews
+
+    @staticmethod
+    def _empty_review_summary(
+        issue_count: int,
+        token_usage: int,
+    ) -> tuple[list[ReviewIssue], dict[str, int]]:
+        return [], {
+            "total_reviewed": issue_count,
+            "valid_issues": 0,
+            "false_positives": issue_count,
+            "intentional": 0,
+            "critical": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "info": 0,
+            "token_usage": token_usage,
+        }
 
     @staticmethod
     def _parse_severity(s: str) -> Severity:
@@ -658,6 +1002,14 @@ Provide your review in JSON format."""
         code_content: str,
         pressure_focus: PressureFocus,
         artifact_store: ReviewArtifactStore | None = None,
+        challenge_mode: str | None = None,
+        telemetry_session_id: str | None = None,
+        workflow_name: str | None = None,
+        review_mode: str | None = None,
+        language: str | None = None,
+        complexity: str | None = None,
+        target_type: str | None = None,
+        trace_reasons: list[str] | None = None,
     ) -> dict:
         focus_areas = []
         if pressure_focus.design_tradeoffs:
@@ -681,8 +1033,22 @@ Provide your review in JSON format."""
             focus_areas = ["- General code quality and potential issues"]
 
         focus_text = "\n".join(focus_areas)
+        is_fragility = challenge_mode == FRAGILITY_CHALLENGE
+        challenge_label = challenge_mode or "default"
 
-        user_prompt = f"""Perform a PRESSURE TEST on this code. Be adversarial.
+        prompt_title = (
+            "Perform a FRAGILITY PRE-MORTEM on this code."
+            if is_fragility
+            else ("Perform a PRESSURE TEST on this code. Be adversarial.")
+        )
+        goal_text = (
+            "Assume the current code passes today, then identify the future incident most likely "
+            "to appear after a plausible edit, scaling event, or timing change."
+            if is_fragility
+            else "Your goal is to expose weaknesses, hidden risks, and assumptions. "
+            "Think like an attacker or someone who wants to break this code."
+        )
+        user_prompt = f"""{prompt_title}
 
 Target file: {target_path}
 
@@ -691,53 +1057,143 @@ Code:
 {self._truncate_code(code_content, 500)}
 ```
 
-Focus areas for this pressure test:
+Focus areas for this review:
 {focus_text}
 
-Your goal is to expose weaknesses, hidden risks, and assumptions. Think like an attacker or someone who wants to break this code.
+{goal_text}
 """
 
-        max_retries = 3
-        response_text = ""
+        prompt_envelope = compose_prompt_envelope(
+            base_prompt=user_prompt,
+            lesson_resolver=self.lesson_resolver,
+            query_text=f"{target_path}\npressure:{challenge_label}\n{focus_text}",
+            stage="pressure_review",
+            base_context_strategy="pressure_prompt",
+            session_id=telemetry_session_id,
+            language=language or self._get_lang_from_ext(target_path),
+        )
+        trace_metadata = self._prepare_trace_metadata(
+            artifact_store,
+            prompt_envelope=prompt_envelope,
+            telemetry_stage="pressure_review",
+            trace_reasons=trace_reasons,
+        )
+        telemetry_context = build_telemetry_context(
+            project_path=self.project_path,
+            session_id=telemetry_session_id,
+            stage="pressure_review",
+            prompt_envelope=prompt_envelope,
+            trace_artifacts=trace_metadata["trace_pointers"],
+            trace_policy=trace_metadata["trace_capture_policy"],
+            trace_reasons=trace_metadata["trace_capture_reasons"],
+            workflow_name=workflow_name,
+            review_mode=review_mode,
+            language=language or self._get_lang_from_ext(target_path),
+            complexity=complexity,
+            target_type=target_type,
+            metadata={
+                "file_path": target_path,
+                "pressure_challenge": challenge_label,
+            },
+        )
+        system_prompt = (FRAGILITY_PRESSURE_PROMPT if is_fragility else PRESSURE_PROMPT).format(
+            focus_areas=focus_text
+        )
+        schema = FragilityPressureReviewResponse if is_fragility else PressureReviewResponse
 
-        for attempt in range(max_retries):
-            response_text, usage = self.m27_client.chat(
+        try:
+            result, metadata = self.m27_client.chat_structured(
+                schema=schema,
                 messages=[
-                    {"role": "system", "content": PRESSURE_PROMPT},
-                    {"role": "user", "content": user_prompt},
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt_envelope.prompt},
                 ],
+                telemetry_context=telemetry_context,
+                include_metadata=True,
             )
-
-            logger.info(f"Pressure review used {usage.total} tokens (attempt {attempt + 1})")
-
-            if response_text and response_text.strip():
-                break
-
-        if not response_text or not response_text.strip():
-            logger.warning("All attempts returned empty response for pressure review")
+            data = dict(result.model_dump())
+            if is_fragility:
+                data = self._normalize_fragility_payload(data)
+            data.setdefault("summary", {})
+            if isinstance(data["summary"], dict):
+                data["summary"]["token_usage"] = metadata.usage.total
+                data["summary"]["cache_hit"] = int(metadata.cache_hit)
+                data["summary"]["challenge_mode"] = challenge_label
+            final_trace = self._finalize_trace_metadata(
+                artifact_store,
+                call_id=telemetry_context.call_id if telemetry_context else prompt_envelope.call_id,
+                telemetry_stage="pressure_review",
+                trace_metadata=trace_metadata,
+                status="validated",
+                parse_success=True,
+                validation_success=True,
+                trace_reasons=trace_reasons,
+                details={
+                    "file_path": target_path,
+                    "pressure_challenge": challenge_label,
+                    "token_usage": metadata.usage.total,
+                    "cache_hit": metadata.cache_hit,
+                },
+            )
+            if telemetry_context is not None:
+                self.m27_client.update_telemetry_call(
+                    telemetry_context.call_id,
+                    metadata_updates=final_trace,
+                )
+            return data
+        except M27StructuredError as e:
+            logger.error("Failed to parse pressure review response for %s: %s", target_path, e)
+            final_trace = self._finalize_trace_metadata(
+                artifact_store,
+                call_id=telemetry_context.call_id if telemetry_context else prompt_envelope.call_id,
+                telemetry_stage="pressure_review",
+                trace_metadata=trace_metadata,
+                status="pressure_review_parse_failure",
+                parse_success=False,
+                validation_success=False,
+                trace_reasons=[*(trace_reasons or []), "pressure_review_parse_failure"],
+                details={
+                    "file_path": target_path,
+                    "pressure_challenge": challenge_label,
+                    "parse_error": str(e),
+                },
+            )
+            if telemetry_context is not None:
+                self.m27_client.update_telemetry_call(
+                    telemetry_context.call_id,
+                    metadata_updates=final_trace,
+                )
             return self._pressure_parse_failure(
                 target_path=target_path,
-                raw_response=response_text,
-                parse_error="empty_response",
+                raw_response="",
+                parse_error=str(e),
                 token_usage=0,
                 artifact_store=artifact_store,
             )
 
-        try:
-            data = self._load_json_response(response_text)
-            data.setdefault("summary", {})
-            if isinstance(data["summary"], dict):
-                data["summary"]["token_usage"] = usage.total if usage else 0
-            return data
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse pressure review response for %s: %s", target_path, e)
-            return self._pressure_parse_failure(
-                target_path=target_path,
-                raw_response=response_text,
-                parse_error=str(e),
-                token_usage=usage.total if usage else 0,
-                artifact_store=artifact_store,
-            )
+    @staticmethod
+    def _normalize_fragility_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        findings = payload.get("pressure_findings", [])
+        normalized_findings: list[dict[str, Any]] = []
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            hardening_suggestions = finding.get("hardening_suggestions", [])
+            if isinstance(hardening_suggestions, list):
+                suggestions = [
+                    str(item).strip() for item in hardening_suggestions if str(item).strip()
+                ]
+            else:
+                suggestions = [str(hardening_suggestions).strip()] if hardening_suggestions else []
+            suggested_approach = str(finding.get("suggested_approach") or "").strip()
+            if not suggested_approach and suggestions:
+                suggested_approach = " ".join(f"{item}" for item in suggestions[:2])
+            finding["suggested_approach"] = suggested_approach
+            finding["hardening_suggestions"] = suggestions
+            finding["finding_type"] = str(finding.get("finding_type") or "fragility")
+            normalized_findings.append(finding)
+        payload["pressure_findings"] = normalized_findings
+        return payload
 
     @staticmethod
     def _pressure_parse_failure(

@@ -41,7 +41,12 @@ class BlackLinter(BaseEvaluator):
             output = stdout + stderr
             warnings = [line for line in output.split("\n") if "would reformat" in line][:20]
 
-        return EvaluatorResult(success=code == 0, errors=warnings, output=stdout)
+        return EvaluatorResult(
+            success=code == 0,
+            errors=warnings,
+            output=stdout,
+            evidence=self.last_command_evidence,
+        )
 
 
 class RuffLinter(BaseEvaluator):
@@ -67,7 +72,12 @@ class RuffLinter(BaseEvaluator):
             output = stdout + stderr
             warnings = [line for line in output.split("\n") if line.strip()][:20]
 
-        return EvaluatorResult(success=code == 0, errors=warnings, output=stdout)
+        return EvaluatorResult(
+            success=code == 0,
+            errors=warnings,
+            output=stdout,
+            evidence=self.last_command_evidence,
+        )
 
 
 class EslintLinter(BaseEvaluator):
@@ -95,7 +105,12 @@ class EslintLinter(BaseEvaluator):
             output = stdout + stderr
             warnings = [line for line in output.split("\n") if line.strip()][:20]
 
-        return EvaluatorResult(success=code == 0, errors=warnings, output=stdout)
+        return EvaluatorResult(
+            success=code == 0,
+            errors=warnings,
+            output=stdout,
+            evidence=self.last_command_evidence,
+        )
 
 
 class GolangciLinter(BaseEvaluator):
@@ -119,7 +134,12 @@ class GolangciLinter(BaseEvaluator):
             output = stdout + stderr
             warnings = [line for line in output.split("\n") if line.strip()][:20]
 
-        return EvaluatorResult(success=code == 0, errors=warnings, output=stdout)
+        return EvaluatorResult(
+            success=code == 0,
+            errors=warnings,
+            output=stdout,
+            evidence=self.last_command_evidence,
+        )
 
 
 class ClippyLinter(BaseEvaluator):
@@ -145,7 +165,12 @@ class ClippyLinter(BaseEvaluator):
             output = stdout + stderr
             warnings = [line for line in output.split("\n") if "warning:" in line][:20]
 
-        return EvaluatorResult(success=code == 0, errors=warnings, output=stdout)
+        return EvaluatorResult(
+            success=code == 0,
+            errors=warnings,
+            output=stdout,
+            evidence=self.last_command_evidence,
+        )
 
 
 class CppcheckLinter(BaseEvaluator):
@@ -171,7 +196,12 @@ class CppcheckLinter(BaseEvaluator):
             output = stdout + stderr
             warnings = [line for line in output.split("\n") if line.strip()][:20]
 
-        return EvaluatorResult(success=code == 0, errors=warnings, output=stdout)
+        return EvaluatorResult(
+            success=code == 0,
+            errors=warnings,
+            output=stdout,
+            evidence=self.last_command_evidence,
+        )
 
 
 class CheckstyleLinter(BaseEvaluator):
@@ -197,7 +227,12 @@ class CheckstyleLinter(BaseEvaluator):
             output = stdout + stderr
             warnings = [line for line in output.split("\n") if line.strip()][:20]
 
-        return EvaluatorResult(success=code == 0, errors=warnings, output=stdout)
+        return EvaluatorResult(
+            success=code == 0,
+            errors=warnings,
+            output=stdout,
+            evidence=self.last_command_evidence,
+        )
 
 
 class DotnetLinter(BaseEvaluator):
@@ -223,4 +258,9 @@ class DotnetLinter(BaseEvaluator):
             output = stdout + stderr
             warnings = [line for line in output.split("\n") if line.strip()][:20]
 
-        return EvaluatorResult(success=code == 0, errors=warnings, output=stdout)
+        return EvaluatorResult(
+            success=code == 0,
+            errors=warnings,
+            output=stdout,
+            evidence=self.last_command_evidence,
+        )

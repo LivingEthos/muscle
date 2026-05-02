@@ -84,3 +84,51 @@ def test_build_telemetry_context_reuses_prompt_envelope_metadata() -> None:
     assert telemetry.call_id == envelope.call_id
     assert telemetry.metadata["lesson_overlay_applied"] is False
     assert telemetry.metadata["task"] == "generate"
+
+
+def test_build_telemetry_context_includes_trace_metadata() -> None:
+    envelope = compose_prompt_envelope(
+        base_prompt="Review this file.",
+        lesson_resolver=None,
+        query_text="review this file",
+        stage="semantic_review",
+        base_context_strategy="issue_windows",
+        session_id="sess-trace",
+    )
+
+    telemetry = build_telemetry_context(
+        project_path="/tmp/project",
+        session_id="sess-trace",
+        stage="semantic_review",
+        prompt_envelope=envelope,
+        trace_artifacts={"prompt": "llm_traces/semantic_review/call/prompt.json"},
+        trace_policy="thin",
+        trace_reasons=["benchmark_run"],
+    )
+
+    assert telemetry is not None
+    assert telemetry.metadata["trace_capture_policy"] == "thin"
+    assert telemetry.metadata["trace_capture_reasons"] == ["benchmark_run"]
+    assert telemetry.metadata["trace_pointers"]["prompt"].endswith("prompt.json")
+
+
+def test_compose_prompt_envelope_applies_prompt_compaction_for_safe_stage() -> None:
+    envelope = compose_prompt_envelope(
+        base_prompt=(
+            "Your task is to:\n"
+            "Please investigate this thoroughly and provide your findings and proposed solutions."
+        ),
+        lesson_resolver=None,
+        query_text="handoff summary",
+        stage="handoff",
+        base_context_strategy="handoff_prompt",
+        session_id="sess-3",
+    )
+
+    assert envelope.prompt == "Task:\nInvestigate thoroughly and propose validated fixes."
+    assert envelope.context_strategy == "handoff_prompt+prompt_compaction"
+    assert envelope.metadata["prompt_compaction_applied"] is True
+    assert (
+        envelope.metadata["prompt_compaction_compacted_chars"]
+        < (envelope.metadata["prompt_compaction_original_chars"])
+    )

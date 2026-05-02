@@ -1,0 +1,19 @@
+{
+  "name": "muscle-marketplace",
+  "owner": {
+    "name": "MUSCLE Team",
+    "email": "muscle@minimax.io"
+  },
+  "metadata": {
+    "description": "MUSCLE Claude Code plugin bundle for self-learning code review, lifecycle hooks, diagnostics, local evidence, savings, discovery, filters, and project-local memory."
+  },
+  "plugins": [
+    {
+      "name": "muscle",
+      "description": "Self-learning code review with project-local memory, lifecycle hooks, diagnostics, evidence surfaces, savings, discovery, filters, and operator visibility.",
+      "version": "0.1.0",
+      "category": "development",
+      "source": "./"
+    }
+  ]
+}

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 from pydantic import ValidationError
 
+from tools.muscle.m27_client import M27Client, M27StructuredError, _strip_json_fences
 from tools.muscle.structured_io import (
     FixCandidate,
     PatternScanResult,
@@ -177,12 +180,6 @@ class TestRouteDecisionSchema:
                 rationale="bad",
             )
 
-
-from unittest.mock import MagicMock, patch
-
-from tools.muscle.m27_client import M27Client, M27StructuredError, _strip_json_fences
-
-
 class TestStripJsonFences:
     def test_no_fences(self) -> None:
         assert _strip_json_fences('{"a": 1}') == '{"a": 1}'
@@ -208,9 +205,9 @@ class TestM27StructuredError:
 
 class TestChatStructured:
     @pytest.fixture()
-    def client(self) -> M27Client:
+    def client(self, tmp_path) -> M27Client:
         with patch.dict("os.environ", {"MINIMAX_API_KEY": "test-key"}):
-            return M27Client(api_key="test-key")
+            return M27Client(api_key="test-key", cache_db_path=tmp_path / "cache.db")
 
     def test_valid_json_parses(self, client: M27Client) -> None:
         with patch.object(client, "chat") as mock_chat:

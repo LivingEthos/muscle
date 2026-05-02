@@ -1,18 +1,6 @@
 ---
 description: Run MUSCLE self-learning code review on the current project or specified files
-args:
-  - name: target
-    description: Path to review (defaults to current directory)
-    required: false
-  - name: mode
-    description: "Review mode: review, pressure, auto-fix, plan, hybrid"
-    required: false
-  - name: severity
-    description: "Minimum severity: critical, high, medium, low"
-    required: false
-  - name: execution
-    description: "Execution mode for fix-capable reviews: local or worktree"
-    required: false
+argument-hint: "[target] [mode] [severity] [execution]"
 ---
 
 > **Plan-then-hand-off:** Use MUSCLE for bulk execution; you retain planning and synthesis. Pass a focused scope — don't ask MUSCLE to plan the work.
@@ -22,10 +10,12 @@ args:
 Run a MUSCLE code review. Execute the following command, adding any user-specified options:
 
 ```bash
-muscle review --target "${target:-.}" --mode "${mode:-review}" --severity "${severity:-low}" ${execution:+--execution "$execution"}
+muscle review --target . --mode review --severity low
 ```
 
-If the user specified additional options like `--language`, `--format json`, `--shadow`, `--intensity`, `--max-fixes`, `--output`, `--failsafe`, `--workflow`, or `--focus`, append them to the command.
+If the user specified target, mode, severity, execution, or additional options like
+`--language`, `--format json`, `--shadow`, `--intensity`, `--max-fixes`, `--output`,
+`--failsafe`, `--workflow`, or `--focus`, append those flags to the command.
 
 Use `--execution worktree` when the user wants isolated auto-fix or hybrid edits. Leave execution unset to use the project default.
 

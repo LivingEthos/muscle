@@ -5,7 +5,12 @@ Unit tests for evaluator_registry.py
 import logging
 from unittest.mock import Mock, patch
 
-from tools.muscle.evaluator_registry import LANGUAGE_ALIASES, EvaluatorRegistry, detect_language
+from tools.muscle.evaluator_registry import (
+    LANGUAGE_ALIASES,
+    LANGUAGE_EVALUATORS,
+    EvaluatorRegistry,
+    detect_language,
+)
 from tools.muscle.types import EvalMode
 
 
@@ -81,6 +86,14 @@ class TestEvaluatorRegistry:
         evaluators = registry.get_evaluators("nonexistent-lang-xyz")
         names = [e.name for e in evaluators]
         assert any("dummy" in n.lower() for n in names)
+
+    def test_all_registered_evaluators_load_without_dummy_fallback(self):
+        registry = EvaluatorRegistry()
+        for language, expected_names in LANGUAGE_EVALUATORS.items():
+            evaluators = registry.get_evaluators(language)
+            names = {e.name for e in evaluators}
+            assert "dummy_evaluator" not in names
+            assert set(expected_names).issubset(names)
 
     def test_evaluate_sequential(self):
         registry = EvaluatorRegistry()

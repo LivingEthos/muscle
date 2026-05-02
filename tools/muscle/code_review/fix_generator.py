@@ -383,7 +383,7 @@ Provide the JSON output with the fixed code."""
         fixed_content: str,
     ) -> FixResult:
         backup_path = file_path.with_suffix(file_path.suffix + ".muscle.bak")
-        staged_path = file_path.with_suffix(file_path.suffix + ".muscle.tmp")
+        staged_path = file_path.with_name(f"{file_path.stem}.muscle.tmp{file_path.suffix}")
         safe_content = fixed_content.encode("utf-8", errors="replace").decode("utf-8")
         backup_created = False
 
@@ -461,7 +461,10 @@ Provide the JSON output with the fixed code."""
         }
         cmd = cmd_map.get(detected_language or "")
         if cmd is None:
-            return f"No local validator available for {staged_path.suffix or 'file'}"
+            logger.info(
+                "No local validator available for %s; skipping compile validation", staged_path
+            )
+            return None
 
         try:
             result = subprocess.run(

@@ -14,6 +14,9 @@ from tools.muscle.delegation_metrics import (
     DelegationMetrics,
 )
 from tools.muscle.migrations._0013_delegation_events import MIGRATION_SQL
+from tools.muscle.migrations._0017_delegation_event_metadata import (
+    migrate as migrate_delegation_metadata,
+)
 
 
 @pytest.fixture()
@@ -24,6 +27,7 @@ def project_db(tmp_path: Path) -> Path:
     db_path = muscle_dir / "project_memory.db"
     conn = sqlite3.connect(str(db_path))
     conn.executescript(MIGRATION_SQL)
+    migrate_delegation_metadata(conn)
     conn.close()
     return tmp_path
 
@@ -47,11 +51,11 @@ def _insert_event(
         conn.execute(
             """INSERT INTO delegation_events
                (session_id, created_at, task_tier, entry_point,
-                m27_tokens_in, m27_tokens_out, m27_usd_cents,
-                verifications_run, verifications_failed,
-                escalations_emitted, cache_hits, cache_tokens_saved,
-                pack_id, pack_reused)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, NULL, 0)""",
+               m27_tokens_in, m27_tokens_out, m27_usd_cents,
+               verifications_run, verifications_failed,
+               escalations_emitted, cache_hits, cache_tokens_saved,
+                    pack_id, pack_reused, metadata_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, NULL, 0, '{}')""",
             (
                 session_id,
                 created_at or datetime.now(timezone.utc).isoformat(),
@@ -151,6 +155,26 @@ class TestReportFormatting:
         assert "Escalation rate" in text
         assert "Estimated host tokens" in text
         assert "NOT measured" in text
+
+    def test_text_format_includes_route_breakdown_when_present(self, project_db: Path) -> None:
+        metrics = DelegationMetrics(project_db)
+        metrics.record(
+            DelegationEvent(
+                session_id="sess-001",
+                entry_point="review:review",
+                task_tier="reasoning",
+                metadata={
+                    "route_recommended": "m27_with_verify",
+                    "verification_status": "verified",
+                    "token_savings_signal": 128,
+                },
+            )
+        )
+
+        rpt = metrics.report(since=timedelta(days=1))
+        text = metrics.format_text(rpt)
+        assert "Route outcomes" in text
+        assert "m27_with_verify" in text
 
     def test_json_format_is_valid_json(self, project_db: Path) -> None:
         _insert_event(project_db, session_id="s1")

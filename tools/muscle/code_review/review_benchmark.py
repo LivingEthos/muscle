@@ -18,10 +18,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..claude_publisher import ClaudePublisher
 from ..lesson_resolver import LessonResolver
 from ..m27_client import M27Client
 from ..project_memory import ProjectMemory
 from ..project_memory_types import ModelPackLesson, ModelPackMetadata
+from ..routing import benchmark_routing_profiles
 from ..strategy_kb import GlobalKnowledgeBase
 from ..system_db import SystemDatabase
 from ..tui.project_manager import ProjectConfig, ProjectManager
@@ -152,6 +154,7 @@ class ReviewBenchmarkRunner:
         report["scenario_counts_by_suite"] = self._scenario_counts_by_suite(report["scenarios"])
         report["benchmark_gates"] = self._evaluate_benchmark_gates(report)
         report["thresholds"] = self._evaluate_thresholds(report["aggregate"])
+        report["meta_harness"] = self._run_meta_harness_comparisons()
         if include_history:
             report["history"] = self._history_summary()
 
@@ -167,6 +170,84 @@ class ReviewBenchmarkRunner:
             "markdown": str(md_path),
         }
         return report
+
+    def _run_meta_harness_comparisons(self) -> dict[str, Any]:
+        return {
+            "host_memory": self._benchmark_host_memory_compaction(),
+            "routing": benchmark_routing_profiles(),
+            "promotion_rule": (
+                "Keep a candidate only when benchmark evidence shows better quality, "
+                "lower token cost, or both without regressing the other axis."
+            ),
+        }
+
+    def _benchmark_host_memory_compaction(self) -> dict[str, Any]:
+        publisher = ClaudePublisher(str(self.project_path))
+        critical_rules: list[dict[str, Any]] = [
+            {
+                "text": (
+                    "Please investigate this thoroughly and provide your findings and "
+                    "proposed solutions before editing broad review orchestration paths."
+                ),
+                "score": 0.92,
+                "validated_count": 4,
+            }
+        ]
+        mistake_corrections: list[dict[str, Any]] = [
+            {
+                "mistake": (
+                    "Please keep writing long repetitive host-memory bullets even when a "
+                    "shorter line would preserve the same constraint."
+                ),
+                "correction": (
+                    "Investigate thoroughly and keep host-memory bullets compact while "
+                    "preserving the original guidance."
+                ),
+                "count": 3,
+            }
+        ]
+        agent_calls: list[dict[str, Any]] = [
+            {
+                "agent_name": "verification_agent",
+                "path": "tools/muscle/plugin/agents/verification_agent.md",
+                "use_count": 7,
+            }
+        ]
+        skill_calls: list[dict[str, Any]] = [
+            {
+                "skill_name": "code-review",
+                "path": "tools/muscle/plugin/skills/code-review/SKILL.md",
+                "use_count": 9,
+            }
+        ]
+        tooling_notes = [
+            "Please run uv run pytest tests/unit/test_review_controller.py -v before broad sweeps."
+        ]
+        baseline = publisher.render_preview(
+            critical_rules=critical_rules,
+            mistake_corrections=mistake_corrections,
+            agent_calls=agent_calls,
+            skill_calls=skill_calls,
+            tooling_notes=tooling_notes,
+            compact_host_memory=False,
+        )
+        candidate = publisher.render_preview(
+            critical_rules=critical_rules,
+            mistake_corrections=mistake_corrections,
+            agent_calls=agent_calls,
+            skill_calls=skill_calls,
+            tooling_notes=tooling_notes,
+            compact_host_memory=True,
+        )
+        baseline_chars = len(baseline)
+        candidate_chars = len(candidate)
+        return {
+            "baseline_chars": baseline_chars,
+            "candidate_chars": candidate_chars,
+            "estimated_tokens_saved": max(0, (baseline_chars - candidate_chars) // 4),
+            "candidate_kept": candidate_chars <= baseline_chars,
+            "sections_changed": baseline != candidate,
+        }
 
     def _load_manifest(self) -> dict[str, Any]:
         manifest_path = self.fixture_root / "manifest.json"
@@ -229,6 +310,7 @@ class ReviewBenchmarkRunner:
                 use_kb=False,
                 project_path=prepared.project_path,
                 lesson_resolver=prepared.lesson_resolver,
+                benchmark_run=True,
             )
             context = controller.run()
             review_result = controller.get_review_result()
@@ -924,6 +1006,7 @@ class ReviewBenchmarkRunner:
         thresholds = report["thresholds"]
         suite_aggregates = dict(report.get("suite_aggregates", {}))
         benchmark_gates = dict(report.get("benchmark_gates", {}))
+        meta_harness = dict(report.get("meta_harness", {}))
 
         lines = [
             "# MUSCLE Review Benchmark",
@@ -952,9 +1035,46 @@ class ReviewBenchmarkRunner:
             f"- False positive rate not worse: `{thresholds['false_positive_rate_not_worse']}`",
             f"- Token cost down 30%: `{thresholds['token_cost_down_30pct']}`",
             "",
-            "## Suite Aggregates",
+            "## Meta-Harness",
             "",
         ]
+
+        host_memory = dict(meta_harness.get("host_memory", {}))
+        if host_memory:
+            lines.extend(
+                [
+                    f"- Host memory chars: {host_memory.get('baseline_chars', 0)} -> {host_memory.get('candidate_chars', 0)}",
+                    f"- Host memory estimated tokens saved: {host_memory.get('estimated_tokens_saved', 0)}",
+                    f"- Host memory candidate kept: `{host_memory.get('candidate_kept', False)}`",
+                    "",
+                ]
+            )
+
+        routing = dict(meta_harness.get("routing", {}))
+        if routing:
+            lines.extend(
+                [
+                    f"- Routing quality matches: {routing.get('baseline_quality', 0)} -> {routing.get('candidate_quality', 0)}",
+                    f"- Routing cost units: {routing.get('baseline_cost_units', 0)} -> {routing.get('candidate_cost_units', 0)}",
+                    f"- Routing candidate kept: `{routing.get('candidate_kept', False)}`",
+                    "",
+                ]
+            )
+
+        if meta_harness.get("promotion_rule"):
+            lines.extend(
+                [
+                    f"- Promotion rule: {meta_harness['promotion_rule']}",
+                    "",
+                ]
+            )
+
+        lines.extend(
+            [
+                "## Suite Aggregates",
+                "",
+            ]
+        )
 
         for suite, metrics in suite_aggregates.items():
             lines.extend(

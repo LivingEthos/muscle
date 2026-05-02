@@ -8,24 +8,72 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+_REVIEW_SEVERITIES = {"critical", "high", "medium", "low", "info"}
+_REVIEW_CATEGORIES = {
+    "security",
+    "correctness",
+    "performance",
+    "style",
+    "documentation",
+    "docs",
+    "best_practice",
+}
 
 
 class ReviewFinding(BaseModel):
-    file_path: str
-    line_number: int = Field(ge=1)
-    severity: Literal["critical", "high", "medium", "low", "info"]
-    category: Literal["security", "correctness", "performance", "style", "docs", "best_practice"]
-    title: str
-    description: str
+    model_config = ConfigDict(extra="ignore")
+
+    file_path: str = ""
+    line_number: int = Field(default=1, ge=1)
+    severity: str
+    category: str = "best_practice"
+    title: str = "Code issue"
+    description: str = ""
+    valid: bool = True
+    cwe_id: str | None = None
     code_snippet: str = ""
     auto_fixable: bool = False
     suggested_fix: str | None = None
-    reasoning: str
+    reasoning: str = ""
+
+    @field_validator("severity")
+    @classmethod
+    def validate_severity(cls, value: str) -> str:
+        normalized = value.lower()
+        if normalized not in _REVIEW_SEVERITIES:
+            raise ValueError(f"Unsupported severity: {value}")
+        return normalized
+
+    @field_validator("category")
+    @classmethod
+    def validate_category(cls, value: str) -> str:
+        normalized = value.lower()
+        if normalized not in _REVIEW_CATEGORIES:
+            raise ValueError(f"Unsupported category: {value}")
+        return "documentation" if normalized == "docs" else normalized
+
+
+class ReviewSummary(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    total_reviewed: int = 0
+    valid_issues: int = 0
+    false_positives: int = 0
+    intentional: int = 0
+    critical: int = 0
+    high: int = 0
+    medium: int = 0
+    low: int = 0
+    info: int = 0
 
 
 class ReviewFindings(BaseModel):
-    reviews: list[ReviewFinding]
+    model_config = ConfigDict(extra="ignore")
+
+    reviews: list[ReviewFinding] = Field(default_factory=list)
+    summary: ReviewSummary = Field(default_factory=ReviewSummary)
 
 
 class FixCandidate(BaseModel):

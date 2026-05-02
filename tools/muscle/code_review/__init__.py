@@ -15,7 +15,6 @@ from .committee_reviewer import CommitteeReviewer
 from .fix_generator import FixGenerator
 from .handoff_generator import HandoffGenerator
 from .review_artifacts import ReviewArtifactStore
-from .review_benchmark import ReviewBenchmarkRunner
 from .review_controller import ReviewController
 from .review_kb import GlobalReviewKB, ReviewKB
 from .review_scope import ReviewScopeClassifier
@@ -67,9 +66,18 @@ __all__ = [
     "ReviewWorkflowLoader",
     "ReviewWorkflowEngine",
     "ReviewArtifactStore",
-    "ReviewBenchmarkRunner",
     "ReviewKB",
     "GlobalReviewKB",
     "ShadowBroker",
     "GitWorktreeManager",
 ]
+
+
+def __getattr__(name: str) -> object:
+    """Lazily expose heavier modules to avoid import cycles."""
+    if name == "ReviewBenchmarkRunner":
+        from .review_benchmark import ReviewBenchmarkRunner
+
+        return ReviewBenchmarkRunner
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)

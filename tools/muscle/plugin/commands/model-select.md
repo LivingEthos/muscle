@@ -1,9 +1,6 @@
 ---
 description: Manually select or clear the canonical model for this project
-args:
-  - name: canonical-model
-    description: Canonical model key such as minimax/m2.7@1
-    required: false
+argument-hint: "[canonical-model]"
 ---
 
 Use this when the provider label is ambiguous or when you want model-pack overlays for a known model.

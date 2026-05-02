@@ -139,7 +139,9 @@ class TestClaudePublisher:
                 re.DOTALL,
             )
             if match:
-                rule_lines = [l for l in match.group(1).split("\n") if l.strip().startswith("-")]
+                rule_lines = [
+                    line for line in match.group(1).split("\n") if line.strip().startswith("-")
+                ]
                 assert len(rule_lines) <= 50
 
     def test_publish_deduplicates_entries(self):
@@ -403,3 +405,39 @@ class TestMultiTargetPublish:
             assert first == second
             # Pinned section appears exactly once, not duplicated.
             assert first.count("### Methodology") == 1
+
+    def test_render_preview_compacts_host_memory_lines(self):
+        """Preview rendering should compact verbose dynamic host-memory prose."""
+        from tools.muscle.claude_publisher import ClaudePublisher
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            publisher = ClaudePublisher(tmpdir)
+            baseline = publisher.render_preview(
+                critical_rules=[
+                    {
+                        "text": (
+                            "Please investigate this thoroughly and provide your findings and "
+                            "proposed solutions."
+                        ),
+                        "score": 0.8,
+                        "validated_count": 2,
+                    }
+                ],
+                compact_host_memory=False,
+            )
+            compacted = publisher.render_preview(
+                critical_rules=[
+                    {
+                        "text": (
+                            "Please investigate this thoroughly and provide your findings and "
+                            "proposed solutions."
+                        ),
+                        "score": 0.8,
+                        "validated_count": 2,
+                    }
+                ],
+                compact_host_memory=True,
+            )
+
+            assert len(compacted) < len(baseline)
+            assert "Investigate thoroughly and propose validated fixes." in compacted

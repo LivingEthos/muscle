@@ -13,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from ..lesson_resolver import LessonRenderBudget
+from .prompt_compactor import compact_prompt_text, should_compact_stage
 from .types import PromptEnvelope, TelemetryContext
 
 DEFAULT_STAGE_RENDER_BUDGETS: dict[str, LessonRenderBudget] = {
@@ -41,6 +42,11 @@ DEFAULT_STAGE_RENDER_BUDGETS: dict[str, LessonRenderBudget] = {
         max_total_tokens=160,
         source_token_limits={"local": 85, "related": 35, "model-pack": 25, "global": 15},
     ),
+    "pressure_review": LessonRenderBudget(
+        name="pressure_overlay",
+        max_total_tokens=230,
+        source_token_limits={"local": 120, "related": 45, "model-pack": 40, "global": 25},
+    ),
 }
 
 
@@ -62,11 +68,19 @@ def compose_prompt_envelope(
     session_id: str | None = None,
     language: str | None = None,
     render_budget: LessonRenderBudget | None = None,
+    enable_prompt_compaction: bool | None = None,
 ) -> PromptEnvelope:
     """Return a lesson-aware prompt envelope for one model call."""
     prompt = base_prompt
     context_strategy = base_context_strategy
-    metadata: dict[str, Any] = {"lesson_overlay_applied": False}
+    metadata: dict[str, Any] = {
+        "lesson_overlay_applied": False,
+        "prompt_compaction_applied": False,
+        "prompt_compaction_original_chars": len(base_prompt),
+        "prompt_compaction_compacted_chars": len(base_prompt),
+        "prompt_compaction_ratio": 1.0,
+        "prompt_compaction_estimated_tokens_saved": 0,
+    }
     call_id = uuid4().hex if session_id else None
 
     resolve_for_prompt = getattr(lesson_resolver, "resolve_for_prompt", None)
@@ -86,6 +100,20 @@ def compose_prompt_envelope(
             prompt = f"{resolved.rendered_context}\n\n{base_prompt}"
             context_strategy = f"{base_context_strategy}+lesson_overlay"
 
+    compaction_enabled = (
+        should_compact_stage(stage)
+        if enable_prompt_compaction is None
+        else enable_prompt_compaction
+    )
+    if compaction_enabled:
+        prompt, compaction_metrics = compact_prompt_text(prompt)
+        metadata.update(compaction_metrics.to_metadata())
+        if compaction_metrics.applied:
+            context_strategy = f"{context_strategy}+prompt_compaction"
+    else:
+        metadata["prompt_compaction_original_chars"] = len(prompt)
+        metadata["prompt_compaction_compacted_chars"] = len(prompt)
+
     return PromptEnvelope(
         prompt=prompt,
         context_chars=len(prompt),
@@ -102,6 +130,9 @@ def build_telemetry_context(
     stage: str,
     prompt_envelope: PromptEnvelope,
     metadata: dict[str, Any] | None = None,
+    trace_artifacts: dict[str, str] | None = None,
+    trace_policy: str | None = None,
+    trace_reasons: list[str] | None = None,
     workflow_name: str | None = None,
     review_mode: str | None = None,
     language: str | None = None,
@@ -116,6 +147,12 @@ def build_telemetry_context(
     combined_metadata = dict(prompt_envelope.metadata)
     if metadata:
         combined_metadata.update(metadata)
+    if trace_artifacts:
+        combined_metadata["trace_pointers"] = dict(trace_artifacts)
+    if trace_policy:
+        combined_metadata["trace_capture_policy"] = trace_policy
+    if trace_reasons is not None:
+        combined_metadata["trace_capture_reasons"] = list(trace_reasons)
 
     return TelemetryContext(
         project_path=project_path,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from tools.muscle.code_review.review_artifacts import ReviewArtifactStore
@@ -72,3 +73,32 @@ class TestReviewArtifactStore:
         assert (root / "fixes.json").exists()
         assert (root / "validation.json").exists()
         assert (root / "summary.md").exists()
+        manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["session_id"] == "sess123"
+        assert "scope.json" in manifest["artifacts"]
+
+    def test_prepare_llm_trace_writes_stable_trace_pointers(self, tmp_path: Path):
+        store = ReviewArtifactStore(str(tmp_path), "sess123")
+
+        metadata = store.prepare_llm_trace(
+            call_id="call-1",
+            stage="semantic_review",
+            prompt_text="Review this file.",
+            context_strategy="issue_windows",
+            context_chars=17,
+            prompt_metadata={"lesson_overlay_applied": False},
+            trace_policy="thin",
+            trace_reasons=[],
+        )
+        store.finalize_llm_trace(
+            call_id="call-1",
+            stage="semantic_review",
+            validation_payload={"status": "validated", "parse_success": True},
+        )
+
+        assert metadata["trace_pointers"]["prompt"].endswith("prompt.json")
+        manifest = json.loads(
+            (Path(store.artifact_dir) / "manifest.json").read_text(encoding="utf-8")
+        )
+        assert metadata["trace_pointers"]["prompt"] in manifest["artifacts"]
+        assert metadata["trace_pointers"]["validation"] in manifest["artifacts"]

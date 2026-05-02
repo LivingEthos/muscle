@@ -14,9 +14,13 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Lock
+from typing import TYPE_CHECKING
 
 from .code_reviewer import CodeReviewer
 from .types import IssueCategory, PressureFocus, ReviewIssue, ReviewScope, Severity
+
+if TYPE_CHECKING:
+    from .review_artifacts import ReviewArtifactStore
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +51,14 @@ class CommitteeReviewer:
         static_issues: list[dict],
         scope: ReviewScope,
         pressure_focus: PressureFocus | None = None,
+        pressure_challenge: str | None = None,
         telemetry_session_id: str | None = None,
         workflow_name: str | None = None,
         review_mode: str | None = None,
         language: str | None = None,
         target_type: str | None = None,
+        artifact_store: ReviewArtifactStore | None = None,
+        trace_reasons: list[str] | None = None,
     ) -> dict[str, list[ReviewIssue]]:
         """Run the selected review agents in parallel."""
         agent_findings: dict[str, list[ReviewIssue]] = {}
@@ -64,12 +71,15 @@ class CommitteeReviewer:
                     static_issues,
                     scope,
                     pressure_focus,
+                    pressure_challenge,
                     telemetry_session_id,
                     workflow_name,
                     review_mode,
                     language,
                     scope.complexity,
                     target_type,
+                    artifact_store,
+                    trace_reasons,
                 ): agent_name
                 for agent_name in scope.review_agents
             }
@@ -88,12 +98,15 @@ class CommitteeReviewer:
         static_issues: list[dict],
         scope: ReviewScope,
         pressure_focus: PressureFocus | None = None,
+        pressure_challenge: str | None = None,
         telemetry_session_id: str | None = None,
         workflow_name: str | None = None,
         review_mode: str | None = None,
         language: str | None = None,
         complexity: str | None = None,
         target_type: str | None = None,
+        artifact_store: ReviewArtifactStore | None = None,
+        trace_reasons: list[str] | None = None,
     ) -> list[ReviewIssue]:
         """Run a single review agent."""
         if agent_name == AGENT_CORRECTNESS:
@@ -107,6 +120,8 @@ class CommitteeReviewer:
                 language=language,
                 complexity=complexity,
                 target_type=target_type,
+                artifact_store=artifact_store,
+                trace_reasons=trace_reasons,
             )
             if isinstance(summary, dict):
                 self._record_agent_tokens(agent_name, int(summary.get("token_usage", 0)))
@@ -118,7 +133,19 @@ class CommitteeReviewer:
         if agent_name == AGENT_DOCS_IMPACT:
             return self._docs_impact_review(target_path, scope)
         if agent_name == AGENT_PRESSURE:
-            return self._pressure_review(target_path, pressure_focus)
+            return self._pressure_review(
+                target_path=target_path,
+                pressure_focus=pressure_focus,
+                pressure_challenge=pressure_challenge,
+                telemetry_session_id=telemetry_session_id,
+                workflow_name=workflow_name,
+                review_mode=review_mode,
+                language=language,
+                complexity=complexity,
+                target_type=target_type,
+                artifact_store=artifact_store,
+                trace_reasons=trace_reasons,
+            )
         return []
 
     def consume_agent_tokens(self, agent_name: str) -> int:
@@ -328,6 +355,15 @@ class CommitteeReviewer:
         self,
         target_path: str,
         pressure_focus: PressureFocus | None = None,
+        pressure_challenge: str | None = None,
+        telemetry_session_id: str | None = None,
+        workflow_name: str | None = None,
+        review_mode: str | None = None,
+        language: str | None = None,
+        complexity: str | None = None,
+        target_type: str | None = None,
+        artifact_store: ReviewArtifactStore | None = None,
+        trace_reasons: list[str] | None = None,
     ) -> list[ReviewIssue]:
         target = Path(target_path)
         if target.is_file():
@@ -349,11 +385,25 @@ class CommitteeReviewer:
             data_loss=True,
         )
         findings: list[ReviewIssue] = []
+        source_agent = f"{AGENT_PRESSURE}:{pressure_challenge or 'default'}"
         for file_path in files:
             content = self._read_file(file_path)
             if not content:
                 continue
-            pressure = self.code_reviewer.pressure_review(str(file_path), content, focus)
+            pressure = self.code_reviewer.pressure_review(
+                str(file_path),
+                content,
+                focus,
+                challenge_mode=pressure_challenge,
+                telemetry_session_id=telemetry_session_id,
+                workflow_name=workflow_name,
+                review_mode=review_mode,
+                language=language,
+                complexity=complexity,
+                target_type=target_type,
+                artifact_store=artifact_store,
+                trace_reasons=trace_reasons,
+            )
             summary = pressure.get("summary", {})
             if isinstance(summary, dict):
                 self._record_agent_tokens(AGENT_PRESSURE, int(summary.get("token_usage", 0)))
@@ -370,7 +420,7 @@ class CommitteeReviewer:
                         code_snippet=item.get("code_snippet", ""),
                         suggested_fix=item.get("suggested_approach"),
                         auto_fixable=False,
-                        source_agent=AGENT_PRESSURE,
+                        source_agent=source_agent,
                     )
                 )
         return findings
