@@ -1,6 +1,30 @@
 from __future__ import annotations
 
-from tools.muscle.optimization.context_budgeter import ContextBudgeter
+from tools.muscle.optimization.context_budgeter import (
+    DEFAULT_ESCALATION_LINE_BUDGET,
+    LARGE_WINDOW_ESCALATION_LINE_BUDGET,
+    ContextBudgeter,
+)
+
+
+def test_escalation_budget_defaults_to_compact_ceiling() -> None:
+    assert ContextBudgeter().escalation_line_budget == DEFAULT_ESCALATION_LINE_BUDGET
+
+
+def test_escalation_budget_never_below_base_budget() -> None:
+    # A base budget larger than the escalation ceiling raises the floor.
+    budgeter = ContextBudgeter(line_budget=600, escalation_line_budget=420)
+    assert budgeter.escalation_line_budget == 600
+
+
+def test_large_window_escalation_pulls_more_lines() -> None:
+    code = "\n".join(f"line_{idx} = {idx}" for idx in range(2000))
+    small = ContextBudgeter(escalation_line_budget=DEFAULT_ESCALATION_LINE_BUDGET)
+    large = ContextBudgeter(escalation_line_budget=LARGE_WINDOW_ESCALATION_LINE_BUDGET)
+    small_pb = small.build_semantic_review_budget("f.py", code, [], escalate=True)
+    large_pb = large.build_semantic_review_budget("f.py", code, [], escalate=True)
+    assert len(large_pb.content.splitlines()) == LARGE_WINDOW_ESCALATION_LINE_BUDGET
+    assert len(large_pb.content.splitlines()) > len(small_pb.content.splitlines())
 
 
 def test_semantic_review_budget_prefers_issue_windows() -> None:

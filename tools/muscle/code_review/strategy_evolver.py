@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from ..strategy_kb import StrategyKB
+from .thinking_policy import thinking_for
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,7 @@ Return a JSON object with your analysis:
                 system="You are a code debugging expert. Return valid JSON only.",
                 max_tokens=2048,
                 temperature=0.3,
+                thinking=thinking_for("strategy_evolution"),
             )
 
             if "```json" in response_text:
@@ -263,6 +265,7 @@ Return the evolved strategy as a complete prompt that can be used for future rev
                 system="You are an expert code reviewer. Return the improved strategy prompt only.",
                 max_tokens=4096,
                 temperature=0.5,
+                thinking=thinking_for("strategy_evolution"),
             )
             return response_text.strip()  # type: ignore[no-any-return]
 
@@ -364,6 +367,7 @@ Return a JSON object:
                 system="You are a code review strategy expert. Return valid JSON only.",
                 max_tokens=1024,
                 temperature=0.3,
+                thinking=thinking_for("strategy_evolution"),
             )
 
             if "```json" in response_text:

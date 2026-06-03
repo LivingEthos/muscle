@@ -20,6 +20,12 @@ DEFAULT_WINDOW_RADIUS = 8
 DEFAULT_REVIEW_LINE_BUDGET = 220
 DEFAULT_FIX_LINE_BUDGET = 180
 DEFAULT_TEXT_BUDGET = 1500
+# Ceiling for the escalated whole-file slice. The compact base budget is
+# unchanged; only escalation (json_recovery / explicit escalate) uses this. Large
+# context-window models (e.g. MiniMax-M3 at 1M) can afford a larger slice — see
+# the model-aware value computed in cli._build_context_budgeter.
+DEFAULT_ESCALATION_LINE_BUDGET = 420
+LARGE_WINDOW_ESCALATION_LINE_BUDGET = 1200
 
 
 @dataclass(frozen=True)
@@ -36,10 +42,13 @@ class ContextBudgeter:
         line_budget: int = DEFAULT_REVIEW_LINE_BUDGET,
         review_strategy: str | None = None,
         fix_strategy: str | None = None,
+        escalation_line_budget: int = DEFAULT_ESCALATION_LINE_BUDGET,
     ):
         self.line_budget = max(80, line_budget)
         self.review_strategy = review_strategy or "issue_windows"
         self.fix_strategy = fix_strategy or "patch_hunk_context"
+        # Escalation slice never goes below the compact base budget.
+        self.escalation_line_budget = max(self.line_budget, escalation_line_budget)
 
     def build_semantic_review_budget(
         self,
@@ -55,7 +64,7 @@ class ContextBudgeter:
 
         lines = code_content.splitlines()
         if escalate or self.review_strategy == "expanded_file_slice":
-            selected = self._take_head(lines, min(len(lines), 420))
+            selected = self._take_head(lines, min(len(lines), self.escalation_line_budget))
             return PromptBudget(
                 content="\n".join(selected),
                 strategy="expanded_file_slice",

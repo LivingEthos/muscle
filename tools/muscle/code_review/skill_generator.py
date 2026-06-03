@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from ..m27_client import M27Client
+from .thinking_policy import thinking_for
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,7 @@ class SkillGenerator:
             response_text, _ = self.m27.chat(
                 messages=[{"role": "user", "content": prompt}],
                 system="You are a skilled technical writer. Generate a skill file in markdown format.",
+                thinking=thinking_for("skill_generation"),
             )
         except (ValueError, TypeError) as e:
             # M27 client not properly configured (e.g., no API key in tests)

@@ -1,5 +1,17 @@
 # Scope: MiniMax-M3 Request-Time Thinking Toggle (Tier 1.1)
 
+## Implementation status — IMPLEMENTED (2026-06-03)
+
+Built and shipped (tests + gates green). The open questions below were resolved against MiniMax's primary docs (no live API key was available, so shapes are doc-verified, not probe-verified):
+
+- **Thinking param shapes confirmed:** Anthropic `/v1/messages` → `thinking: {"type": "disabled"|"adaptive"|"enabled"}` ("adaptive" recommended); OpenAI `/v1/chat/completions` → boolean `reasoning_split` (apidog, lower confidence — but the endpoint ignores unknown fields, so it's fail-safe). Implemented in `m27_client._apply_thinking_param`.
+- **Default per-stage policy:** `code_review/thinking_policy.py` — analysis stages `adaptive`, formatting/summarization stages `disabled`; `MUSCLE_THINKING_MODE` overrides all. Wired into 22 call sites across 9 review modules.
+- **Reasoning-token telemetry:** `TokenUsage.reasoning_tokens` is now parsed from both Anthropic- and OpenAI-shaped usage blocks.
+- **Output cap:** model-aware (`MODEL_MAX_OUTPUT_TOKENS`, M3=32768) — *assumption*, M3's true ceiling is still undocumented; confirm before relying on near-cap outputs.
+- **Prompt caching:** found to be **automatic/passive** server-side (no `cache_control` needed) — contradicts the earlier deep-research "refuted" verdict. No client code added.
+
+The remaining text below is the original pre-implementation scope, retained for context.
+
 ## Summary
 - MiniMax-M3 (default model as of the Tier-0 switch) adds a **request-time thinking toggle**: thinking **on** for deep reasoning / agentic / long-horizon work, **off** for low-latency responses. Both modes are billed at the same rate, so this is purely a latency/quality lever — not a cost lever.
 - Today MUSCLE cannot control thinking. It treats reasoning output as noise: `_strip_thinking_tags()` deletes `<think>…</think>` ([m27_client.py:78](../../tools/muscle/m27_client.py:78)) and a retry loop exists purely to cope with M2.x returning thinking-only responses ([m27_client.py:589-706](../../tools/muscle/m27_client.py:589)).

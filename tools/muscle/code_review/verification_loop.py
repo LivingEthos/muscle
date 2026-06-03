@@ -27,6 +27,7 @@ from ..escalation import EscalationPolicy, EscalationRecord, EscalationRecorder
 from ..m27_client import M27Client
 from ..optimization.prompt_context import build_telemetry_context, compose_prompt_envelope
 from .review_artifacts import ReviewArtifactStore, resolve_trace_policy
+from .thinking_policy import thinking_for
 from .types import ReviewIssue
 
 logger = logging.getLogger(__name__)
@@ -285,6 +286,7 @@ Be conservative - if you're not sure, say NEEDS_WORK."""
                 max_tokens=1024,
                 temperature=0.3,
                 telemetry_context=telemetry_context,
+                thinking=thinking_for("verification"),
             )
             verification_status = self._parse_verification_status(response_text)
             verification_failed = verification_status is not VerificationStatus.VERIFIED
@@ -410,6 +412,7 @@ Return a brief analysis (2-3 sentences)."""
                 max_tokens=512,
                 temperature=0.5,
                 telemetry_context=telemetry_context,
+                thinking=thinking_for("verification"),
             )
             if telemetry_context:
                 self.m27_client.update_telemetry_call(

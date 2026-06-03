@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from ..m27_client import M27Client
 from ..optimization.prompt_context import build_telemetry_context, compose_prompt_envelope
+from .thinking_policy import thinking_for
 from .types import HandoffIssue, HandoffPlan, IssueCategory, ReviewIssue, Severity
 
 if TYPE_CHECKING:
@@ -232,6 +233,7 @@ Provide the JSON handoff plan."""
                 {"role": "user", "content": user_prompt},
             ],
             telemetry_context=telemetry_context,
+            thinking=thinking_for("handoff_generation"),
         )
 
         try:
@@ -326,6 +328,7 @@ CONTEXT: {context}
                             },
                         ],
                         telemetry_context=telemetry_context,
+                        thinking=thinking_for("handoff_generation"),
                     )
                     data = self._load_json_response(response_text)
                     self._update_telemetry_call(telemetry_context.call_id, parse_success=True)

@@ -56,6 +56,10 @@ from .optimization import (
     TelemetryRecorder,
     WorkflowOptimizer,
 )
+from .optimization.context_budgeter import (
+    DEFAULT_ESCALATION_LINE_BUDGET,
+    LARGE_WINDOW_ESCALATION_LINE_BUDGET,
+)
 from .project_builder import ProjectBuilder
 from .project_fingerprint import (
     build_project_fingerprint,
@@ -154,9 +158,18 @@ def _create_m27_client() -> M27Client:
 
 
 def _build_context_budgeter(settings: dict[str, str]) -> ContextBudgeter:
+    # MiniMax-M3's 1M context window can afford a larger escalated whole-file
+    # slice than smaller-window models. The compact base budget is unchanged;
+    # only the escalation ceiling scales with the active model.
+    escalation = (
+        LARGE_WINDOW_ESCALATION_LINE_BUDGET
+        if "m3" in _requested_model_label().lower()
+        else DEFAULT_ESCALATION_LINE_BUDGET
+    )
     return ContextBudgeter(
         review_strategy=settings.get("optimize.context.semantic_review"),
         fix_strategy=settings.get("optimize.context.fix_generation"),
+        escalation_line_budget=escalation,
     )
 
 

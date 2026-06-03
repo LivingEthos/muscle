@@ -20,6 +20,55 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Default model used for cost estimation. Mirrors m27_client.DEFAULT_MODEL but is
+# kept as a local literal to avoid an import cycle (pricing is model-string driven).
+DEFAULT_PRICING_MODEL = "MiniMax-M3"
+
+# MiniMax-M3 pricing (USD per token), tiered by input length (MiniMax docs, 2026-06):
+# input <=512K tokens bills at the standard rate; input >512K bills at the
+# long-context rate (exactly 2x). Cache-hit (passive prefix-cache) input tokens
+# bill at a flat discounted rate. Output is billed at the input tier's output rate.
+M3_LONG_CONTEXT_THRESHOLD = 512_000
+M3_INPUT_STANDARD = 0.60 / 1_000_000
+M3_INPUT_LONG = 1.20 / 1_000_000
+M3_OUTPUT_STANDARD = 2.40 / 1_000_000
+M3_OUTPUT_LONG = 4.80 / 1_000_000
+M3_CACHE_HIT_INPUT = 0.12 / 1_000_000
+
+# Fallback flat pricing for non-M3 models (approx MiniMax-M2.7 base rates).
+FALLBACK_INPUT_RATE = 0.28 / 1_000_000
+FALLBACK_OUTPUT_RATE = 1.20 / 1_000_000
+
+
+def m3_pricing_tier(input_tokens: int) -> str:
+    """Return the M3 input-length pricing tier for a request."""
+    return "long_context" if input_tokens > M3_LONG_CONTEXT_THRESHOLD else "standard"
+
+
+def estimate_request_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int = 0,
+) -> float:
+    """Estimate the USD cost of one request under the model's pricing.
+
+    For MiniMax-M3 this applies the input-length tier (>512K input doubles both
+    input and output rates) and bills any cached-prefix input tokens at the
+    discounted cache-hit rate. Non-M3 models use a flat fallback rate.
+    """
+    input_tokens = max(0, input_tokens)
+    output_tokens = max(0, output_tokens)
+    if "m3" not in (model or "").lower():
+        return input_tokens * FALLBACK_INPUT_RATE + output_tokens * FALLBACK_OUTPUT_RATE
+
+    cached = max(0, min(cached_input_tokens, input_tokens))
+    fresh_input = input_tokens - cached
+    long_context = input_tokens > M3_LONG_CONTEXT_THRESHOLD
+    input_rate = M3_INPUT_LONG if long_context else M3_INPUT_STANDARD
+    output_rate = M3_OUTPUT_LONG if long_context else M3_OUTPUT_STANDARD
+    return fresh_input * input_rate + cached * M3_CACHE_HIT_INPUT + output_tokens * output_rate
+
 
 class CostTier(Enum):
     SIMPLE = "simple"
@@ -151,17 +200,22 @@ class CostOptimizer:
         }
         return tier_tokens.get(tier, 2000)
 
-    def estimate_cost(self, task: str) -> dict:
+    def estimate_cost(self, task: str, model: str = DEFAULT_PRICING_MODEL) -> dict:
         tier = self.estimate_tier(task)
         max_tokens = self.get_max_tokens(tier)
 
         estimated_input_tokens = len(task) * 2
         estimated_output_tokens = max_tokens
 
-        estimated_cost = (estimated_input_tokens * 0.000001) + (estimated_output_tokens * 0.000003)
+        estimated_cost = estimate_request_cost(
+            model, estimated_input_tokens, estimated_output_tokens
+        )
+        pricing_tier = m3_pricing_tier(estimated_input_tokens) if "m3" in model.lower() else "flat"
 
         return {
             "tier": tier,
+            "model": model,
+            "pricing_tier": pricing_tier,
             "max_tokens": max_tokens,
             "estimated_input_tokens": estimated_input_tokens,
             "estimated_output_tokens": estimated_output_tokens,

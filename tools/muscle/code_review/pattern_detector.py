@@ -17,6 +17,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from .thinking_policy import thinking_for
+
 logger = logging.getLogger(__name__)
 
 
@@ -265,6 +267,7 @@ Only cluster issues with clear semantic similarity. Return at most 20 clusters."
                 system="You are a code pattern analysis expert. Return valid JSON only.",
                 max_tokens=4096,
                 temperature=0.3,
+                thinking=thinking_for("pattern_detection"),
             )
 
             clusters = self._parse_clusters_response(response_text)
@@ -405,6 +408,7 @@ Return a JSON object:
                 system="You are a code debugging expert. Return valid JSON only.",
                 max_tokens=2048,
                 temperature=0.3,
+                thinking=thinking_for("pattern_detection"),
             )
 
             if "```json" in response_text:

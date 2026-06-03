@@ -40,6 +40,20 @@ DEFAULT_TIMEOUT = 120
 MAX_RETRIES = 5
 RATE_LIMIT_DELAY = 1.0
 
+# Per-model output-token ceilings. MiniMax-M3 supports far larger outputs than
+# the legacy 8192 default. The exact M3 ceiling is undocumented; 32768 is a
+# conservative value well within a 1M-context frontier model. Confirm against
+# MiniMax docs before relying on outputs near this size.
+DEFAULT_MAX_OUTPUT_TOKENS = 8192
+MODEL_MAX_OUTPUT_TOKENS: dict[str, int] = {
+    "minimax-m3": 32768,
+}
+
+# MiniMax-M3 request-time thinking modes. "adaptive" is MiniMax's recommended
+# mode (the model decides reasoning depth); "disabled" turns reasoning off for
+# latency-sensitive calls; "enabled" forces reasoning.
+VALID_THINKING_MODES = frozenset({"disabled", "adaptive", "enabled"})
+
 DEFAULT_SYSTEM_PROMPT = """You are an expert Python/Coding assistant with strong self-correction abilities.
 You are working in a self-improvement loop where you generate code, receive errors, and iterate.
 Your strengths: excellent at following precise formats, thorough error analysis, specific recommendations.
@@ -80,10 +94,45 @@ def _strip_thinking_tags(text: str) -> str:
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
+def _max_output_tokens_for(model: str) -> int:
+    """Resolve the output-token ceiling for a model (model-aware cap)."""
+    key = (model or "").strip().lower()
+    for pattern, cap in MODEL_MAX_OUTPUT_TOKENS.items():
+        if pattern in key:
+            return cap
+    return DEFAULT_MAX_OUTPUT_TOKENS
+
+
+def _apply_thinking_param(
+    payload: dict[str, Any],
+    thinking: str | None,
+    is_openai_compatible: bool,
+) -> None:
+    """Inject MiniMax-M3's request-time thinking control into a request payload.
+
+    No-op when ``thinking`` is None (keeps legacy requests byte-identical) or an
+    unrecognized mode is passed (fail-safe). MiniMax ignores unknown request
+    fields, so a wrong-shaped field is dropped server-side rather than rejected.
+
+    - OpenAI-compatible endpoint: boolean ``reasoning_split``.
+    - Anthropic-compatible endpoint: ``thinking: {"type": <mode>}``.
+    """
+    if thinking is None:
+        return
+    mode = str(thinking).strip().lower()
+    if mode not in VALID_THINKING_MODES:
+        return
+    if is_openai_compatible:
+        payload["reasoning_split"] = mode != "disabled"
+    else:
+        payload["thinking"] = {"type": mode}
+
+
 @dataclass
 class TokenUsage:
     input_tokens: int = 0
     output_tokens: int = 0
+    reasoning_tokens: int = 0
 
     @property
     def total(self) -> int:
@@ -539,6 +588,8 @@ class M27Client:
         temperature: float = 1.0,
         stream: bool = False,
         telemetry_context: TelemetryContext | None = None,
+        thinking: str | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> tuple[str, TokenUsage]:
         if not messages:
             logger.error("Empty messages list provided to chat()")
@@ -564,7 +615,7 @@ class M27Client:
             (system or DEFAULT_SYSTEM_PROMPT)[:2000] if not has_system_in_messages else ""
         )
 
-        max_tokens = max(1, min(max_tokens, 8192))
+        max_tokens = max(1, min(max_tokens, _max_output_tokens_for(self.model)))
         temperature = max(0.0, min(temperature, 2.0))
 
         endpoint_base = self.base_url.rstrip("/")
@@ -583,6 +634,10 @@ class M27Client:
                 payload_messages.insert(0, {"role": "system", "content": effective_system})
             else:
                 payload["system"] = effective_system
+
+        _apply_thinking_param(payload, thinking, is_openai_compatible)
+        if response_format is not None:
+            payload["response_format"] = response_format
 
         last_error = None
         backoff = 1.0
@@ -640,9 +695,23 @@ class M27Client:
                         total_tokens = int(usage_payload.get("total_tokens") or 0)
                         if total_tokens > 0:
                             input_tokens = total_tokens
+                    # MiniMax-M3 reports reasoning/thinking tokens either as a flat
+                    # field (Anthropic-shape) or nested under completion_tokens_details
+                    # (OpenAI-shape). Capture either for thinking-mode telemetry.
+                    completion_details = usage_payload.get("completion_tokens_details")
+                    reasoning_tokens = int(
+                        usage_payload.get("reasoning_tokens")
+                        or (
+                            completion_details.get("reasoning_tokens")
+                            if isinstance(completion_details, dict)
+                            else 0
+                        )
+                        or 0
+                    )
                     usage = TokenUsage(
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
+                        reasoning_tokens=reasoning_tokens,
                     )
                     # Fix: M27-06. Non-empty 200 response with zero tokens on both
                     # sides is almost always a provider telemetry gap worth
@@ -808,16 +877,20 @@ class M27Client:
         temperature: float = 1.0,
         timeout: int | None = None,
         telemetry_context: TelemetryContext | None = None,
+        thinking: str | None = None,
     ) -> Iterator[tuple[str, TokenUsage | None]]:
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": max_tokens,
+            "max_tokens": max(1, min(max_tokens, _max_output_tokens_for(self.model))),
             "temperature": temperature,
             "stream": True,
         }
         if system:
             payload["system"] = system
+        # Streaming always posts to the Anthropic /v1/messages path below, so use
+        # the Anthropic-shaped thinking control.
+        _apply_thinking_param(payload, thinking, is_openai_compatible=False)
 
         request_timeout = timeout or self.timeout
         last_error = None
@@ -1031,6 +1104,7 @@ class M27Client:
         retries: int = 2,
         telemetry_context: TelemetryContext | None = None,
         include_metadata: bool = False,
+        thinking: str | None = None,
     ) -> Any:
         """Call M2.7, parse response as JSON, validate against Pydantic schema.
 
@@ -1093,6 +1167,7 @@ class M27Client:
                 max_tokens=max_tokens,
                 temperature=0.1,
                 telemetry_context=telemetry_context,
+                thinking=thinking,
             )
             parsed_text = _strip_json_fences(_strip_thinking_tags(response_text))
             try:

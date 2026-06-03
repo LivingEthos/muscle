@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from ..m27_client import M27Client
 from ..optimization.prompt_context import build_telemetry_context, compose_prompt_envelope
+from .thinking_policy import thinking_for
 from .types import ReviewIssue
 
 if TYPE_CHECKING:
@@ -207,6 +208,7 @@ Provide the JSON output with the fixed code."""
             ],
             system=SYSTEM_PROMPT,
             telemetry_context=telemetry_context,
+            thinking=thinking_for("fix_generation"),
         )
 
         try:
@@ -306,6 +308,7 @@ Provide ONLY the corrected code that should replace the buggy snippet. Return pl
                 max_tokens=2048,
                 temperature=0.1,
                 telemetry_context=telemetry_context,
+                thinking=thinking_for("fix_generation"),
             )
             fix = response_text.strip()
             if fix and len(fix) > 10:

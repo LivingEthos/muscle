@@ -13,7 +13,9 @@ from tools.muscle.m27_client import (
     M27Client,
     RateLimiter,
     TokenUsage,
+    _apply_thinking_param,
     _detect_api_base,
+    _max_output_tokens_for,
 )
 from tools.muscle.optimization.types import TelemetryContext
 
@@ -22,6 +24,52 @@ class TestTokenUsage:
     def test_total(self):
         tu = TokenUsage(input_tokens=100, output_tokens=50)
         assert tu.total == 150
+
+    def test_reasoning_tokens_field(self):
+        tu = TokenUsage(input_tokens=10, output_tokens=5, reasoning_tokens=3)
+        assert tu.reasoning_tokens == 3
+        # reasoning tokens are informational; total stays input + output
+        assert tu.total == 15
+
+    def test_reasoning_tokens_default_zero(self):
+        assert TokenUsage().reasoning_tokens == 0
+
+
+class TestOutputTokenCap:
+    def test_m3_has_raised_cap(self):
+        assert _max_output_tokens_for("MiniMax-M3") == 32768
+
+    def test_default_cap_for_other_models(self):
+        assert _max_output_tokens_for("MiniMax-M2.7") == 8192
+        assert _max_output_tokens_for("") == 8192
+        assert _max_output_tokens_for("some-unknown-model") == 8192
+
+
+class TestThinkingParam:
+    def test_none_is_noop(self):
+        payload: dict = {}
+        _apply_thinking_param(payload, None, is_openai_compatible=True)
+        _apply_thinking_param(payload, None, is_openai_compatible=False)
+        assert payload == {}
+
+    def test_invalid_mode_is_noop(self):
+        payload: dict = {}
+        _apply_thinking_param(payload, "bogus", is_openai_compatible=False)
+        assert payload == {}
+
+    def test_openai_shape_is_boolean(self):
+        on: dict = {}
+        _apply_thinking_param(on, "adaptive", is_openai_compatible=True)
+        assert on == {"reasoning_split": True}
+        off: dict = {}
+        _apply_thinking_param(off, "disabled", is_openai_compatible=True)
+        assert off == {"reasoning_split": False}
+
+    def test_anthropic_shape_is_typed_object(self):
+        for mode in ("disabled", "adaptive", "enabled"):
+            payload: dict = {}
+            _apply_thinking_param(payload, mode, is_openai_compatible=False)
+            assert payload == {"thinking": {"type": mode}}
 
 
 class TestRateLimiter:

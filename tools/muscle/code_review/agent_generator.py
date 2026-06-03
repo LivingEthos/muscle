@@ -23,6 +23,7 @@ from typing import Any
 from ..backup_manager import BackupManager
 from ..m27_client import M27Client
 from ..project_memory import ProjectMemory
+from .thinking_policy import thinking_for
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,7 @@ class AgentGenerator:
         response_text, _ = self.m27.chat(
             messages=[{"role": "user", "content": prompt}],
             system="You are an expert at designing Claude Code sub-agents. Generate an agent definition.",
+            thinking=thinking_for("agent_generation"),
         )
 
         if response_text:
@@ -366,6 +368,7 @@ class AgentGenerator:
         response_text, _ = self.m27.chat(
             messages=[{"role": "user", "content": prompt}],
             system="You are an expert at revising Claude Code sub-agents. Generate an improved agent definition.",
+            thinking=thinking_for("agent_generation"),
         )
 
         if not response_text:

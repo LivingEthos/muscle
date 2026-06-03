@@ -176,6 +176,16 @@ Guidance for editing MUSCLE prompts and plugin artifacts:
 - MUSCLE's active backlog (`docs/REMAINING_TODOS.md`) tracks the pinned **Methodology + Delegation Protocol + Effort Guidance** work for reviewed-project host docs so the host model hands bulk execution off to MUSCLE's M3 agents (`/muscle:review`, `/muscle:rescue`, `/muscle:pressure`, verification agent) while keeping planning and synthesis with itself.
 - The plugin manifest at `tools/muscle/plugin/.claude-plugin/plugin.json` is **manually curated** — new slash commands require updating the manifest's `description` field as well as adding the command file.
 
+## MiniMax-M3 Feature Wiring
+
+How MUSCLE exploits M3 over M2.7 (design doc: `docs/plans/m3-thinking-toggle-scope.md`):
+
+- **Request-time thinking toggle.** `m27_client._apply_thinking_param` injects the per-endpoint shape (`thinking: {type: ...}` on the Anthropic path, boolean `reasoning_split` on the OpenAI path). `chat()`/`chat_structured()`/`chat_streaming()` take a `thinking` kwarg (default `None` = byte-identical legacy request). Per-stage policy lives in `code_review/thinking_policy.py`: analysis stages (semantic/committee/verification/fix/pattern) use `adaptive`; formatting/summarization stages (memory/handoff/skill/agent/strategy) use `disabled`. Override all stages with `MUSCLE_THINKING_MODE`. Both modes cost the same — this is a latency/quality lever, not a cost lever.
+- **Prompt caching is automatic.** MiniMax-M3 passively prefix-caches (order: tool list → system → user) for calls ≥512 input tokens at $0.12/MTok (80% off). No `cache_control` is sent or needed; MUSCLE already places the stable system prompt first. Do **not** add explicit cache markers.
+- **Tiered pricing.** `cost_optimizer.estimate_request_cost(model, in, out, cached_input_tokens=)` applies M3's input-length tiers (>512K input doubles both rates) and the cache-hit rate. `estimate_cost()` reports `model` + `pricing_tier`.
+- **Model-aware caps.** Output ceiling is model-keyed (`MODEL_MAX_OUTPUT_TOKENS`: M3=32768 vs 8192 default). The escalated whole-file review slice scales for M3's 1M window (`ContextBudgeter.escalation_line_budget`, set in `cli._build_context_budgeter`); the compact base budget is unchanged.
+- **`response_format`** is plumbed through `chat()` as an opt-in passthrough (default off); the proven text-parse path in `chat_structured()` remains the default.
+
 ## Key Patterns
 
 - **API Client**: `M27Client` uses direct HTTP calls against MiniMax's Anthropic-compatible API and includes retry, rate limiting, and JSON recovery behavior.
@@ -190,6 +200,7 @@ Guidance for editing MUSCLE prompts and plugin artifacts:
 | `MINIMAX_API_KEY` (or legacy alias `ANTHROPIC_API_KEY`) | **MiniMax** credential. Despite the alias name, this is **not** a real Anthropic key — it authenticates MiniMax's Anthropic-compatible endpoint. |
 | `ANTHROPIC_BASE_URL` | API endpoint (default: `https://api.minimax.io/anthropic`) |
 | `ANTHROPIC_MODEL` | Override MUSCLE's canonical MiniMax model (used by `cli.py`). |
+| `MUSCLE_THINKING_MODE` | Override the per-stage M3 thinking policy for **all** review stages. One of `disabled`, `adaptive`, `enabled` (invalid/unset falls back to the per-stage policy in `code_review/thinking_policy.py`). |
 | `CODEX_HOME` | Codex session root for `optimization/importers.py` (default: `~/.codex`). |
 
 ## Testing Conventions
