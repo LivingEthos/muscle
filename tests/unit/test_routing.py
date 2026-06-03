@@ -62,6 +62,16 @@ class TestParseJsonResponse:
         result = _parse_json_response(text)
         assert result["tier"] == "mechanical"
 
+    def test_thinking_tags_are_stripped(self) -> None:
+        text = '<think>classifying</think>{"tier": "mechanical"}'
+        result = _parse_json_response(text)
+        assert result["tier"] == "mechanical"
+
+    def test_prose_wrapped_json_is_extracted(self) -> None:
+        text = 'Here is the route:\n{"tier": "reasoning"}\nDone.'
+        result = _parse_json_response(text)
+        assert result["tier"] == "reasoning"
+
     def test_invalid_json_raises(self) -> None:
         with pytest.raises(json.JSONDecodeError):
             _parse_json_response("not json")
@@ -154,6 +164,17 @@ class TestTaskRouter:
         call_args = mock_client.chat.call_args
         user_msg = call_args[1]["messages"][0]["content"]
         assert "Scope hint" in user_msg
+
+    def test_classifier_failure_falls_back_to_offline_route(
+        self, router: TaskRouter, mock_client: MagicMock
+    ) -> None:
+        mock_client.chat.side_effect = RuntimeError("provider unavailable")
+
+        decision = router.route("rename one variable")
+
+        assert decision.routing_profile == "current"
+        assert decision.tier == TaskTier.MECHANICAL
+        assert decision.recommended in {Recommendation.M27, Recommendation.M27_WITH_VERIFY}
 
 
 class TestRouteCLI:

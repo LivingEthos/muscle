@@ -1,6 +1,6 @@
 # PROJECT_INDEX.md
 
-Navigational index for the MUSCLE repository. For maintainer guidance, see `CLAUDE.md`. For runtime/persistence design, see `docs/architecture.md`. For product roadmap, see `MUSCLE_PLAN.md`. For the active plugin overhaul, see `PLAN_OPUS_4_7_DELEGATION_OVERHAUL.md`.
+Navigational index for the MUSCLE repository. For maintainer guidance, see `CLAUDE.md`. For runtime/persistence design, see `docs/architecture.md`. For product roadmap, see `MUSCLE_PLAN.md`. For the active backlog and next-task tracker, see `docs/REMAINING_TODOS.md`.
 
 ## Quick Links
 
@@ -10,8 +10,7 @@ Navigational index for the MUSCLE repository. For maintainer guidance, see `CLAU
 | `AGENTS.md` | Cross-tool development guide (code style, CLI, tests). Hand-authored; not plugin-published. |
 | `MUSCLE_PLAN.md` | Product roadmap and phase tracker. |
 | `docs/architecture.md` | Runtime + persistence design (authoritative for actual state). |
-| `docs/REMAINING_TODOS.md` | Open findings from the 2026-04-16 production audit. |
-| `PLAN_OPUS_4_7_DELEGATION_OVERHAUL.md` | Active plan: Opus 4.7 delegation-first plugin + CLAUDE.md/AGENTS.md overhaul. |
+| `docs/REMAINING_TODOS.md` | Single living backlog, retired-plan index, and next-task tracker. |
 | `README.md` | Public-facing overview. |
 
 ## Directory Map
@@ -100,11 +99,12 @@ Review completes → `LearningPipeline.learn_from_review()` → `project_memory.
 - Quality gates: `uv run mypy tools/muscle/`, `uv run ruff check tools/muscle/`, `uv run ruff format --check tools/muscle/`
 - Coverage source: `tools.muscle` (excludes `tools/scle/`)
 - `pytest-asyncio` with `asyncio_mode = "auto"`
-- **Baseline as of 2026-04-17:** ruff + format clean; mypy has 4 pre-existing non-blocking errors (unused `type: ignore` at `code_review/review_workflows.py:17`, `tui/views.py:901`; `orjson` missing-stub at `cli.py:20`; `Any` return at `cli.py:1974`). Test suite: `test_cli.py::TestTuiCommand::test_tui_runs` fails in non-terminal test environments due to `readkey()` requiring real stdin — pre-existing environmental issue, not a code defect.
+- **Baseline as of 2026-05-22:** `uv sync --extra dev`, `uv run mypy tools/muscle/`, `uv run ruff check tools/muscle/`, `uv run ruff format --check tools/muscle/`, and `uv run pytest tests/ -q` pass (`2432 passed, 3 skipped`). The release wheel builds locally, contains the Claude/Codex plugin bundle, installs into a clean temporary virtual environment, and exposes parseable `muscle doctor --json` output.
 
 ## Known Gaps
 
-See `docs/REMAINING_TODOS.md` for the full 2026-04-16 audit findings. Key items overlap with the delegation plan:
-- `AGENTS.md` publishing is **not yet implemented** — added by `PLAN_OPUS_4_7_DELEGATION_OVERHAUL.md`.
-- Host-docs optimizer (non-destructive reorganization of existing `CLAUDE.md`/`AGENTS.md`) is planned, not built.
-- `ClaudePublisher.publish()` currently hardcodes a single output path (`self.project_path / "CLAUDE.md"` in `claude_publisher.py:75`) — multi-file publishing requires refactor.
+See `docs/REMAINING_TODOS.md` for the active backlog. Recently closed items (no longer gaps):
+- **Host-docs optimizer is built.** `tools/muscle/code_review/host_memory_optimizer.py` is shipped and exposed via `muscle optimize-host-docs` for non-destructive reorganization of pre-existing `CLAUDE.md` / `AGENTS.md`.
+- **`ClaudePublisher.publish()` is multi-target.** It writes to both `CLAUDE.md` and `AGENTS.md` by default (`target_files` list in `claude_publisher.py`), with size-capped sections and M2.7 consolidation on overflow.
+
+Open items live in `docs/REMAINING_TODOS.md`. No production-readiness blocker is currently tracked there; deferred product experiments are the opt-in foresight preflight and consensus supervision workstreams.

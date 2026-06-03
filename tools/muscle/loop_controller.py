@@ -56,6 +56,7 @@ MAX_COMMIT_MESSAGE_LENGTH = 500
 
 
 class LoopEvent(Enum):
+    SESSION_START = "session_start"
     ITERATION_START = "iteration_start"
     ITERATION_END = "iteration_end"
     GENERATION_START = "generation_start"
@@ -693,6 +694,15 @@ class LoopController:
         logger.info(
             f"Starting MUSCLE session {ctx.session_id}: "
             f"{self._truncate(self.config.task, MAX_TASK_PREVIEW_LENGTH)}..."
+        )
+        self._emit(
+            LoopEvent.SESSION_START,
+            {
+                "session": ctx.session_id,
+                "task": self.config.task,
+                "output_dir": self.config.output_dir,
+                "max_iterations": self.config.max_iterations,
+            },
         )
 
         self._write_session_pid(ctx.session_id)

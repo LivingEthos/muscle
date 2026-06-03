@@ -4,12 +4,16 @@ Unit tests for active-review snapshots, doctor reporting, and host runtime.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+from click.testing import CliRunner
 
 from tools.muscle.active_review import (
     refresh_active_review,
     refresh_external_catchup,
 )
+from tools.muscle.cli import cli
 from tools.muscle.doctor import build_doctor_report
 from tools.muscle.host_runtime import run_host_hook
 from tools.muscle.project_memory import ProjectMemory
@@ -119,9 +123,19 @@ def test_build_doctor_report_surfaces_new_plugin_checks(tmp_path: Path) -> None:
     assert checks["plugin_command_docs_parity"].status == "ok"
 
 
-def test_build_doctor_report_warns_on_real_anthropic_endpoint(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_doctor_json_output_is_machine_parseable(tmp_path: Path, monkeypatch) -> None:
+    _init_project(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(cli, ["doctor", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["project_path"] == str(tmp_path)
+    assert any(check["key"] == "plugin_manifest_digests" for check in payload["checks"])
+
+
+def test_build_doctor_report_warns_on_real_anthropic_endpoint(tmp_path: Path, monkeypatch) -> None:
     """B3: doctor surfaces a warn when ANTHROPIC_BASE_URL points at the real
     Anthropic API instead of MiniMax. Without this, MUSCLE silently sends
     M2.7-shaped traffic to Anthropic."""

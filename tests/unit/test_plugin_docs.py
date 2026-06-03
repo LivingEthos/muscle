@@ -30,6 +30,8 @@ TOP_LEVEL_COMMANDS = {
     "enable",
     "disable",
     "status",
+    "visualize",
+    "foresight",
     "doctor",
     "discover",
     "savings",

@@ -301,6 +301,19 @@ class TestAnalyzerRun:
             assert hasattr(result, "issues")
             assert hasattr(result, "duration_seconds")
 
+    def test_analyze_includes_local_ast_and_rule_findings(self, temp_python_dir, monkeypatch):
+        """Built-in analyzers should feed AST and rule findings into static results."""
+        target = temp_python_dir / "unsafe.py"
+        target.write_text('print(eval("1"))\n', encoding="utf-8")
+        monkeypatch.setitem(LANGUAGE_TOOLS, "python", [])
+
+        analyzer = StaticAnalyzer(target_path=str(temp_python_dir), language="python")
+        results = analyzer.analyze()
+
+        local_result = next(result for result in results if result.tool_name == "muscle-local")
+        rule_ids = {issue.rule_id for issue in local_result.issues}
+        assert {"AST-001", "RULE-001"} <= rule_ids
+
     def test_analyze_handles_missing_tools(self, temp_python_dir):
         """Test that analyze handles missing tools gracefully."""
         (temp_python_dir / "main.py").write_text("print('hello')")

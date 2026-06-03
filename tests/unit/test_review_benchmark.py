@@ -35,6 +35,10 @@ def _metrics(
     tokens_used: int,
     finding_count: int = 1,
     duration_seconds: float = 1.0,
+    prompt_tokens_used: int = 0,
+    prompt_context_chars: int = 0,
+    llm_input_tokens: int = 0,
+    llm_output_tokens: int = 0,
     lesson_usage_count: int = 0,
     related_lesson_usage_count: int = 0,
     model_pack_lesson_usage_count: int = 0,
@@ -52,6 +56,14 @@ def _metrics(
         "false_positive_rate": false_positive_rate,
         "finding_count": finding_count,
         "tokens_used": tokens_used,
+        "llm_call_count": 1
+        if prompt_tokens_used or llm_input_tokens or prompt_context_chars
+        else 0,
+        "llm_input_tokens": llm_input_tokens or prompt_tokens_used,
+        "llm_output_tokens": llm_output_tokens,
+        "prompt_context_chars": prompt_context_chars,
+        "prompt_token_estimate": (prompt_context_chars + 3) // 4 if prompt_context_chars else 0,
+        "prompt_tokens_used": prompt_tokens_used or llm_input_tokens,
         "duration_seconds": duration_seconds,
         "verified_fix_count": 0,
         "one_shot_verified_fix_count": 0,
@@ -128,6 +140,7 @@ class TestReviewBenchmarkRunner:
 
         related = next(s for s in scenarios if s.name == "related_project_payment_parser")
         prepared_related = runner._build_scenario_workspace(related, tmp_path / "related")
+        assert prepared_related.project_path == prepared_related.lesson_resolver.project_path
         related_pm = prepared_related.lesson_resolver.project_memory
         related_lessons = related_pm.list_transferred_lessons(
             project_path=prepared_related.project_path
@@ -136,6 +149,28 @@ class TestReviewBenchmarkRunner:
         assert Path(prepared_related.target_path).exists()
         assert related_lessons
         assert related_lessons[0]["validation_status"] == "provisional"
+        related_result = prepared_related.lesson_resolver.resolve_for_prompt(
+            query_text="payment schema validation",
+            stage="committee_review",
+            session_id="sess-related",
+            language="Python",
+        )
+        assert any(lesson.source == "related" for lesson in related_result.lessons)
+        related_usage = related_pm.list_lesson_usage_events(
+            project_path=prepared_related.project_path,
+            session_id="sess-related",
+        )
+        assert any(event["lesson_source"] == "related" for event in related_usage)
+
+        unrelated = next(s for s in scenarios if s.name == "unrelated_project_payment_parser")
+        prepared_unrelated = runner._build_scenario_workspace(unrelated, tmp_path / "unrelated")
+        unrelated_result = prepared_unrelated.lesson_resolver.resolve_for_prompt(
+            query_text="payment schema validation",
+            stage="committee_review",
+            session_id="sess-unrelated",
+            language="Python",
+        )
+        assert all(lesson.source != "related" for lesson in unrelated_result.lessons)
 
         model_pack = next(s for s in scenarios if s.name == "model_pack_api_response_parser")
         prepared_model = runner._build_scenario_workspace(model_pack, tmp_path / "model")
@@ -146,6 +181,31 @@ class TestReviewBenchmarkRunner:
         assert installed_packs[0]["canonical_model_key"] == "minimax/m2.7@1"
         assert pack_lessons
         assert pack_lessons[0]["lesson_key"] == "python-api-schema-guard"
+        model_result = prepared_model.lesson_resolver.resolve_for_prompt(
+            query_text="nested api schema validation",
+            stage="committee_review",
+            session_id="sess-model-pack",
+            language="Python",
+        )
+        assert any(lesson.source == "model-pack" for lesson in model_result.lessons)
+        model_usage = prepared_model.lesson_resolver.project_memory.list_lesson_usage_events(
+            project_path=prepared_model.project_path,
+            session_id="sess-model-pack",
+        )
+        assert any(event["lesson_source"] == "model-pack" for event in model_usage)
+
+    def test_legacy_benchmark_runs_without_lesson_overlay(self, tmp_path: Path):
+        runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
+        scenario = next(
+            s for s in runner._load_scenarios() if s.name == "related_project_payment_parser"
+        )
+        prepared = runner._build_scenario_workspace(scenario, tmp_path / "prepared")
+
+        assert runner._lesson_resolver_for_workflow(prepared, "legacy") is None
+        assert (
+            runner._lesson_resolver_for_workflow(prepared, "review-smart")
+            is prepared.lesson_resolver
+        )
 
     def test_issue_matching_respects_file_severity_and_matchers(self, tmp_path: Path):
         runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
@@ -511,17 +571,91 @@ class TestReviewBenchmarkRunner:
         )
         assert release_evidence["release_gates"]["overall_passed"] is False
 
+    def test_prompt_overhead_gate_uses_prompt_side_telemetry(self, tmp_path: Path):
+        runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
+        scenario_results = [
+            _scenario_result(
+                name=f"{suite}-sample",
+                suite=suite,
+                baseline=_metrics(
+                    workflow_name="legacy",
+                    recall=1.0,
+                    high_critical_recall=1.0,
+                    false_positive_rate=0.10,
+                    tokens_used=100,
+                    prompt_tokens_used=100,
+                ),
+                candidate=_metrics(
+                    workflow_name="review-smart",
+                    recall=1.0,
+                    high_critical_recall=1.0,
+                    false_positive_rate=0.10,
+                    tokens_used=250,
+                    prompt_tokens_used=110,
+                ),
+            )
+            for suite in (
+                "core-review",
+                "neutral-baseline",
+                "unrelated-project",
+                "related-project",
+                "model-pack",
+            )
+        ]
+
+        suite_aggregates = runner._aggregate_by_suite(scenario_results)
+        report = {"suite_aggregates": suite_aggregates}
+
+        gate = runner._evaluate_benchmark_gates(report)["gates"]["prompt_overhead_within_budget"]
+
+        assert gate["passed"] is True
+        assert suite_aggregates["core-review"]["prompt_overhead_ratio"] == 1.1
+        assert suite_aggregates["core-review"]["token_overhead_ratio"] == 2.5
+        assert suite_aggregates["core-review"]["prompt_overhead_basis"] == "telemetry_prompt_tokens"
+
     def test_meta_harness_comparisons_include_host_memory_and_routing(self, tmp_path: Path):
         runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
 
         comparisons = runner._run_meta_harness_comparisons()
 
+        assert comparisons["host_memory"]["available"] is True
         assert (
             comparisons["host_memory"]["candidate_chars"]
             <= comparisons["host_memory"]["baseline_chars"]
         )
         assert "cases" in comparisons["routing"]
         assert "promotion_rule" in comparisons
+
+    def test_host_memory_compaction_unavailable_does_not_crash_benchmark(
+        self,
+        tmp_path: Path,
+    ):
+        runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
+
+        with patch.object(
+            benchmark_module,
+            "ClaudePublisher",
+            side_effect=RuntimeError("database disk image is malformed"),
+        ):
+            result = runner._benchmark_host_memory_compaction()
+
+        assert result["available"] is False
+        assert result["error_type"] == "RuntimeError"
+        assert result["candidate_kept"] is False
+
+    def test_history_summary_unavailable_does_not_crash_benchmark(self, tmp_path: Path):
+        runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
+
+        with patch.object(
+            benchmark_module,
+            "ProjectMemory",
+            side_effect=RuntimeError("database disk image is malformed"),
+        ):
+            result = runner._history_summary()
+
+        assert result["available"] is False
+        assert result["error_type"] == "RuntimeError"
+        assert result["review_runs"] == 0
 
     def test_report_persists_gate_evidence_in_json_and_markdown(self, tmp_path: Path):
         runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]

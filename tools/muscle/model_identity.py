@@ -29,6 +29,9 @@ TRUSTED_ENDPOINTS = {
 }
 
 HEURISTIC_ALIAS_MAP = {
+    "minimax-m3": "minimax/m3@1",
+    "minimax m3": "minimax/m3@1",
+    "m3": "minimax/m3@1",
     "minimax-m2.7": "minimax/m2.7@1",
     "minimax m2.7": "minimax/m2.7@1",
     "m2.7": "minimax/m2.7@1",
@@ -43,6 +46,7 @@ HEURISTIC_ALIAS_MAP = {
 
 SUPPORTED_CANONICAL_MODELS = sorted(
     {
+        "minimax/m3@1",
         "minimax/m2.7@1",
         "anthropic/claude-sonnet@4",
         "anthropic/claude-sonnet@3.7",
@@ -55,6 +59,8 @@ SUPPORTED_CANONICAL_MODELS = sorted(
 
 INTROSPECTION_MODEL_PATTERNS: dict[str, tuple[tuple[str, str], ...]] = {
     "minimax": (
+        ("minimax-m3", "minimax/m3@1"),
+        ("m3", "minimax/m3@1"),
         ("minimax-m2.7", "minimax/m2.7@1"),
         ("m2.7", "minimax/m2.7@1"),
     ),
@@ -251,12 +257,16 @@ class ModelIdentityResolver:
             return None
         normalized = (requested_label or "").strip().lower()
 
-        if owner == "minimax" and any(token in normalized for token in ("minimax", "m2.7")):
+        if owner == "minimax" and any(token in normalized for token in ("minimax", "m3", "m2.7")):
+            # Distinguish M3 from the M2.x family so learning attributes to the
+            # correct model pack. Bare "minimax" (no version) stays on m2.7@1 for
+            # backward compatibility with existing installs.
+            minimax_key = "minimax/m3@1" if "m3" in normalized else "minimax/m2.7@1"
             return ModelIdentity(
                 requested_label=requested_label,
                 provider_endpoint=provider_endpoint,
                 provider_fingerprint=fingerprint,
-                canonical_model_key="minimax/m2.7@1",
+                canonical_model_key=minimax_key,
                 identity_source="provider_endpoint",
                 confidence=0.95,
             )

@@ -1,0 +1,54 @@
+version: 1
+bundle_root: tools/muscle/plugin
+files:
+  - path: tools/muscle/plugin/.claude-plugin/plugin.json
+    host: claude-code
+    type: manifest
+    validation: claude plugin validate plus test_plugin_manifest.py
+    purpose: Claude plugin manifest and advertised command list.
+  - path: tools/muscle/plugin/.claude-plugin/marketplace.json
+    host: claude-code
+    type: marketplace
+    validation: claude plugin validate plus test_plugin_manifest.py
+    purpose: Nested marketplace manifest for local plugin root.
+  - path: .claude-plugin/marketplace.json
+    host: claude-code
+    type: marketplace
+    validation: claude plugin validate plus test_plugin_manifest.py
+    purpose: Repository-level marketplace manifest pointing to the plugin git subdirectory.
+  - path: tools/muscle/plugin/.codex-plugin/plugin.json
+    host: codex
+    type: manifest
+    validation: test_plugin_manifest.py and Codex validator when available
+    purpose: Codex manifest, interface metadata, skills path, capabilities, and assets.
+  - path: tools/muscle/plugin/hooks/hooks.json
+    host: claude-code
+    type: hooks
+    validation: test_plugin_hooks.py
+    purpose: Claude SessionStart, UserPromptSubmit, and Stop hook routes.
+  - path: tools/muscle/plugin/hooks.json
+    host: codex
+    type: hooks
+    validation: test_plugin_hooks.py
+    purpose: Codex PostToolUse Write/Edit hook route.
+  - path: tools/muscle/plugin/assets/muscle-mark.svg
+    host: shared
+    type: asset
+    validation: test_plugin_manifest.py
+    purpose: Composer icon and logo.
+  - path: tools/muscle/plugin/commands/
+    host: shared
+    type: commands
+    validation: test_plugin_docs.py and test_plugin_manifest.py
+    purpose: Slash command documentation and CLI mappings.
+  - path: tools/muscle/plugin/agents/
+    host: shared
+    type: agents
+    validation: manifest/package inspection
+    purpose: Rescue and verification helper agents.
+  - path: tools/muscle/plugin/skills/code-review/SKILL.md
+    host: shared
+    type: skill
+    validation: manifest/package inspection
+    purpose: Code-review skill used by host model invocation.
+

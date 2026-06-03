@@ -164,10 +164,28 @@ Return ONLY the summarized text, no quotes or explanation."""
         return match.group(1) if match else ""
 
     def _is_duplicate(self, section: str, entry: str) -> bool:
+        """Check exact and semantic duplicates in the managed section."""
         entry_lower = entry.lower().strip()
+        entry_files = set(re.findall(r"[\w/\\.-]+\.(?:py|js|ts|go|rs|java|cpp|c|h)\b", entry_lower))
+        entry_title_words: set[str] = set()
+        for match in re.finditer(r"[:\-\]]\s*([^\n]{10,80})", entry_lower):
+            entry_title_words.update(match.group(1).split()[:5])
+
         for line in section.split("\n"):
-            if entry_lower in line.lower():
+            line_lower = line.lower().strip()
+            if not line_lower or line_lower.startswith("<!--"):
+                continue
+            if len(entry_lower) < 100 and entry_lower in line_lower:
                 return True
+            line_files = set(
+                re.findall(r"[\w/\\.-]+\.(?:py|js|ts|go|rs|java|cpp|c|h)\b", line_lower)
+            )
+            if entry_files and line_files and entry_files == line_files:
+                line_title_words: set[str] = set()
+                for match in re.finditer(r"[:\-\]]\s*([^\n]{10,80})", line_lower):
+                    line_title_words.update(match.group(1).split()[:5])
+                if len(entry_title_words & line_title_words) >= 3:
+                    return True
         return False
 
     def _format_entry(self, entry: str, category: str) -> str:

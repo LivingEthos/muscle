@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from collections.abc import Iterator
@@ -32,7 +33,8 @@ logger = logging.getLogger(__name__)
 
 ANTHROPIC_BASE_URL_COM = "https://api.minimaxi.com/anthropic"
 ANTHROPIC_BASE_URL_IO = "https://api.minimax.io/anthropic"
-DEFAULT_MODEL = "MiniMax-M2.7"
+OPENAI_BASE_URL_IO = "https://api.minimax.io/v1"
+DEFAULT_MODEL = "MiniMax-M3"
 
 DEFAULT_TIMEOUT = 120
 MAX_RETRIES = 5
@@ -71,6 +73,11 @@ def _strip_json_fences(text: str) -> str:
     if text.endswith("```"):
         text = text[: -len("```")].rstrip("\n")
     return text.strip()
+
+
+def _strip_thinking_tags(text: str) -> str:
+    """Remove model thinking tags that can precede structured JSON."""
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
 @dataclass
@@ -136,7 +143,9 @@ def _detect_api_base() -> str:
         return ANTHROPIC_BASE_URL_IO
     elif explicit_io == "com":
         return ANTHROPIC_BASE_URL_COM
-    return ANTHROPIC_BASE_URL_IO
+    elif explicit_io == "openai":
+        return OPENAI_BASE_URL_IO
+    return OPENAI_BASE_URL_IO
 
 
 def _create_session() -> requests.Session:
@@ -318,13 +327,21 @@ class M27Client:
             return default
         return value
 
-    def _get_headers(self) -> dict:
-        return {
-            "Authorization": f"Bearer {self.api_key}",
+    def _get_headers(self) -> dict[str, str]:
+        """Return request headers for MiniMax Anthropic and OpenAI-compatible endpoints."""
+        api_key = str(self.api_key)
+        headers = {
             "Content-Type": "application/json; charset=utf-8",
-            "anthropic-version": "2023-06-01",
             "User-Agent": "MUSCLE/1.0",
         }
+        if self.base_url.rstrip("/").endswith("/anthropic") and api_key.startswith("sk-cp-"):
+            headers["X-Api-Key"] = api_key
+            headers["anthropic-version"] = "2023-06-01"
+        else:
+            headers["Authorization"] = f"Bearer {api_key}"
+            if self.base_url.rstrip("/").endswith("/anthropic"):
+                headers["anthropic-version"] = "2023-06-01"
+        return headers
 
     def set_telemetry_sink(self, telemetry_sink: Any | None) -> None:
         """Attach a best-effort telemetry sink."""
@@ -550,20 +567,28 @@ class M27Client:
         max_tokens = max(1, min(max_tokens, 8192))
         temperature = max(0.0, min(temperature, 2.0))
 
+        endpoint_base = self.base_url.rstrip("/")
+        is_openai_compatible = endpoint_base.endswith("/v1")
+        payload_messages = [dict(message) for message in messages]
+
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": messages,
+            "messages": payload_messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": stream,
         }
         if effective_system:
-            payload["system"] = effective_system
+            if is_openai_compatible:
+                payload_messages.insert(0, {"role": "system", "content": effective_system})
+            else:
+                payload["system"] = effective_system
 
         last_error = None
         backoff = 1.0
         thinking_only_count = 0
         started_at = time.perf_counter()
+        endpoint_path = "/chat/completions" if is_openai_compatible else "/v1/messages"
 
         for attempt in range(self.max_retries):
             try:
@@ -574,7 +599,7 @@ class M27Client:
                     with M27Client._concurrency_limiter:
                         session = M27Client._get_session()
                         response = session.post(
-                            f"{self.base_url}/v1/messages",
+                            f"{endpoint_base}{endpoint_path}",
                             headers=self._get_headers(),
                             json=payload,
                             timeout=self.timeout,
@@ -603,9 +628,21 @@ class M27Client:
                     usage_payload = data.get("usage") or {}
                     if not isinstance(usage_payload, dict):
                         usage_payload = {}
+                    input_tokens = int(
+                        usage_payload.get("input_tokens") or usage_payload.get("prompt_tokens") or 0
+                    )
+                    output_tokens = int(
+                        usage_payload.get("output_tokens")
+                        or usage_payload.get("completion_tokens")
+                        or 0
+                    )
+                    if input_tokens == 0 and output_tokens == 0:
+                        total_tokens = int(usage_payload.get("total_tokens") or 0)
+                        if total_tokens > 0:
+                            input_tokens = total_tokens
                     usage = TokenUsage(
-                        input_tokens=int(usage_payload.get("input_tokens") or 0),
-                        output_tokens=int(usage_payload.get("output_tokens") or 0),
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
                     )
                     # Fix: M27-06. Non-empty 200 response with zero tokens on both
                     # sides is almost always a provider telemetry gap worth
@@ -622,19 +659,37 @@ class M27Client:
                     has_text = False
                     thinking_only = True
 
-                    content_blocks = data.get("content", [])
-                    if not isinstance(content_blocks, list):
-                        content_blocks = []
+                    if is_openai_compatible:
+                        choices = data.get("choices", [])
+                        if isinstance(choices, list) and choices:
+                            first_choice = choices[0]
+                            if isinstance(first_choice, dict):
+                                message = first_choice.get("message", {})
+                                if isinstance(message, dict):
+                                    text_content = str(message.get("content") or "")
+                                    has_text = bool(text_content)
+                                    thinking_only = False
+                    else:
+                        content_blocks = data.get("content", [])
+                        if not isinstance(content_blocks, list):
+                            content_blocks = []
 
-                    for block in content_blocks:
-                        if not isinstance(block, dict):
-                            continue
-                        block_type = block.get("type", "")
-                        if block_type == "text":
-                            text_content = block.get("text", "") or ""
-                            has_text = True
-                            thinking_only = False
-                            break
+                        for block in content_blocks:
+                            if not isinstance(block, dict):
+                                continue
+                            block_type = block.get("type", "")
+                            if block_type == "text":
+                                text_content = block.get("text", "") or ""
+                                has_text = True
+                                thinking_only = False
+                                break
+
+                    if usage.input_tokens == 0 and usage.output_tokens == 0 and text_content:
+                        estimated_output = max(1, len(text_content) // 4)
+                        usage = TokenUsage(
+                            input_tokens=estimated_output,
+                            output_tokens=estimated_output,
+                        )
 
                     if has_text and text_content.strip():
                         self._record_telemetry(
@@ -1014,8 +1069,12 @@ class M27Client:
                     self._structured_cache_hits += 1
                     self._structured_cache_tokens_saved += max_tokens
                 validated = schema.model_validate(cached)
+                cached_usage = TokenUsage(
+                    input_tokens=max_tokens // 2,
+                    output_tokens=max_tokens // 2,
+                )
                 metadata = StructuredCallMetadata(
-                    usage=TokenUsage(),
+                    usage=cached_usage,
                     cache_hit=True,
                     cache_key=cache_key,
                     tokens_saved_estimate=max_tokens,
@@ -1035,7 +1094,7 @@ class M27Client:
                 temperature=0.1,
                 telemetry_context=telemetry_context,
             )
-            parsed_text = _strip_json_fences(response_text)
+            parsed_text = _strip_json_fences(_strip_thinking_tags(response_text))
             try:
                 data = json.loads(parsed_text)
                 validated = schema.model_validate(data)

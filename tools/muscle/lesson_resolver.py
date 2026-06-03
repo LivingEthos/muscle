@@ -32,6 +32,7 @@ MAX_RELATED_LESSONS = 4
 MAX_MODEL_PACK_LESSONS = 4
 MAX_GLOBAL_LESSONS = 3
 MAX_RENDER_CHARS = 2800
+MIN_RELATED_LESSON_SCORE = 0.5
 
 
 def _stable_key(*parts: str) -> str:
@@ -59,7 +60,7 @@ class LessonRenderBudget:
         default_factory=lambda: {
             "local": 120,
             "related": 50,
-            "model-pack": 40,
+            "model-pack": 70,
             "global": 30,
         }
     )
@@ -226,6 +227,7 @@ class LessonResolver:
         ]
 
     def _related_lessons(self, query_text: str) -> list[ResolvedLesson]:
+        relatedness_by_source = self._relatedness_by_source_project()
         rows = self.project_memory.list_transferred_lessons(
             project_path=self.project_path,
             validation_statuses=["provisional", "validated"],
@@ -237,16 +239,24 @@ class LessonResolver:
             lesson_text = _normalize_text(str(row.get("lesson_text", "")))
             if not lesson_text:
                 continue
+            source_project_path = str(row.get("source_project_path", ""))
+            relatedness_score = self._relatedness_score(
+                relatedness_by_source,
+                source_project_path,
+            )
+            if relatedness_score < MIN_RELATED_LESSON_SCORE:
+                continue
             related.append(
                 ResolvedLesson(
                     lesson_key=str(row.get("lesson_key")),
                     lesson_text=lesson_text,
                     source="related",
                     trigger_pattern=str(row.get("trigger_pattern", "")),
-                    source_project_path=str(row.get("source_project_path", "")),
+                    source_project_path=source_project_path,
                     metadata={
                         "validation_status": row.get("validation_status", "provisional"),
                         "link_mode": row.get("link_mode", "snapshot"),
+                        "relatedness_score": relatedness_score,
                         "match": 1 if str(row.get("trigger_pattern", "")).lower() in query else 0,
                     },
                 )
@@ -260,6 +270,12 @@ class LessonResolver:
         ):
             source_project_path = str(link.get("source_project_path", ""))
             if not source_project_path:
+                continue
+            relatedness_score = self._relatedness_score(
+                relatedness_by_source,
+                source_project_path,
+            )
+            if relatedness_score < MIN_RELATED_LESSON_SCORE:
                 continue
             try:
                 source_pm = ProjectMemory(source_project_path)
@@ -290,6 +306,7 @@ class LessonResolver:
                         metadata={
                             "validation_status": "provisional",
                             "link_mode": "attach",
+                            "relatedness_score": relatedness_score,
                         },
                     )
                 )
@@ -302,6 +319,39 @@ class LessonResolver:
             reverse=True,
         )
         return related[:MAX_RELATED_LESSONS]
+
+    def _relatedness_by_source_project(self) -> dict[str, float]:
+        links = self.project_memory.list_related_project_links(
+            project_path=self.project_path,
+            status="active",
+        )
+        scores: dict[str, float] = {}
+        for link in links:
+            source_project_path = str(link.get("source_project_path", ""))
+            if not source_project_path:
+                continue
+            try:
+                score = float(link.get("relatedness_score", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                score = 0.0
+            scores[source_project_path] = score
+            try:
+                scores[str(Path(source_project_path).resolve())] = score
+            except OSError:
+                pass
+        return scores
+
+    @staticmethod
+    def _relatedness_score(scores: dict[str, float], source_project_path: str) -> float:
+        if not source_project_path:
+            return 1.0
+        if source_project_path in scores:
+            return scores[source_project_path]
+        try:
+            resolved = str(Path(source_project_path).resolve())
+        except OSError:
+            resolved = source_project_path
+        return scores.get(resolved, 1.0)
 
     def _model_pack_lessons(
         self,
@@ -436,8 +486,10 @@ class LessonResolver:
                 rendered_lessons.extend(prospective_lessons)
                 source_render_counts[source] = len(prospective_lessons)
 
-        rendered = "\n".join(lines).strip()
         truncated = len(rendered_lessons) < len(lessons)
+        if not rendered_lessons:
+            return "", [], truncated, {}
+        rendered = "\n".join(lines).strip()
         if len(rendered) > MAX_RENDER_CHARS:
             rendered = rendered[: MAX_RENDER_CHARS - 16].rstrip() + "\n... [truncated]"
             truncated = True

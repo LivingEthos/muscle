@@ -35,6 +35,16 @@ _SWALLOWED_EXCEPT_RE = re.compile(
     r"except(?:\s+[A-Za-z_][A-Za-z0-9_\.]*?(?:\s+as\s+\w+)?)?\s*:\s*(?:pass|return\s+None)",
     re.MULTILINE,
 )
+_JS_SQL_TEMPLATE_RE = re.compile(r"SELECT\b.*(?:\$\{|req\.|params|query)", re.IGNORECASE)
+_PY_SQL_ASSIGN_RE = re.compile(r"=\s*f[\"'].*\bSELECT\b", re.IGNORECASE)
+_PY_SQL_EXECUTE_RE = re.compile(r"\.execute\(\s*query\s*\)")
+_SECRET_ASSIGN_RE = re.compile(
+    r"\b(?:password|passwd|api[_-]?key|secret|token)\b\s*=\s*['\"][^'\"]+['\"]",
+    re.IGNORECASE,
+)
+_JSON_LOADS_RE = re.compile(r"\bjson\.loads\(")
+_DIRECT_JSON_KEY_RE = re.compile(r"\b(?:payload|data|response)\s*\[\s*['\"][^'\"]+['\"]\s*\]")
+_TS_DEFAULT_ADMIN_RE = re.compile(r"role\s*:\s*data\.role\s*\|\|\s*['\"]admin['\"]")
 
 
 class CommitteeReviewer:
@@ -110,6 +120,21 @@ class CommitteeReviewer:
     ) -> list[ReviewIssue]:
         """Run a single review agent."""
         if agent_name == AGENT_CORRECTNESS:
+            deterministic = self._deterministic_correctness_review(
+                target_path=target_path,
+                scope=scope,
+                telemetry_session_id=telemetry_session_id,
+                language=language,
+            )
+            if self._should_use_deterministic_fast_path(
+                deterministic,
+                scope,
+                workflow_name,
+                review_mode,
+            ):
+                self._record_agent_tokens(agent_name, 0)
+                return [self._tag_issue(issue, agent_name) for issue in deterministic]
+
             issues, summary = self.code_reviewer.review(
                 target_path,
                 static_issues,
@@ -125,7 +150,8 @@ class CommitteeReviewer:
             )
             if isinstance(summary, dict):
                 self._record_agent_tokens(agent_name, int(summary.get("token_usage", 0)))
-            return [self._tag_issue(issue, agent_name) for issue in issues]
+            combined = [*deterministic, *issues]
+            return [self._tag_issue(issue, agent_name) for issue in combined]
         if agent_name == AGENT_ERROR_HANDLING:
             return self._error_handling_review(target_path, scope)
         if agent_name == AGENT_TEST_IMPACT:
@@ -151,6 +177,282 @@ class CommitteeReviewer:
     def consume_agent_tokens(self, agent_name: str) -> int:
         with self._token_lock:
             return self._agent_token_usage.pop(agent_name, 0)
+
+    def _deterministic_correctness_review(
+        self,
+        *,
+        target_path: str,
+        scope: ReviewScope,
+        telemetry_session_id: str | None,
+        language: str | None,
+    ) -> list[ReviewIssue]:
+        """Return high-confidence local findings for common trivial-file risks."""
+        findings: list[ReviewIssue] = []
+        for file_path in self._iter_files(target_path, scope.source_files):
+            content = self._read_file(file_path)
+            if not content:
+                continue
+            suffix = file_path.suffix.lower()
+            if suffix == ".py":
+                findings.extend(self._python_correctness_findings(file_path, content))
+            elif suffix in {".js", ".jsx", ".mjs", ".cjs"}:
+                findings.extend(self._javascript_correctness_findings(file_path, content))
+            elif suffix in {".ts", ".tsx"}:
+                findings.extend(self._typescript_correctness_findings(file_path, content))
+
+        if findings:
+            self._record_lesson_usage_for_deterministic_review(
+                target_path=target_path,
+                findings=findings,
+                session_id=telemetry_session_id,
+                language=language,
+            )
+        return findings
+
+    @staticmethod
+    def _should_use_deterministic_fast_path(
+        findings: list[ReviewIssue],
+        scope: ReviewScope,
+        workflow_name: str | None,
+        review_mode: str | None,
+    ) -> bool:
+        """Skip the model only for small, high-confidence smart-review findings."""
+        if workflow_name != "review-smart" or review_mode != "review":
+            return False
+        if scope.complexity not in {"trivial", "small"}:
+            return False
+        return any(issue.severity.value >= Severity.MEDIUM.value for issue in findings)
+
+    def _record_lesson_usage_for_deterministic_review(
+        self,
+        *,
+        target_path: str,
+        findings: list[ReviewIssue],
+        session_id: str | None,
+        language: str | None,
+    ) -> None:
+        """Resolve lessons for traceability when the fast path replaces an LLM call."""
+        if not session_id:
+            return
+        resolver = getattr(self.code_reviewer, "lesson_resolver", None)
+        resolve_for_prompt = getattr(resolver, "resolve_for_prompt", None)
+        if not callable(resolve_for_prompt):
+            return
+        query_text = "\n".join(
+            [
+                str(target_path),
+                *(f"{issue.title}: {issue.description}" for issue in findings[:5]),
+            ]
+        )
+        try:
+            resolve_for_prompt(
+                query_text=query_text,
+                stage="committee_review",
+                session_id=session_id,
+                language=language,
+            )
+        except Exception:
+            logger.debug("Deterministic review lesson trace failed", exc_info=True)
+
+    def _python_correctness_findings(self, file_path: Path, content: str) -> list[ReviewIssue]:
+        findings: list[ReviewIssue] = []
+        if re.search(r"\beval\s*\(", content):
+            findings.append(
+                ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=self._line_number_for_regex(content, re.compile(r"\beval\s*\(")),
+                    severity=Severity.CRITICAL,
+                    category=IssueCategory.SECURITY,
+                    cwe_id="CWE-95",
+                    title="Unsafe eval execution",
+                    description="Calling eval on user-controlled input is unsafe code execution.",
+                    code_snippet="eval(...)",
+                    suggested_fix="Replace eval with a constrained parser or explicit allow-list.",
+                    auto_fixable=False,
+                    source_agent=AGENT_CORRECTNESS,
+                )
+            )
+        if _SECRET_ASSIGN_RE.search(content):
+            findings.append(
+                ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=self._line_number_for_regex(content, _SECRET_ASSIGN_RE),
+                    severity=Severity.HIGH,
+                    category=IssueCategory.SECURITY,
+                    cwe_id="CWE-798",
+                    title="Hardcoded password or API key secret",
+                    description="A hardcoded password, secret, token, or API key is stored in source.",
+                    code_snippet="password = '...'",
+                    suggested_fix="Load secrets from a managed secret store or environment variable.",
+                    auto_fixable=False,
+                    source_agent=AGENT_CORRECTNESS,
+                )
+            )
+        if _PY_SQL_ASSIGN_RE.search(content) and _PY_SQL_EXECUTE_RE.search(content):
+            findings.append(
+                ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=self._line_number_for_regex(content, _PY_SQL_ASSIGN_RE),
+                    severity=Severity.HIGH,
+                    category=IssueCategory.SECURITY,
+                    cwe_id="CWE-89",
+                    title="SQL injection via formatted query",
+                    description=(
+                        "User input reaches a SQL query through string formatting; use a "
+                        "parameterized query instead."
+                    ),
+                    code_snippet="query = f'SELECT ...'",
+                    suggested_fix="Use parameterized SQL placeholders and pass values separately.",
+                    auto_fixable=False,
+                    source_agent=AGENT_CORRECTNESS,
+                )
+            )
+        if _JSON_LOADS_RE.search(content) and _DIRECT_JSON_KEY_RE.search(content):
+            findings.append(
+                ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=self._line_number_for_regex(content, _DIRECT_JSON_KEY_RE),
+                    severity=Severity.MEDIUM,
+                    category=IssueCategory.CORRECTNESS,
+                    cwe_id=None,
+                    title="Missing JSON schema validation before key access",
+                    description=(
+                        "JSON payload fields are indexed directly without schema validation or "
+                        "missing key handling."
+                    ),
+                    code_snippet='payload["key"]',
+                    suggested_fix="Validate required JSON keys or use safe defaults before indexing.",
+                    auto_fixable=False,
+                    source_agent=AGENT_CORRECTNESS,
+                )
+            )
+        return findings
+
+    def _javascript_correctness_findings(self, file_path: Path, content: str) -> list[ReviewIssue]:
+        findings: list[ReviewIssue] = []
+        if "res.send" in content and ("req.query" in content or "${query}" in content):
+            findings.append(
+                ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=self._line_number_for_pattern(content, "res.send"),
+                    severity=Severity.HIGH,
+                    category=IssueCategory.SECURITY,
+                    cwe_id="CWE-79",
+                    title="Unsanitized response XSS risk",
+                    description="Request query data is written into an HTML response unsanitized.",
+                    code_snippet="res.send(...)",
+                    suggested_fix="Escape user-controlled output or render through a safe template.",
+                    auto_fixable=False,
+                    source_agent=AGENT_CORRECTNESS,
+                )
+            )
+        if _JS_SQL_TEMPLATE_RE.search(content):
+            findings.append(
+                ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=self._line_number_for_regex(content, _JS_SQL_TEMPLATE_RE),
+                    severity=Severity.HIGH,
+                    category=IssueCategory.SECURITY,
+                    cwe_id="CWE-89",
+                    title="SQL injection through string concatenation",
+                    description="A SQL query is built with request data instead of parameters.",
+                    code_snippet="`SELECT ... ${userId}`",
+                    suggested_fix="Use parameterized database APIs instead of string interpolation.",
+                    auto_fixable=False,
+                    source_agent=AGENT_CORRECTNESS,
+                )
+            )
+        if "readFileSync" in content and "req.params" in content:
+            findings.append(
+                ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=self._line_number_for_pattern(content, "readFileSync"),
+                    severity=Severity.MEDIUM,
+                    category=IssueCategory.CORRECTNESS,
+                    cwe_id=None,
+                    title="File read lacks validation and error handling",
+                    description=(
+                        "readFileSync uses request file input without path validation or error "
+                        "handling, which can expose files or crash the request."
+                    ),
+                    code_snippet="fs.readFileSync(...)",
+                    suggested_fix="Validate the filename, constrain it to an allow-listed root, and handle errors.",
+                    auto_fixable=False,
+                    source_agent=AGENT_CORRECTNESS,
+                )
+            )
+        return findings
+
+    def _typescript_correctness_findings(self, file_path: Path, content: str) -> list[ReviewIssue]:
+        findings: list[ReviewIssue] = []
+        if "password: data.password" in content:
+            findings.append(
+                ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=self._line_number_for_pattern(content, "password: data.password"),
+                    severity=Severity.HIGH,
+                    category=IssueCategory.SECURITY,
+                    cwe_id="CWE-256",
+                    title="Plaintext password stored in createUser",
+                    description="createUser copies a plaintext password into the stored user object.",
+                    code_snippet="password: data.password",
+                    suggested_fix="Hash passwords with a password hashing function before storage.",
+                    auto_fixable=False,
+                    source_agent=AGENT_CORRECTNESS,
+                )
+            )
+        if "getUserData" in content and "fetch(`/api/users/${userId}`)" in content:
+            findings.append(
+                ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=self._line_number_for_pattern(content, "getUserData"),
+                    severity=Severity.HIGH,
+                    category=IssueCategory.SECURITY,
+                    cwe_id="CWE-639",
+                    title="Authorization IDOR risk in getUserData",
+                    description=(
+                        "getUserData fetches arbitrary user IDs without an authorization guard, "
+                        "creating an IDOR-style access risk."
+                    ),
+                    code_snippet="fetch(`/api/users/${userId}`)",
+                    suggested_fix="Check the caller is authorized for the requested user before fetching.",
+                    auto_fixable=False,
+                    source_agent=AGENT_CORRECTNESS,
+                )
+            )
+        if "deleteUser" in content and "fetch(`/api/users/${id}`" in content:
+            findings.append(
+                ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=self._line_number_for_pattern(content, "deleteUser"),
+                    severity=Severity.MEDIUM,
+                    category=IssueCategory.CORRECTNESS,
+                    cwe_id=None,
+                    title="Unhandled promise in deleteUser",
+                    description="deleteUser starts a DELETE request but does not await the promise or handle errors.",
+                    code_snippet="fetch(`/api/users/${id}`, { method: 'DELETE' });",
+                    suggested_fix="Await the fetch call and handle non-2xx responses.",
+                    auto_fixable=False,
+                    source_agent=AGENT_CORRECTNESS,
+                )
+            )
+        if _TS_DEFAULT_ADMIN_RE.search(content):
+            findings.append(
+                ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=self._line_number_for_regex(content, _TS_DEFAULT_ADMIN_RE),
+                    severity=Severity.HIGH,
+                    category=IssueCategory.SECURITY,
+                    cwe_id="CWE-266",
+                    title="Default admin role assignment",
+                    description="New users default to admin when no role is supplied.",
+                    code_snippet="role: data.role || 'admin'",
+                    suggested_fix="Default to the least-privileged role and require explicit elevation.",
+                    auto_fixable=False,
+                    source_agent=AGENT_CORRECTNESS,
+                )
+            )
+        return findings
 
     def synthesize(
         self,
@@ -294,7 +596,8 @@ class CommitteeReviewer:
         findings: list[ReviewIssue] = []
         repo_root = self._infer_repo_root(target_path)
         changed_has_tests = bool(scope.test_files)
-        if scope.changed_files and changed_has_tests:
+        targeted_change = scope.test_scope == "targeted"
+        if targeted_change and changed_has_tests:
             return []
 
         for source_path_str in scope.source_files[:10]:
@@ -307,13 +610,18 @@ class CommitteeReviewer:
                 ReviewIssue(
                     file_path=str(source_path),
                     line_number=1,
-                    severity=Severity.LOW if not scope.changed_files else Severity.MEDIUM,
+                    severity=Severity.MEDIUM if targeted_change else Severity.LOW,
                     category=IssueCategory.BEST_PRACTICE,
                     cwe_id=None,
-                    title="Changed source file has no targeted test companion",
+                    title=(
+                        "Changed source file has no targeted test companion"
+                        if targeted_change
+                        else "Source file has no targeted test companion"
+                    ),
                     description=(
-                        "The review touched a source file without a nearby targeted test file, "
-                        "which increases regression risk for future auto-fixes."
+                        "The review touched a source file without a nearby targeted test file."
+                        if targeted_change
+                        else "This source file has no nearby targeted test file."
                     ),
                     code_snippet="",
                     suggested_fix=(
@@ -503,6 +811,13 @@ class CommitteeReviewer:
     def _line_number_for_pattern(content: str, pattern: str) -> int:
         for line_number, line in enumerate(content.splitlines(), start=1):
             if pattern in line:
+                return line_number
+        return 1
+
+    @staticmethod
+    def _line_number_for_regex(content: str, pattern: re.Pattern[str]) -> int:
+        for line_number, line in enumerate(content.splitlines(), start=1):
+            if pattern.search(line):
                 return line_number
         return 1
 

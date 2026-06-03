@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-MUSCLE (MiniMax Unified Self-Correcting Learning Engine) is a local-first code review and iterative code-generation tool that uses the MiniMax M2.7 model via an Anthropic-compatible API.
+MUSCLE (MiniMax Unified Self-Correcting Learning Engine) is a local-first code review and iterative code-generation tool that uses MiniMax M-series models via an Anthropic-compatible API. The default model is **MiniMax-M3** (1M-token context, request-time thinking toggle); set `ANTHROPIC_MODEL` to pin a different MiniMax model (e.g. `MiniMax-M2.7`).
 
 Current reality in this repo:
 
@@ -62,11 +62,11 @@ The active package has two main runtime flows:
 | Module | Role |
 |--------|------|
 | `cli.py` | Click-based CLI entry point. All commands defined here. |
-| `m27_client.py` | HTTP client for MiniMax M2.7 via Anthropic-compatible API. Streaming, retries, JSON recovery from truncated responses. |
+| `m27_client.py` | HTTP client for MiniMax M3 via Anthropic-compatible API. Streaming, retries, JSON recovery from truncated responses. |
 | `loop_controller.py` | Orchestrates generate-evaluate-fix loops with event callbacks. |
 | `session_manager.py` | File-based session persistence and resume under `.muscle/sessions/<session_id>/`. |
 | `budget_manager.py` | Token/cost budget tracking and enforcement. |
-| `code_generator.py` | Prompts M2.7 for code, parses fenced code blocks, writes generated files. |
+| `code_generator.py` | Prompts M3 for code, parses fenced code blocks, writes generated files. |
 | `evaluator_registry.py` | Picks compiler/test/lint evaluators by language and aggregates results. |
 | `evolver.py` | Turns failures into an improved next strategy, with optional StrategyKB lookup. |
 | `project_manager.py` | Per-project bootstrap, config, and `.muscle/` layout management. |
@@ -76,7 +76,7 @@ The active package has two main runtime flows:
 | `system_db.py` | Global SQLite store (`~/.muscle/system.db`) for fingerprints, aliases, model-pack cache. |
 | `learning_ingestor.py` | Ingests and validates learning signals from completed reviews. |
 | `memory_decision_engine.py` | Scores and promotes findings from `project_memory.db` into publishable rules. |
-| `claude_publisher.py` | Publishes DB-backed content into root `CLAUDE.md` via `MUSCLE_PUBLISHED_START/END` markers. Enforces per-section size caps and M2.7 consolidation. |
+| `claude_publisher.py` | Publishes DB-backed content into root `CLAUDE.md` via `MUSCLE_PUBLISHED_START/END` markers. Enforces per-section size caps and M3 consolidation. |
 | `lesson_resolver.py` | Resolves the effective lesson set (project + related projects + model pack). |
 | `model_identity.py` / `model_packs.py` / `model_pack_standard.py` / `model_pack_validation.py` | Canonical model identity and model-pack overlay system. |
 | `audit_presenter.py` | Formats audit/trace output for CLI + TUI consumption. |
@@ -92,7 +92,7 @@ The active package has two main runtime flows:
 | Module | Role |
 |--------|------|
 | `review_controller.py` | Orchestrates full review flow across modes (review, auto-fix, plan, hybrid, pressure). |
-| `code_reviewer.py` | Sends code to M2.7 for analysis, parses structured findings. |
+| `code_reviewer.py` | Sends code to M3 for analysis, parses structured findings. |
 | `static_analyzer.py` | Runs local analyzers like Ruff, ESLint, TSC, Clippy, and normalizes findings. |
 | `fix_generator.py` | Applies suggested code replacements for auto-fixable issues. |
 | `handoff_generator.py` | Produces markdown handoff plans for manual follow-up. |
@@ -155,25 +155,25 @@ Global state:
 - The TUI is live against `project_memory.db` for review runs, model-identity history, and lesson-usage history. Some advanced panels still render lighter/placeholder data per `docs/architecture.md`.
 - GitHub, GitLab, Jenkins, and MCP adapters exist as modules, but not all are first-class CLI workflows yet.
 - `LearningPipeline` is wired after reviews and memory-file updates are real today. The deeper recurring-pattern ecosystem is present and still maturing.
-- Codex-side session imports exist via `optimization/importers.py` (reads `$CODEX_HOME/sessions`). No `AGENTS.md` publishing exists today — added by the delegation-overhaul plan (`PLAN_OPUS_4_7_DELEGATION_OVERHAUL.md`).
+- Codex-side session imports exist via `optimization/importers.py` (reads `$CODEX_HOME/sessions`). Host-doc publishing follow-up, including `AGENTS.md` coverage, is tracked in `docs/REMAINING_TODOS.md`.
 - Some plugin docs are currently stale. In particular, do not rely on `muscle shadow ...` examples or `muscle settings platform --hooks`; use the actual CLI help instead.
 
-## Host Model Contract (Opus 4.7 / Codex)
+## Host Model Contract (Opus 4.8 / Codex)
 
-MUSCLE's plugin output is consumed by either **Claude Code (Opus 4.7)** or **Codex**. The plugin itself never needs an Anthropic API key — it authenticates to **MiniMax M2.7** via `MINIMAX_API_KEY` (or the legacy alias `ANTHROPIC_API_KEY`, which points to MiniMax's Anthropic-compatible endpoint, **not** real Anthropic).
+MUSCLE's plugin output is consumed by either **Claude Code (Opus 4.8)** or **Codex**. The plugin itself never needs an Anthropic API key — it authenticates to **MiniMax M3** via `MINIMAX_API_KEY` (or the legacy alias `ANTHROPIC_API_KEY`, which points to MiniMax's Anthropic-compatible endpoint, **not** real Anthropic).
 
 Guidance for editing MUSCLE prompts and plugin artifacts:
 
-- **Plan-then-hand-off division of labor.** Opus 4.7 / Codex keep the planning, synthesis, and user-interaction roles. MUSCLE's M2.7 agents are the execution muscle (bulk multi-file review, test/lint sweeps, fix-candidate generation, pattern scans) — ~5–10× cheaper per token. Write prompt templates that reinforce this split, not the reverse.
-- **Opus 4.7 interprets prompts literally.** Use positive, directive phrasing; name tools and commands explicitly; avoid negative "don't do X" framings when a positive equivalent exists.
-- **Opus 4.7 spawns fewer subagents / tool calls by default.** If a prompt requires a specific delegation (rescue agent, verification agent), spell out the trigger conditions.
+- **Plan-then-hand-off division of labor.** Opus 4.8 / Codex keep the planning, synthesis, and user-interaction roles. MUSCLE's M3 agents are the execution muscle (bulk multi-file review, test/lint sweeps, fix-candidate generation, pattern scans) — ~5–10× cheaper per token. Write prompt templates that reinforce this split, not the reverse.
+- **Opus 4.8 interprets prompts literally.** Use positive, directive phrasing; name tools and commands explicitly; avoid negative "don't do X" framings when a positive equivalent exists.
+- **Opus 4.8 spawns fewer subagents / tool calls by default.** If a prompt requires a specific delegation (rescue agent, verification agent), spell out the trigger conditions.
 - **Auto mode is in scope.** Delegation hand-offs must work without inter-step confirmation when the user is in auto mode.
-- **Do not add an Anthropic fallback in `m27_client.py`** without first stripping `temperature`, `top_p`, `top_k` (400 errors on Opus 4.7). MUSCLE calls MiniMax; keep it that way unless there's a concrete reason to change.
+- **Do not add an Anthropic fallback in `m27_client.py`** without first stripping `temperature`, `top_p`, `top_k` (400 errors on Opus 4.8). MUSCLE calls MiniMax; keep it that way unless there's a concrete reason to change. Note: MiniMax-M3 keeps the same parameter contract as M2.x — `temperature` (range [0,2]) and `top_p` are honored while `top_k` and `stop_sequences` are **ignored** — so the existing strip is still correct. (M3's `top_p` default is 0.95 vs 0.9 on M2.x.)
 
 ## Delegation Economics
 
-- Claude Code (Opus 4.7) ≈ **$5 / $25 per MTok**; Codex hosts are in a similar range. MiniMax M2.7 is ~**5–10× cheaper** for equivalent review-scoped reasoning.
-- MUSCLE's plan (see `PLAN_OPUS_4_7_DELEGATION_OVERHAUL.md`) writes a pinned **Methodology + Delegation Protocol + Effort Guidance** section into every reviewed project's `CLAUDE.md` and `AGENTS.md` so the host model hands bulk execution off to MUSCLE's M2.7 agents (`/muscle:review`, `/muscle:rescue`, `/muscle:pressure`, verification agent) while keeping planning and synthesis with itself.
+- Claude Code (Opus 4.8) ≈ **$5 / $25 per MTok**; Codex hosts are in a similar range. MiniMax M3 is ~**8–10× cheaper** for equivalent review-scoped reasoning (≈ **$0.60 / $2.40 per MTok** at the ≤512K-input tier, **doubling to $1.20 / $4.80 above 512K input**). M3's base rate is ~2× M2.7's, but it remains roughly an order of magnitude below the host models, so the delegation rationale is unchanged.
+- MUSCLE's active backlog (`docs/REMAINING_TODOS.md`) tracks the pinned **Methodology + Delegation Protocol + Effort Guidance** work for reviewed-project host docs so the host model hands bulk execution off to MUSCLE's M3 agents (`/muscle:review`, `/muscle:rescue`, `/muscle:pressure`, verification agent) while keeping planning and synthesis with itself.
 - The plugin manifest at `tools/muscle/plugin/.claude-plugin/plugin.json` is **manually curated** — new slash commands require updating the manifest's `description` field as well as adding the command file.
 
 ## Key Patterns

@@ -254,7 +254,7 @@ class TestGenerateFix:
     def test_generate_fix_no_suggestion(self):
         """Test generate_fix returns a structured failure when no suggestion."""
         mock_client = MagicMock()
-        generator = FixGenerator(mock_client)
+        generator = FixGenerator(mock_client, enable_fallback_fix_generation=False)
         issue = ReviewIssue(
             file_path="test.py",
             line_number=1,
@@ -272,6 +272,34 @@ class TestGenerateFix:
         assert result.ok is False
         assert result.code == ""
         mock_client.chat.assert_not_called()
+
+    def test_generate_fix_no_suggestion_with_fallback(self):
+        """Test generate_fix can ask M2.7 for a fallback suggestion before fixing."""
+        mock_client = MagicMock()
+        mock_client.chat.side_effect = [
+            ("x = 2  # fixed fallback", MagicMock(total=25)),
+            ('{"file_path": "test.py", "fixed_code": "x = 2"}', MagicMock(total=50)),
+        ]
+        generator = FixGenerator(mock_client)
+        issue = ReviewIssue(
+            file_path="test.py",
+            line_number=1,
+            severity=Severity.MEDIUM,
+            category=IssueCategory.STYLE,
+            cwe_id=None,
+            title="Test",
+            description="Test",
+            code_snippet="x = 1",
+            suggested_fix=None,
+            auto_fixable=False,
+        )
+
+        result = generator.generate_fix(issue)
+
+        assert isinstance(result, GeneratedFix)
+        assert result.ok is True
+        assert result.code == "x = 2"
+        assert mock_client.chat.call_count == 2
 
     def test_generate_fix_parses_valid_json(self):
         """Test generate_fix parses M2.7 JSON response."""
@@ -589,10 +617,6 @@ class TestFG02BakCleanup:
 
         # Force an exception after the backup is created but during the write.
         # We patch os.replace to raise after the backup has been made.
-        import os as _os
-
-        original_replace = _os.replace
-
         def raise_after_backup(src: str, dst: str) -> None:  # type: ignore[return]
             raise OSError("Simulated write failure mid-apply")
 

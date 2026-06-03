@@ -30,7 +30,31 @@ class PytestRunner(BaseEvaluator):
             logger.warning("pytest not found, skipping test run")
             return EvaluatorResult(success=True)
 
-        code, stdout, stderr = self._run_command(["pytest", "--tb=short", "-v", "."], output_dir)
+        target_path = Path(output_dir).resolve()
+        project_root = target_path
+        while project_root.parent != project_root:
+            if (project_root / "pyproject.toml").exists() or (project_root / "setup.py").exists():
+                break
+            project_root = project_root.parent
+        else:
+            project_root = target_path
+
+        if target_path.is_dir():
+            has_tests = any(
+                file.name.startswith("test_") or file.name.endswith("_test.py")
+                for file in target_path.rglob("*.py")
+            )
+        else:
+            has_tests = target_path.name.startswith("test_") or target_path.name.endswith(
+                "_test.py"
+            )
+
+        cmd = ["pytest", "--tb=short", "-v"]
+        if not has_tests:
+            cmd.append("--override-ini=addopts=")
+        cmd.append(str(target_path))
+
+        code, stdout, stderr = self._run_command(cmd, str(project_root))
 
         errors = []
         if code != 0:

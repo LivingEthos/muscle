@@ -286,3 +286,16 @@ class TestChatStructured:
                 messages=[{"role": "user", "content": "test"}],
             )
         assert result.tier == "mechanical"
+
+    def test_thinking_tags_stripped_before_json_parse(self, client: M27Client) -> None:
+        with patch.object(client, "chat") as mock_chat:
+            mock_chat.return_value = (
+                '<think>internal reasoning</think>{"tier": "mechanical", '
+                '"recommended": "m27", "confidence": 0.9, "rationale": "test"}',
+                MagicMock(),
+            )
+            result = client.chat_structured(
+                schema=RouteDecisionSchema,
+                messages=[{"role": "user", "content": "test"}],
+            )
+        assert result.tier == "mechanical"

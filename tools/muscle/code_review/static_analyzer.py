@@ -293,10 +293,11 @@ class StaticAnalyzer:
             logger.warning("Could not detect language, no static analysis run")
             return []
 
+        local_results = self._run_local_analyzers()
         tools = LANGUAGE_TOOLS.get(self.language, [])
         if not tools:
             logger.warning(f"No tools configured for language: {self.language}")
-            return []
+            return local_results
 
         # Fix: SA-01. Sort tools by name for deterministic scheduling. We keep
         # parallel execution for throughput but iterate results back in the
@@ -320,7 +321,67 @@ class StaticAnalyzer:
                 except Exception as e:
                     logger.error(f"Tool {tool['name']} failed: {e}")
 
-        return [indexed_results[i] for i in sorted(indexed_results)]
+        return [indexed_results[i] for i in sorted(indexed_results)] + local_results
+
+    def _run_local_analyzers(self) -> list[StaticAnalysisResult]:
+        """Run built-in MUSCLE analyzers that do not depend on external tools."""
+        if self.language != "python":
+            return []
+
+        start_time = time.time()
+        issues: list[StaticIssue] = []
+        try:
+            from ..analysis.ast_analyzer import ASTAnalyzer
+            from ..rules.engine import RuleEngine
+
+            ast_analyzer = ASTAnalyzer()
+            rule_engine = RuleEngine()
+            for file_path in self._iter_included_files():
+                for ast_finding in ast_analyzer.analyze_file(str(file_path)):
+                    issues.append(
+                        StaticIssue(
+                            file_path=ast_finding.file_path,
+                            line_number=ast_finding.line,
+                            severity=ast_finding.severity.name,
+                            rule_id=ast_finding.rule_id,
+                            message=ast_finding.message,
+                            category=ast_finding.category,
+                        )
+                    )
+                for rule_finding in rule_engine.analyze_file(str(file_path)):
+                    issues.append(
+                        StaticIssue(
+                            file_path=rule_finding.file_path,
+                            line_number=rule_finding.line,
+                            severity=rule_finding.severity.name,
+                            rule_id=rule_finding.rule_id,
+                            message=rule_finding.message,
+                            category=rule_finding.category,
+                        )
+                    )
+        except Exception as exc:
+            logger.warning("Local MUSCLE analyzers failed: %s", exc)
+            return [
+                StaticAnalysisResult(
+                    tool_name="muscle-local",
+                    language=self.language or "unknown",
+                    issues=[],
+                    duration_seconds=time.time() - start_time,
+                    error_output=str(exc),
+                    parser_tier=ParserTier.PASSTHROUGH.value,
+                    parse_warnings=[str(exc)],
+                )
+            ]
+
+        return [
+            StaticAnalysisResult(
+                tool_name="muscle-local",
+                language=self.language or "unknown",
+                issues=issues,
+                duration_seconds=time.time() - start_time,
+                parser_tier=ParserTier.FULL.value,
+            )
+        ]
 
     def _run_tool(self, tool: dict[str, Any]) -> StaticAnalysisResult | None:
         tool_name = tool["name"]

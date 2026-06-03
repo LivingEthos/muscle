@@ -436,7 +436,9 @@ pattern/skill ecosystem still maturing.
 
 `muscle review --shadow` uses:
 
-- `ShadowBroker` for persistent job bookkeeping in `~/.muscle/shadow_jobs.json`
+- `ShadowBroker` for persistent job bookkeeping in the per-project
+  `project_memory.db` (migrated from the legacy `~/.muscle/shadow_jobs.json`
+  file in migration `_0005_shadow_jobs.py`)
 - `ShadowWorker` for background processing
 
 The worker runs review jobs in-process and updates status for `muscle probe` and
@@ -492,11 +494,21 @@ These files and directories live under the target project:
 `project_memory.db` is the authoritative per-project store for:
 
 - learned rules and notes
-- review/run histories
+- review/run histories, findings, and fix attempts
+- shadow review jobs (with execution mode, liveness, and result payload)
+- generated skills and agents (with lifecycle status)
+- memory decisions and audit trail
+- conversation events from host hooks
 - lesson usage events
 - transferred-lesson validation and promotion state
 - model identity history
+- delegation events and routing/verification metadata
 - backup metadata and optimization telemetry
+- escalations and pack provenance
+- automation state (gate decision memory, persistent flags)
+
+The current schema is defined in `tools/muscle/project_memory_schema.py` and
+incrementally evolved by the migrations under `tools/muscle/migrations/`.
 
 Older adjacent stores such as `knowledge/strategies.db` and
 `review_kb/review_kb.db` still exist, but the project-first learning surfaces
@@ -511,12 +523,13 @@ These files and directories live under the user home directory:
   system.db                  # Shared project fingerprints, aliases, packs, submissions
   model-pack-cache/
   cache/cache.db
-  shadow_jobs.json
   improvement_log.json
   prompts/
   <session_id>.pid
   global/strategies.db
   global_review/review_kb.db
+  # Note: shadow_jobs.json is legacy; shadow jobs now live in
+  # per-project project_memory.db (see migration _0005_shadow_jobs.py).
 ```
 
 The shared `system.db` is intentionally separate from project-local state. It
@@ -569,3 +582,29 @@ The architecture deliberately separates:
 That separation keeps the CLI composable, makes subsystems independently testable,
 and lets MUSCLE evolve from a simple code-review companion into a broader
 self-improving automation loop without collapsing everything into one monolith.
+
+## Host Memory Contract (Plugin → Host CLI)
+
+MUSCLE's plugin publishes structured content to the **host CLI**'s memory files (Claude Code → `CLAUDE.md`, Codex/cross-tool → `AGENTS.md`) at the root of every reviewed project. The publisher (`tools/muscle/claude_publisher.py`) writes identical content to both files inside the `MUSCLE_PUBLISHED_START` / `MUSCLE_PUBLISHED_END` marker region.
+
+### Section types
+
+**Pinned** — always present, byte-identical across consolidation cycles, exempt from the 50-line section cap:
+- `### Methodology` — four-principle design guide (think / simplicity / surgical / goal-driven).
+- `### Delegation Protocol` — plan-then-hand-off posture directing the host model to delegate bulk execution to MUSCLE's M2.7 agents.
+- `### Effort & Tool Guidance` — Opus 4.7 effort hints (`xhigh` for coding) and auto-mode guidance.
+
+All pinned content is sourced from `tools/muscle/code_review/host_memory_templates.py` (constant strings; no dynamic rendering).
+
+**Dynamic** — populated from `project_memory.db` via `LearningPipeline` → `MemoryDecisionEngine` → `ClaudePublisher.publish()`. Subject to the 50-line section cap and M2.7 consolidation when caps are exceeded:
+- `### Critical Rules`, `### Frequent Mistakes`, `### Active Agent Calls`, `### Active Skill Calls`, `### Tooling Notes`.
+
+### Optimizer flow
+
+`tools/muscle/code_review/host_memory_optimizer.py` provides a non-destructive rewriter for pre-existing `CLAUDE.md` / `AGENTS.md` files that predate the MUSCLE plugin. Exposed as `muscle optimize-host-docs`. It wraps user content in `MUSCLE_PUBLISHED` markers (if absent) and injects the pinned block. Content outside the markers is never reordered, rewritten, or deleted. Pure and deterministic — no M2.7 calls.
+
+### File map
+
+- `tools/muscle/code_review/host_memory_templates.py` — pinned content constants.
+- `tools/muscle/code_review/host_memory_optimizer.py` — non-destructive optimizer.
+- `tools/muscle/claude_publisher.py` — marker-bounded dynamic publisher (now multi-target).

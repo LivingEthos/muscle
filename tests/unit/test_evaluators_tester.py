@@ -49,6 +49,29 @@ class TestPytestRunner:
         assert result.success is False
         assert len(result.errors) > 0
 
+    def test_source_only_target_runs_from_project_root_and_clears_addopts(
+        self,
+        tmp_path,
+        mock_subprocess,
+        mock_shutil_which,
+    ):
+        mock_shutil_which.return_value = "/usr/bin/pytest"
+        mock_subprocess.return_value = Mock(returncode=0, stdout="1 passed", stderr="")
+        project = tmp_path / "project"
+        source_dir = project / "src" / "pkg"
+        source_dir.mkdir(parents=True)
+        (project / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+        target = source_dir / "module.py"
+        target.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+        result = PytestRunner().evaluate(str(target))
+
+        assert result.success is True
+        command = mock_subprocess.call_args.args[0]
+        assert "--override-ini=addopts=" in command
+        assert command[-1] == str(target.resolve())
+        assert mock_subprocess.call_args.kwargs["cwd"] == str(project.resolve())
+
 
 class TestJestRunner:
     def test_name(self):

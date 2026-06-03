@@ -36,6 +36,7 @@ from tools.muscle.cli import (
     diagnosis,
     disable,
     enable,
+    foresight,
     history,
     improve_group,
     init,
@@ -51,7 +52,9 @@ from tools.muscle.cli import (
     skills_list,
     status,
     tui,
+    visualize,
 )
+from tools.muscle.foresight import SHORT_TERM_FILENAME, SHORT_TERM_MAX_CHARS
 from tools.muscle.loop_controller import LoopContext, LoopEvent
 from tools.muscle.model_identity import SUPPORTED_CANONICAL_MODELS
 from tools.muscle.types import (
@@ -538,6 +541,107 @@ class TestStatusCommand:
         assert result is not None
         # Status should always return 0 and show something
         assert result.exit_code == 0
+
+
+class TestVisualizeCommand:
+    """Integration tests for the Visual DevFlow launcher command."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_visualize_reports_missing_visual_devflow_command(self, runner, tmp_path):
+        missing = tmp_path / "missing-visual-devflow"
+        result = runner.invoke(
+            visualize,
+            ["--project", str(tmp_path), "--command", str(missing), "--json"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["ok"] is False
+        assert payload["status"] == "missing-command"
+
+
+class TestForesightCommand:
+    """Integration tests for the opt-in foresight preflight command."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_foresight_json_preview_is_parseable(self, runner, tmp_path):
+        result = runner.invoke(
+            foresight,
+            [
+                "--project",
+                str(tmp_path),
+                "--target",
+                str(tmp_path),
+                "--task",
+                "Plan a small CLI change",
+                "--no-write",
+                "--json",
+            ],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["status"] == "preview"
+        assert payload["network_required"] is False
+        assert payload["short_term_written"] is False
+
+    def test_foresight_writes_bounded_project_local_short_term_file(self, runner, tmp_path):
+        (tmp_path / ".muscle").mkdir()
+        long_task = "ship foresight " * 500
+
+        result = runner.invoke(
+            foresight,
+            ["--project", str(tmp_path), "--task", long_task, "--json"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        short_term_path = tmp_path / ".muscle" / SHORT_TERM_FILENAME
+        assert payload["status"] == "written"
+        assert payload["short_term_path"] == str(short_term_path)
+        assert short_term_path.exists()
+        content = short_term_path.read_text(encoding="utf-8")
+        assert len(content) <= SHORT_TERM_MAX_CHARS
+        assert "not authoritative memory" in content
+        assert not (tmp_path / "CLAUDE.md").exists()
+        assert not (tmp_path / "AGENTS.md").exists()
+        assert not (tmp_path / "MEMORY.md").exists()
+
+    def test_foresight_missing_project_state_is_safe(self, runner, tmp_path):
+        result = runner.invoke(
+            foresight,
+            ["--project", str(tmp_path), "--task", "Plan without init", "--json"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["status"] == "not-initialized"
+        assert payload["short_term_written"] is False
+        assert not (tmp_path / ".muscle").exists()
+
+    def test_run_does_not_trigger_foresight(self, runner):
+        with patch(
+            "tools.muscle.foresight.build_foresight_report",
+            side_effect=AssertionError("run should not call foresight"),
+        ) as build_foresight:
+            result = runner.invoke(
+                run,
+                ["--task", "hello", "--estimate-cost"],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0
+        build_foresight.assert_not_called()
 
 
 class TestTuiCommand:

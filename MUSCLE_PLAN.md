@@ -1,15 +1,15 @@
 # MUSCLE Master Plan
 
-Last updated: 2026-04-17
-Status: Active — Phase 5 in progress
+Last updated: 2026-05-22
+Status: Active — Phase 5 evidence refreshed
 
 This is the high-level product plan for MUSCLE.
 
 Completed implementation handoffs and point-in-time review reports have been
 retired so this file stays focused on the current product direction.
 
-`Forsight-plan.md` remains a separate experimental track and is intentionally
-out of scope for this execution plan.
+Deferred experiments and next implementation slices now live in
+`docs/REMAINING_TODOS.md` so point-in-time plan files can be retired cleanly.
 
 ## Product Goal
 
@@ -17,6 +17,17 @@ MUSCLE should become a per-project Claude Code companion that uses MiniMax M2.7
 to capture evidence from work, compress it into durable project memory, safely
 publish the right rules into the real root `CLAUDE.md`, and gradually create
 useful project-specific skills and agents.
+
+## Dual-Host Delegation Posture
+
+MUSCLE's plugin is consumed by two expensive host CLIs — Claude Code (Opus 4.7, ~$5/$25 per MTok) and Codex. MUSCLE's internal workhorse, MiniMax M2.7, does equivalent review-scoped reasoning at ~5–10× lower token cost.
+
+The plugin now writes a pinned **Methodology + Delegation Protocol + Effort & Tool Guidance** block into every reviewed project's root `CLAUDE.md` and `AGENTS.md`, via `claude_publisher.py`. The host model keeps planning, synthesis, and user interaction; MUSCLE's M2.7 agents handle bulk mechanical execution (multi-file review, test/lint sweeps, fix-candidate generation, pattern scans).
+
+This posture complements — does not replace — the dynamic rule-learning pipeline. `LearningPipeline` continues to promote rules from `project_memory.db` into the dynamic sections alongside the pinned block. Pinned sections are exempt from M2.7 consolidation and from the 50-line section cap.
+
+See `docs/REMAINING_TODOS.md` for the current living backlog and next
+implementation task.
 
 ## Verified Current State
 
@@ -54,12 +65,14 @@ Current stop point:
 
 - `MUSCLE_PLAN.md`
 - `docs/project-first-growth-model-pack-roadmap.md`
-- `Forsight-plan.md`
-- `GroupTink-collab.md`
+- `docs/REMAINING_TODOS.md`
 
 `docs/project-first-growth-model-pack-roadmap.md` is the detailed living
 execution plan for the project-first growth, related-project transfer,
 model-identity, and model-pack initiative.
+
+`docs/REMAINING_TODOS.md` is the single living backlog for the next active task,
+deferred experiments, and plan-doc retirement notes.
 
 These are now the only active planning documents.
 
@@ -113,7 +126,8 @@ Finish the day-to-day UX:
 
 ### Phase 5: Hardening and Release
 
-**status: in-progress** (2026-04-17 — 🟡 Low items remain)
+**status: evidence refreshed** (2026-05-22 — current gates, package build, and
+wheel smoke pass)
 
 Prepare for a production push:
 
@@ -123,8 +137,11 @@ Prepare for a production push:
 - smoke coverage
 - docs and release cleanup
 
-Open findings: [PKG-02], [PKG-03], [CHK-01], [DOC-03], [TEST-08], [TEST-09],
-[TEST-10], [PL-02], [PL-03], [PM-01], [MG-01], [MG-02]
+Current release-readiness evidence is summarized in
+`docs/REMAINING_TODOS.md` and
+`docs/release-notes-2026-05-01-plugin-readiness.md`. New behavioral work should
+be opened as a new slice rather than reopening the closed `review-smart`
+benchmark blocker.
 
 ## Success Criteria
 

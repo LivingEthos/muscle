@@ -15,8 +15,9 @@ muscle review --target . --mode review --severity low
 
 If the user specified target, mode, severity, execution, or additional options like
 `--language`, `--format json`, `--shadow`, `--intensity`, `--max-fixes`, `--output`,
-`--failsafe`, `--workflow`, or `--focus`, append those flags to the command.
+`--failsafe`, `--workflow`, `--focus`, or `--no-db`, append those flags to the command.
 
 Use `--execution worktree` when the user wants isolated auto-fix or hybrid edits. Leave execution unset to use the project default.
+Use `--no-db` only when the user asks for a memory-free review run; it skips project-memory, learning, and optimization writes.
 
 Present the results organized by severity (Critical > High > Medium > Low). For each issue show file, line, title, and suggested fix.

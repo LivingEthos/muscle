@@ -60,6 +60,12 @@ muscle review --target <path> --mode hybrid
 muscle review --target <path> --mode plan --output handoff.md
 ```
 
+**Machine-readable / no-memory variants:**
+```bash
+muscle review --target <path> --mode review --format json --output review.json
+muscle review --target <path> --mode review --no-db
+```
+
 ### Step 3: Present Results
 
 After the review completes, summarize:
@@ -98,6 +104,8 @@ After each review, MUSCLE updates `.muscle/` memory files so Claude Code can lea
 - Recurring issues may trigger skill and agent generation (still maturing)
 - Strategy evolution improves review accuracy when effectiveness is validated (still maturing)
 - Memory files (CLAUDE.md, AGENT.md, MEMORY.md) are updated after reviews
+
+Use `--no-db` only for reviews that should skip project-memory, learning, and optimization writes.
 
 ## Important Notes
 

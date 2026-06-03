@@ -32,9 +32,9 @@ from ..delegation_metrics import DelegationEvent, DelegationMetrics
 from ..escalation import EscalationPolicy, EscalationRecord, EscalationRecorder
 from ..m27_client import M27Client
 from ..project_memory import ProjectMemory
-from ..routing import Recommendation, TaskRouter
+from ..routing import Recommendation, TaskRouter, offline_route
 from .code_reviewer import CodeReviewer, _read_file_cached
-from .committee_reviewer import CommitteeReviewer
+from .committee_reviewer import AGENT_PRESSURE, CommitteeReviewer
 from .fix_generator import FixGenerator
 from .handoff_generator import HandoffGenerator
 from .review_artifacts import ReviewArtifactStore, resolve_trace_policy, review_issue_to_dict
@@ -44,7 +44,6 @@ from .review_workflows import ReviewWorkflowEngine, ReviewWorkflowLoader, Review
 from .static_analyzer import StaticAnalyzer
 from .types import (
     HandoffPlan,
-    IssueCategory,
     PressureFocus,
     ReviewConfig,
     ReviewEvent,
@@ -173,6 +172,7 @@ class ReviewController:
             context_budgeter=context_budgeter,
             project_path=self.project_path,
             lesson_resolver=lesson_resolver,
+            enable_fallback_fix_generation=True,
         )
         self.handoff_generator = HandoffGenerator(
             m27_client,
@@ -322,7 +322,8 @@ class ReviewController:
         self._emit(ReviewEvent.REVIEW_START, {"session": ctx.session_id})
 
         workflow_name = self._resolve_workflow_name()
-        if workflow_name:
+        skip_routing = self.config.mode in {ReviewMode.AUTO_FIX, ReviewMode.PRESSURE}
+        if workflow_name and not skip_routing:
             try:
                 result = self._run_structured_workflow(ctx, workflow_name)
                 result.stats.duration_seconds = perf_counter() - started_at
@@ -595,14 +596,18 @@ class ReviewController:
         workflow_name: str | None,
     ) -> bool:
         artifact_store = self._ensure_artifact_store(ctx)
-        try:
-            decision = TaskRouter(self.m27_client).route(
-                self._build_route_description(static_issue_count, workflow_name),
-                scope=Path(self.config.target_path),
-            )
-        except Exception as exc:
-            logger.warning("Task routing failed for review session %s: %s", ctx.session_id, exc)
-            return False
+        route_description = self._build_route_description(static_issue_count, workflow_name)
+        if self.benchmark_run:
+            decision = offline_route(route_description)
+        else:
+            try:
+                decision = TaskRouter(self.m27_client).route(
+                    route_description,
+                    scope=Path(self.config.target_path),
+                )
+            except Exception as exc:
+                logger.warning("Task routing failed for review session %s: %s", ctx.session_id, exc)
+                return False
 
         if ctx.scope_summary is None:
             ctx.scope_summary = {}
@@ -838,7 +843,11 @@ class ReviewController:
             )
             ctx.stats.handoffs_generated = len(ctx.handoff_plan.issues)
             self._emit(ReviewEvent.HANDOFF_GENERATED, {"count": ctx.stats.handoffs_generated})
-        elif self.config.mode in {ReviewMode.HYBRID, ReviewMode.REVIEW, ReviewMode.PRESSURE}:
+        elif not self.benchmark_run and self.config.mode in {
+            ReviewMode.HYBRID,
+            ReviewMode.REVIEW,
+            ReviewMode.PRESSURE,
+        }:
             self._generate_handoffs(ctx)
 
         self._emit(
@@ -1136,7 +1145,7 @@ class ReviewController:
 
         self._emit(ReviewEvent.SEMANTIC_REVIEW_COMPLETE, {"issues": len(ctx.issues)})
 
-        if ctx.issues:
+        if ctx.issues and not self.benchmark_run:
             self._generate_handoffs(ctx)
 
         self._emit(
@@ -1373,44 +1382,36 @@ class ReviewController:
             try:
                 cached_content = _read_file_cached(str(file_path))
                 if cached_content is not None:
-                    pressure_result = self.code_reviewer.pressure_review(
-                        str(file_path),
-                        cached_content,
-                        pressure_focus,
-                        artifact_store=artifact_store,
-                        challenge_mode=self.config.pressure_challenge,
-                        telemetry_session_id=ctx.session_id,
-                        workflow_name=self._resolve_workflow_name(),
-                        review_mode=self.config.mode.value,
-                        language=self.config.language,
+                    pressure_scope = ReviewScope(
                         complexity=self._runtime_complexity(ctx),
-                        target_type=self._runtime_target_type(),
-                        trace_reasons=self._base_trace_reasons(),
+                        source_files=[str(file_path)],
+                        touched_languages=[self.config.language or file_path.suffix.lstrip(".")],
+                        review_agents=[AGENT_PRESSURE],
+                        review_intensity=self.config.intensity.value,
+                        line_count=len(cached_content.splitlines()),
                     )
-                    summary = pressure_result.get("summary", {})
-                    if isinstance(summary, dict):
-                        token_usage = int(summary.get("token_usage", 0))
-                    findings = pressure_result.get("pressure_findings", [])
-                    source_agent = f"pressure:{self.config.pressure_challenge or 'default'}"
-                    for finding in findings:
-                        severity_str = finding.get("severity", "MEDIUM")
-                        severity = self._parse_pressure_severity(severity_str)
-                        if severity.value >= self.config.severity_threshold.value:
-                            issues.append(
-                                ReviewIssue(
-                                    file_path=finding.get("file_path", str(file_path)),
-                                    line_number=finding.get("line_number", 0),
-                                    severity=severity,
-                                    category=IssueCategory.BEST_PRACTICE,
-                                    cwe_id=None,
-                                    title=finding.get("title", "Pressure finding"),
-                                    description=finding.get("description", ""),
-                                    code_snippet=finding.get("code_snippet", ""),
-                                    suggested_fix=finding.get("suggested_approach"),
-                                    auto_fixable=False,
-                                    source_agent=source_agent,
-                                )
-                            )
+                    pressure_issues = self.committee_reviewer.run_agent(
+                        AGENT_PRESSURE,
+                        str(file_path),
+                        [],
+                        pressure_scope,
+                        pressure_focus,
+                        self.config.pressure_challenge,
+                        ctx.session_id,
+                        self._resolve_workflow_name(),
+                        self.config.mode.value,
+                        self.config.language,
+                        self._runtime_complexity(ctx),
+                        self._runtime_target_type(),
+                        artifact_store,
+                        self._base_trace_reasons(),
+                    )
+                    token_usage = self.committee_reviewer.consume_agent_tokens(AGENT_PRESSURE)
+                    issues.extend(
+                        issue
+                        for issue in pressure_issues
+                        if issue.severity.value >= self.config.severity_threshold.value
+                    )
             except Exception as e:
                 logger.warning(f"Pressure review failed for {file_path}: {e}")
             return issues, token_usage

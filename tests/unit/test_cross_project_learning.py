@@ -99,6 +99,42 @@ def test_model_identity_introspection_respects_manual_override(isolated_system_d
     assert identity is None
 
 
+def test_model_identity_resolves_minimax_m3_from_trusted_endpoint(
+    isolated_system_db: Path,
+) -> None:
+    resolver = ModelIdentityResolver(SystemDatabase())
+    identity = resolver.resolve(
+        requested_label="MiniMax-M3",
+        provider_endpoint="https://api.minimax.io/anthropic",
+    )
+    assert identity.canonical_model_key == "minimax/m3@1"
+    assert identity.identity_source == "provider_endpoint"
+
+
+def test_model_identity_introspects_minimax_m3_response(isolated_system_db: Path) -> None:
+    resolver = ModelIdentityResolver(SystemDatabase())
+    identity = resolver.introspect_response(
+        requested_label="MiniMax-M3",
+        provider_endpoint="https://api.minimax.io/anthropic",
+        response_payload={"model": "MiniMax-M3"},
+    )
+    assert identity is not None
+    assert identity.canonical_model_key == "minimax/m3@1"
+    assert identity.identity_source == "provider_introspection"
+    assert identity.metadata["provider_owner"] == "minimax"
+
+
+def test_model_identity_minimax_m2_7_still_resolves(isolated_system_db: Path) -> None:
+    """Regression guard: adding M3 must not change M2.7 attribution."""
+    resolver = ModelIdentityResolver(SystemDatabase())
+    identity = resolver.resolve(
+        requested_label="MiniMax-M2.7",
+        provider_endpoint="https://api.minimax.io/anthropic",
+    )
+    assert identity.canonical_model_key == "minimax/m2.7@1"
+    assert identity.identity_source == "provider_endpoint"
+
+
 def test_project_fingerprint_relatedness_prefers_overlap(tmp_path: Path) -> None:
     current = tmp_path / "current"
     related = tmp_path / "related"

@@ -33,9 +33,11 @@ SUPPORTED_MODEL_PACK_MANIFEST_SCHEMA_VERSIONS = frozenset({PACK_MANIFEST_SCHEMA_
 SUPPORTED_MODEL_PACK_LESSONS_SCHEMA_VERSIONS = frozenset({PACK_LESSONS_SCHEMA_VERSION})
 SUPPORTED_MODEL_PACK_LAYOUT_VERSIONS = frozenset({PACK_REPO_LAYOUT_VERSION})
 
+REVIEW_STAGES = frozenset({"semantic_review", "committee_review", "pressure_review"})
+
 SAFETY_SCOPE_STAGE_ALLOWLIST: dict[str, frozenset[str]] = {
-    "review-only": frozenset({"semantic_review"}),
-    "review-and-fix": frozenset({"semantic_review", "fix_generation", "handoff"}),
+    "review-only": REVIEW_STAGES,
+    "review-and-fix": REVIEW_STAGES | frozenset({"fix_generation", "handoff"}),
     "all-stages": frozenset(),
 }
 

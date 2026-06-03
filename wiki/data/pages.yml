@@ -1,0 +1,85 @@
+version: 1
+source_root: wiki
+description: Navigation and search seed for the MUSCLE plugin wiki.
+sections:
+  - id: home
+    title: Home
+    pages:
+      - path: README.md
+        title: MUSCLE Plugin Wiki
+        summary: Entry point for GitHub viewing, agent reference, and online-docs migration.
+      - path: agent-reference.md
+        title: Agent Reference
+        summary: Compact orientation for coding agents continuing MUSCLE work.
+      - path: content-model.md
+        title: Wiki Content Model
+        summary: Structure, metadata convention, and future online-docs migration notes.
+  - id: getting-started
+    title: Getting Started
+    pages:
+      - path: getting-started/quickstart.md
+        title: Quickstart
+        summary: Install, initialize, run first review, and use slash commands.
+      - path: getting-started/installation.md
+        title: Installation
+        summary: CLI installation, API environment, project init, and development gates.
+      - path: getting-started/claude-code-plugin.md
+        title: Claude Code Plugin
+        summary: Marketplace install, local plugin development, hooks, and validation.
+      - path: getting-started/codex-plugin.md
+        title: Codex Plugin Bundle
+        summary: Codex manifest, hook file, assets, and validation boundary.
+  - id: concepts
+    title: Concepts
+    pages:
+      - path: concepts/architecture.md
+        title: Architecture
+        summary: Runtime layer map and project-first design boundaries.
+      - path: concepts/review-workflows.md
+        title: Review Workflows
+        summary: Review modes, workflow engine, static analysis, semantic review, JSON output, and no-db runs.
+      - path: concepts/project-memory.md
+        title: Project Memory
+        summary: DB-first memory, learning pipeline, related projects, and bounded markdown.
+      - path: concepts/model-routing-and-packs.md
+        title: Model Routing And Packs
+        summary: Task routing, canonical model identity, model packs, and lesson overlays.
+      - path: concepts/evidence-savings-filters.md
+        title: Evidence, Savings, And Filters
+        summary: Command evidence, parser tiers, savings, discovery, and trust-gated filters.
+  - id: reference
+    title: Reference
+    pages:
+      - path: reference/slash-commands.md
+        title: Slash Commands
+        summary: Catalog of current plugin slash commands and CLI mappings.
+      - path: reference/cli-command-map.md
+        title: CLI Command Map
+        summary: Direct terminal command families and high-value examples.
+      - path: reference/plugin-bundle.md
+        title: Plugin Bundle
+        summary: Claude/Codex/shared bundle tree and validation commands.
+      - path: reference/hooks.md
+        title: Hooks
+        summary: Claude and Codex hook contract routed through host runtime.
+      - path: reference/configuration.md
+        title: Configuration
+        summary: Environment variables, project config, and settings commands.
+      - path: reference/storage-map.md
+        title: Storage Map
+        summary: Per-project and global state, authoritative stores, and generated surfaces.
+      - path: reference/agents-and-skills.md
+        title: Agents And Skills
+        summary: Bundled rescue/verification agents and code-review skill.
+  - id: operations
+    title: Operations
+    pages:
+      - path: operations/troubleshooting.md
+        title: Troubleshooting
+        summary: Common problems, diagnostic commands, plugin install issues, and shadow job notes.
+      - path: operations/release-validation.md
+        title: Release Validation
+        summary: Core gates, focused plugin gates, build inspection, host validators, and evidence.
+      - path: operations/security-privacy.md
+        title: Security And Privacy
+        summary: Secret handling, memory boundaries, filters, discovery, doctor, and public claims.

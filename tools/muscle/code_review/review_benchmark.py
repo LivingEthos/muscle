@@ -21,6 +21,7 @@ from typing import Any
 from ..claude_publisher import ClaudePublisher
 from ..lesson_resolver import LessonResolver
 from ..m27_client import M27Client
+from ..optimization.recorder import TelemetryRecorder
 from ..project_memory import ProjectMemory
 from ..project_memory_types import ModelPackLesson, ModelPackMetadata
 from ..routing import benchmark_routing_profiles
@@ -182,7 +183,20 @@ class ReviewBenchmarkRunner:
         }
 
     def _benchmark_host_memory_compaction(self) -> dict[str, Any]:
-        publisher = ClaudePublisher(str(self.project_path))
+        try:
+            publisher = ClaudePublisher(str(self.project_path))
+        except Exception as exc:
+            logger.warning("Host-memory compaction benchmark unavailable: %s", exc)
+            return {
+                "available": False,
+                "error_type": type(exc).__name__,
+                "summary": str(exc),
+                "baseline_chars": 0,
+                "candidate_chars": 0,
+                "estimated_tokens_saved": 0,
+                "candidate_kept": False,
+                "sections_changed": False,
+            }
         critical_rules: list[dict[str, Any]] = [
             {
                 "text": (
@@ -242,6 +256,7 @@ class ReviewBenchmarkRunner:
         baseline_chars = len(baseline)
         candidate_chars = len(candidate)
         return {
+            "available": True,
             "baseline_chars": baseline_chars,
             "candidate_chars": candidate_chars,
             "estimated_tokens_saved": max(0, (baseline_chars - candidate_chars) // 4),
@@ -294,6 +309,12 @@ class ReviewBenchmarkRunner:
     def _run_scenario(self, scenario: BenchmarkScenario, workflow_name: str) -> dict[str, Any]:
         with tempfile.TemporaryDirectory(prefix="muscle-benchmark-") as temp_dir:
             prepared = self._build_scenario_workspace(scenario, Path(temp_dir))
+            client = self._get_client()
+            previous_sink = getattr(client, "_telemetry_sink", None)
+            telemetry_recorder = TelemetryRecorder(prepared.lesson_resolver.project_memory)
+            set_sink = getattr(client, "set_telemetry_sink", None)
+            if callable(set_sink):
+                set_sink(telemetry_recorder)
             controller = ReviewController(
                 config=ReviewConfig(
                     target_path=prepared.target_path,
@@ -306,21 +327,35 @@ class ReviewBenchmarkRunner:
                     execution_mode="local",
                     worktree_enabled=False,
                 ),
-                m27_client=self._get_client(),
+                m27_client=client,
                 use_kb=False,
                 project_path=prepared.project_path,
-                lesson_resolver=prepared.lesson_resolver,
+                lesson_resolver=self._lesson_resolver_for_workflow(prepared, workflow_name),
                 benchmark_run=True,
             )
-            context = controller.run()
+            try:
+                context = controller.run()
+            finally:
+                telemetry_recorder.close()
+                if callable(set_sink):
+                    set_sink(previous_sink)
             review_result = controller.get_review_result()
             if review_result is None:
                 msg = f"Benchmark run produced no review result for {scenario.name}"
                 raise RuntimeError(msg)
             session_id = getattr(context, "session_id", None)
+            prompt_telemetry = (
+                self._summarize_prompt_telemetry(
+                    prepared.lesson_resolver.project_memory,
+                    project_path=prepared.project_path,
+                    session_id=session_id,
+                )
+                if session_id
+                else self._empty_prompt_telemetry()
+            )
             lesson_usage_events = (
                 prepared.lesson_resolver.project_memory.list_lesson_usage_events(
-                    project_path=prepared.project_path,
+                    project_path=prepared.lesson_resolver.project_path,
                     session_id=session_id,
                     limit=200,
                 )
@@ -338,17 +373,28 @@ class ReviewBenchmarkRunner:
                 "one_shot_verified_fix_count": len(review_result.fixed_issues),
                 "net_tokens_saved": 0,
                 "lesson_usage_summary": self._summarize_lesson_usage_events(lesson_usage_events),
+                **prompt_telemetry,
             }
+
+    @staticmethod
+    def _lesson_resolver_for_workflow(
+        prepared: PreparedBenchmarkWorkspace,
+        workflow_name: str,
+    ) -> LessonResolver | None:
+        if workflow_name == "legacy":
+            return None
+        return prepared.lesson_resolver
 
     def _build_scenario_workspace(
         self,
         scenario: BenchmarkScenario,
         workspace_root: Path,
     ) -> PreparedBenchmarkWorkspace:
-        current_project_root = workspace_root / "current_project"
+        workspace_root = workspace_root.resolve()
+        current_project_root = (workspace_root / "current_project").resolve()
         fixture_project_root = self._resolve_fixture_project_root(scenario)
         shutil.copytree(fixture_project_root, current_project_root, dirs_exist_ok=True)
-        target_path = current_project_root / self._target_relative_path(scenario)
+        target_path = (current_project_root / self._target_relative_path(scenario)).resolve()
         languages = list(scenario.languages or self._infer_languages(target_path))
 
         project_config = ProjectConfig(
@@ -376,7 +422,7 @@ class ReviewBenchmarkRunner:
             msg = f"Failed to initialize benchmark project for scenario {scenario.name}"
             raise RuntimeError(msg)
 
-        system_db_path = workspace_root / ".system" / "system.db"
+        system_db_path = (workspace_root / ".system" / "system.db").resolve()
         system_db = SystemDatabase(system_db_path)
 
         related_setup = dict(setup.get("related_project", {}))
@@ -384,7 +430,7 @@ class ReviewBenchmarkRunner:
             source_fixture_root = self._resolve_fixture_path(
                 str(related_setup["source_project_path"])
             )
-            source_project_root = workspace_root / "related_source_project"
+            source_project_root = (workspace_root / "related_source_project").resolve()
             shutil.copytree(source_fixture_root, source_project_root, dirs_exist_ok=True)
             source_config = ProjectConfig(
                 name=f"{scenario.name}-source",
@@ -532,6 +578,12 @@ class ReviewBenchmarkRunner:
             "finding_count": run_result["finding_count"],
             "tokens_used": run_result["tokens_used"],
             "duration_seconds": run_result["duration_seconds"],
+            "llm_call_count": int(run_result.get("llm_call_count", 0) or 0),
+            "llm_input_tokens": int(run_result.get("llm_input_tokens", 0) or 0),
+            "llm_output_tokens": int(run_result.get("llm_output_tokens", 0) or 0),
+            "prompt_context_chars": int(run_result.get("prompt_context_chars", 0) or 0),
+            "prompt_token_estimate": int(run_result.get("prompt_token_estimate", 0) or 0),
+            "prompt_tokens_used": int(run_result.get("prompt_tokens_used", 0) or 0),
             "verified_fix_count": verified_fix_count,
             "one_shot_verified_fix_count": one_shot_verified_fix_count,
             "tokens_per_verified_fix": (
@@ -592,6 +644,12 @@ class ReviewBenchmarkRunner:
             "false_positive_count": 0,
             "finding_count": 0,
             "tokens_used": 0,
+            "llm_call_count": 0,
+            "llm_input_tokens": 0,
+            "llm_output_tokens": 0,
+            "prompt_context_chars": 0,
+            "prompt_token_estimate": 0,
+            "prompt_tokens_used": 0,
             "duration_seconds": 0.0,
             "scenario_count": 0,
             "verified_fix_count": 0,
@@ -611,6 +669,12 @@ class ReviewBenchmarkRunner:
         aggregate["false_positive_count"] += metrics["false_positive_count"]
         aggregate["finding_count"] += metrics["finding_count"]
         aggregate["tokens_used"] += metrics["tokens_used"]
+        aggregate["llm_call_count"] += int(metrics.get("llm_call_count", 0) or 0)
+        aggregate["llm_input_tokens"] += int(metrics.get("llm_input_tokens", 0) or 0)
+        aggregate["llm_output_tokens"] += int(metrics.get("llm_output_tokens", 0) or 0)
+        aggregate["prompt_context_chars"] += int(metrics.get("prompt_context_chars", 0) or 0)
+        aggregate["prompt_token_estimate"] += int(metrics.get("prompt_token_estimate", 0) or 0)
+        aggregate["prompt_tokens_used"] += int(metrics.get("prompt_tokens_used", 0) or 0)
         aggregate["duration_seconds"] += metrics["duration_seconds"]
         aggregate["verified_fix_count"] += metrics["verified_fix_count"]
         aggregate["one_shot_verified_fix_count"] += metrics["one_shot_verified_fix_count"]
@@ -677,6 +741,60 @@ class ReviewBenchmarkRunner:
             "outcomes": outcomes,
         }
 
+    @staticmethod
+    def _empty_prompt_telemetry() -> dict[str, int]:
+        return {
+            "llm_call_count": 0,
+            "llm_input_tokens": 0,
+            "llm_output_tokens": 0,
+            "prompt_context_chars": 0,
+            "prompt_token_estimate": 0,
+            "prompt_tokens_used": 0,
+        }
+
+    def _summarize_prompt_telemetry(
+        self,
+        project_memory: ProjectMemory,
+        *,
+        project_path: str,
+        session_id: str,
+    ) -> dict[str, int]:
+        calls = project_memory.list_llm_calls(
+            project_path=project_path,
+            session_id=session_id,
+            limit=500,
+        )
+        input_tokens = sum(self._safe_int(call.get("input_tokens")) for call in calls)
+        output_tokens = sum(self._safe_int(call.get("output_tokens")) for call in calls)
+        context_chars = sum(self._safe_int(call.get("context_chars")) for call in calls)
+        prompt_token_estimate = max(0, (context_chars + 3) // 4)
+        prompt_tokens_used = input_tokens if input_tokens > 0 else prompt_token_estimate
+        return {
+            "llm_call_count": len(calls),
+            "llm_input_tokens": input_tokens,
+            "llm_output_tokens": output_tokens,
+            "prompt_context_chars": context_chars,
+            "prompt_token_estimate": prompt_token_estimate,
+            "prompt_tokens_used": prompt_tokens_used,
+        }
+
+    @staticmethod
+    def _safe_int(value: object) -> int:
+        if value is None:
+            return 0
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if not isinstance(value, str):
+            return 0
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+
     def _aggregate_by_suite(self, scenarios: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         by_suite: dict[str, dict[str, Any]] = {}
         for scenario in scenarios:
@@ -705,7 +823,19 @@ class ReviewBenchmarkRunner:
         for suite, bucket in by_suite.items():
             bucket["baseline"] = self._finalize_aggregate_metrics(bucket["baseline"])
             bucket["candidate"] = self._finalize_aggregate_metrics(bucket["candidate"])
+            baseline_prompt_tokens = int(bucket["baseline"].get("prompt_tokens_used", 0) or 0)
+            candidate_prompt_tokens = int(bucket["candidate"].get("prompt_tokens_used", 0) or 0)
+            prompt_basis = "telemetry_prompt_tokens"
+            if baseline_prompt_tokens <= 0:
+                baseline_prompt_tokens = int(bucket["baseline"]["tokens_used"])
+                candidate_prompt_tokens = int(bucket["candidate"]["tokens_used"])
+                prompt_basis = "total_tokens_fallback"
             bucket["prompt_overhead_ratio"] = self._token_overhead_ratio(
+                baseline_prompt_tokens,
+                candidate_prompt_tokens,
+            )
+            bucket["prompt_overhead_basis"] = prompt_basis
+            bucket["token_overhead_ratio"] = self._token_overhead_ratio(
                 bucket["baseline"]["tokens_used"],
                 bucket["candidate"]["tokens_used"],
             )
@@ -830,7 +960,7 @@ class ReviewBenchmarkRunner:
                 )
         gates["prompt_overhead_within_budget"] = {
             "passed": not prompt_missing and not prompt_failures,
-            "summary": "Candidate prompt/token overhead must stay within per-suite budget ratios.",
+            "summary": "Candidate prompt-side overhead must stay within per-suite budget ratios.",
             "missing_suites": prompt_missing,
             "failing_suites": prompt_failures,
             "limits": PROMPT_OVERHEAD_LIMITS,
@@ -974,7 +1104,16 @@ class ReviewBenchmarkRunner:
         }
 
     def _history_summary(self) -> dict[str, Any]:
-        memory = ProjectMemory(str(self.project_path))
+        try:
+            memory = ProjectMemory(str(self.project_path))
+        except Exception as exc:
+            logger.warning("Benchmark history summary unavailable: %s", exc)
+            return {
+                "available": False,
+                "error_type": type(exc).__name__,
+                "summary": str(exc),
+                "review_runs": 0,
+            }
         runs = memory.list_review_runs(project_path=str(self.project_path), limit=200)
         if not runs:
             return {"available": False, "review_runs": 0}
@@ -1087,6 +1226,12 @@ class ReviewBenchmarkRunner:
                         f"- Prompt overhead ratio: {metrics['prompt_overhead_ratio']:.2f}"
                         if metrics.get("prompt_overhead_ratio") is not None
                         else "- Prompt overhead ratio: n/a"
+                    ),
+                    f"- Prompt overhead basis: {metrics.get('prompt_overhead_basis', 'unknown')}",
+                    (
+                        f"- Total token overhead ratio: {metrics['token_overhead_ratio']:.2f}"
+                        if metrics.get("token_overhead_ratio") is not None
+                        else "- Total token overhead ratio: n/a"
                     ),
                     (
                         f"- External lesson usage: related={metrics['candidate'].get('related_lesson_usage_count', 0)}, "

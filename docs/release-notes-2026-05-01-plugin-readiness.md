@@ -30,6 +30,10 @@ RTK-inspired evidence, savings, discovery, filter, and plugin-doctor work.
 - `muscle review --format json` now keeps stdout as machine-parseable JSON by
   suppressing progress text and routing incidental review-runtime stdout to
   stderr
+- `muscle foresight` and `/muscle:foresight` now provide an explicit,
+  offline, experimental preflight command; it is not called by normal
+  `muscle run` or `muscle review` paths and does not promote short-term output
+  into learned memory
 - the repository-level Claude marketplace manifest now points at the plugin
   subdirectory with the same `muscle@muscle-marketplace` shape used by the
   install docs
@@ -62,8 +66,62 @@ Recommended release gates for this plugin bundle:
 8. inspect the wheel for Claude/Codex plugin manifests, hooks, assets, and new
    command docs
 9. run `uv run muscle doctor --json`
+10. install the wheel into a clean temporary virtual environment and run
+    `muscle --help`, `muscle foresight --task "smoke" --no-write --json`, and
+    `muscle doctor --json`, parsing JSON output with `python3 -m json.tool`
 
 ## Validation Snapshot
+
+Current checkout validation on 2026-05-24:
+
+- `uv sync --extra dev`: passed
+- `uv run mypy tools/muscle/`: passed
+- `uv run ruff check tools/muscle/`: passed
+- `uv run ruff format --check tools/muscle/`: passed
+- `uv run pytest tests/ -q`: `2445 passed, 3 skipped`
+- `uv run muscle doctor --json | python3 -m json.tool`: passed
+- `git diff --check`: passed
+- focused foresight/plugin docs subset: `263 passed, 1 skipped`
+- `uv build --out-dir /tmp/muscle-dist-20260524-5`: built source
+  distribution and wheel
+- wheel inspection: `muscle-0.1.0-py3-none-any.whl` listed `264` files with
+  no duplicate entries and included Claude/Codex plugin manifests, hooks,
+  command docs including `foresight.md`, agents, shared assets, and
+  `tools/muscle/plugin/skills/code-review/SKILL.md`
+- clean wheel smoke: installed the wheel into
+  `/tmp/muscle-wheel-smoke-venv-vbi1Bd` and ran from
+  `/tmp/muscle-wheel-smoke-cwd-k0Ot2i`; `muscle --help`, the foresight JSON
+  smoke with explicit scratch `--project`, and `muscle doctor --json` exited
+  `0`; both JSON outputs parsed with `python3 -m json.tool`
+- installed-wheel `doctor --json`: plugin manifests, hooks, assets, and `37`
+  command docs matched; warnings were expected scratch-project local-state
+  warnings
+- credentialed benchmark/release evidence remains the 2026-05-17
+  `review-smart` pass:
+  `.muscle/reports/benchmarks/benchmark_20260517_201913.json` and
+  `.muscle/reports/release_evidence/release_gates_20260517_201914.json`
+
+Current checkout validation on 2026-05-22:
+
+- `uv sync --extra dev`: passed
+- `uv run mypy tools/muscle/`: passed
+- `uv run ruff check tools/muscle/`: passed
+- `uv run ruff format --check tools/muscle/`: passed
+- `uv run pytest tests/ -q`: `2432 passed, 3 skipped`
+- `uv build --out-dir /tmp/muscle-dist-20260522`: built source distribution
+  and wheel
+- wheel inspection: `muscle-0.1.0-py3-none-any.whl` listed `262` files and
+  included Claude/Codex plugin manifests, hooks, command docs, skills, and
+  shared assets
+- clean wheel smoke: installed the wheel into a temporary virtual environment;
+  `muscle --help` exited `0`; `muscle doctor --json` exited `0` and parsed with
+  `python3 -m json.tool`
+- root `.muscle/project_memory.db`: repaired from SQLite `.recover` output and
+  now passes `PRAGMA integrity_check`
+- credentialed benchmark/release evidence remains the 2026-05-17
+  `review-smart` pass:
+  `.muscle/reports/benchmarks/benchmark_20260517_201913.json` and
+  `.muscle/reports/release_evidence/release_gates_20260517_201914.json`
 
 Current checkout validation on 2026-05-01:
 

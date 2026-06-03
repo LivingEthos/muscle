@@ -30,7 +30,12 @@ DEFAULT_STAGE_RENDER_BUDGETS: dict[str, LessonRenderBudget] = {
     "semantic_review": LessonRenderBudget(
         name="review_overlay",
         max_total_tokens=240,
-        source_token_limits={"local": 125, "related": 50, "model-pack": 40, "global": 25},
+        source_token_limits={"local": 125, "related": 55, "model-pack": 70, "global": 25},
+    ),
+    "committee_review": LessonRenderBudget(
+        name="committee_review_overlay",
+        max_total_tokens=180,
+        source_token_limits={"local": 80, "related": 55, "model-pack": 70, "global": 0},
     ),
     "fix_generation": LessonRenderBudget(
         name="fix_overlay",

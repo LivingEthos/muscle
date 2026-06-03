@@ -69,6 +69,7 @@ from .session_manager import SessionManager
 from .strategy_kb import GlobalKnowledgeBase
 from .system_db import DEFAULT_SYSTEM_DB_PATH, SystemDatabase
 from .types import BudgetMode, EvalMode, RunConfig, SessionReport, SessionStatus
+from .visual_devflow import VisualDevFlowBridge, enable_visual_devflow
 from .webhook_notifier import WebhookNotifier
 
 console = Console()
@@ -316,6 +317,40 @@ def _render_discovery_report(report: dict[str, Any]) -> None:
     console.print(opp_table)
 
 
+def _render_foresight_report(report: dict[str, Any]) -> None:
+    """Render a concise foresight report for humans."""
+
+    status = str(report.get("status") or "unknown")
+    if report.get("short_term_written"):
+        console.print("[green]Foresight preflight written[/green]")
+        console.print(f"Short-term file: {report.get('short_term_path')}")
+    elif status == "not-initialized":
+        console.print("[yellow]Foresight preflight generated but not persisted[/yellow]")
+    else:
+        console.print("[cyan]Foresight preflight preview[/cyan]")
+
+    for warning in report.get("warnings") or []:
+        console.print(f"[yellow]WARN[/yellow] {warning}")
+
+    target = report.get("target") or {}
+    memory = report.get("memory") or {}
+    table = Table(title="MUSCLE Foresight")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Project", str(report.get("project_path") or ""))
+    table.add_row("Target", str(target.get("display_path") or target.get("path") or ""))
+    table.add_row("Target Exists", "yes" if target.get("exists") else "no")
+    table.add_row("Memory Status", str(memory.get("status") or "unknown"))
+    table.add_row("Network Required", "no")
+    console.print(table)
+
+    actions = report.get("preflight") or []
+    if actions:
+        console.print("[bold]Preflight[/bold]")
+        for idx, action in enumerate(actions, start=1):
+            console.print(f"{idx}. {action}")
+
+
 def _resolve_model_identity(
     project_path: str,
     project_config: Any | None,
@@ -486,7 +521,14 @@ class _StreamingState:
     chunks: list[str] = field(default_factory=list)
 
 
-def _event_handler(event: LoopEvent, data: dict, state: _StreamingState) -> None:
+def _event_handler(
+    event: LoopEvent,
+    data: dict,
+    state: _StreamingState,
+    visual_bridge: VisualDevFlowBridge | None = None,
+) -> None:
+    if visual_bridge is not None:
+        visual_bridge.handle_loop_event(event, data)
     if event == LoopEvent.ITERATION_START:
         state.chunks = []
         console.print(f"\n[cyan]Iteration {data['iteration']}[/cyan]")
@@ -520,11 +562,13 @@ def _event_handler(event: LoopEvent, data: dict, state: _StreamingState) -> None
         )
 
 
-def _create_event_handler() -> tuple[_StreamingState, Any]:
+def _create_event_handler(
+    visual_bridge: VisualDevFlowBridge | None = None,
+) -> tuple[_StreamingState, Any]:
     state = _StreamingState()
 
     def handler(event: LoopEvent, data: dict) -> None:
-        _event_handler(event, data, state)
+        _event_handler(event, data, state, visual_bridge)
 
     return state, handler
 
@@ -553,7 +597,7 @@ def cli() -> None:
     default=None,
     help="Default execution mode for auto-fix and hybrid runs",
 )
-@click.option("--api-key", help="MINIMAX/M2.7 API key (or set MINIMAX_API_KEY env var)")
+@click.option("--api-key", help="MiniMax API key (or set MINIMAX_API_KEY env var)")
 @click.option("--hooks/--no-hooks", default=True, help="Enable/disable post-task review hooks")
 @click.option("--cli-path", help="Path to muscle CLI (auto-detected if not specified)")
 @click.option(
@@ -1156,6 +1200,118 @@ def status(refresh_state: bool) -> None:
     console.print(table)
 
 
+@cli.command(name="visualize")
+@click.option(
+    "--project",
+    "-p",
+    default=None,
+    help="Project path to visualize (defaults to the current MUSCLE project)",
+)
+@click.option("--open/--no-open", "open_dashboard", default=True, help="Open the dashboard")
+@click.option(
+    "--command",
+    "visual_command",
+    default=None,
+    help="Path to the visual-devflow control command",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit structured command status")
+def visualize(
+    project: str | None,
+    open_dashboard: bool,
+    visual_command: str | None,
+    json_output: bool,
+) -> None:
+    """Enable the Visual DevFlow dashboard for this MUSCLE project."""
+
+    start_path = Path(project).resolve() if project else Path.cwd()
+    project_path, _ = _resolve_project_context(start_path)
+    result = enable_visual_devflow(
+        project_path,
+        open_dashboard=open_dashboard,
+        command=visual_command,
+    )
+    if json_output:
+        _emit_json(result)
+        return
+
+    if result.get("ok"):
+        url = result.get("url")
+        console.print("[green]Visual DevFlow enabled[/green]")
+        if url:
+            console.print(f"Dashboard: {url}")
+        console.print(
+            "[dim]MUSCLE run/review events will appear automatically while this dashboard is enabled.[/dim]"
+        )
+        return
+
+    console.print(f"[red]Visual DevFlow unavailable:[/red] {result.get('message', 'failed')}")
+    if result.get("stderr"):
+        console.print(f"[dim]{result['stderr']}[/dim]")
+
+
+@cli.command(name="foresight")
+@click.option(
+    "--task",
+    "-t",
+    required=True,
+    help="Task or change to preflight",
+)
+@click.option(
+    "--project",
+    "-p",
+    default=None,
+    help="Project path (defaults to the current MUSCLE project)",
+)
+@click.option(
+    "--target",
+    default=None,
+    help="Optional file or directory target for the preflight",
+)
+@click.option(
+    "--write/--no-write",
+    default=True,
+    help="Persist `.muscle/MUSCLE_SHORT_TERM.md` when project state exists",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit structured foresight output")
+def foresight(
+    task: str,
+    project: str | None,
+    target: str | None,
+    write: bool,
+    json_output: bool,
+) -> None:
+    """Generate a bounded, opt-in project-local foresight preflight."""
+
+    if not task.strip():
+        raise click.UsageError("--task cannot be empty")
+
+    from .foresight import build_foresight_report
+
+    if project:
+        project_path = Path(project).resolve()
+    else:
+        project_path, _ = _resolve_project_context(Path.cwd())
+    if target:
+        target_input = Path(target)
+        target_path = (
+            target_input.resolve()
+            if target_input.is_absolute()
+            else (project_path / target_input).resolve()
+        )
+    else:
+        target_path = project_path
+    report = build_foresight_report(
+        project_path,
+        task,
+        target_path=target_path,
+        write=write,
+    )
+    if json_output:
+        _emit_json(report)
+        return
+    _render_foresight_report(report)
+
+
 @cli.command()
 @click.option("--json", "json_output", is_flag=True, help="Emit structured doctor output")
 @click.option(
@@ -1169,7 +1325,7 @@ def doctor(json_output: bool, refresh_state: bool) -> None:
 
     report = build_doctor_report(str(Path.cwd()), refresh=refresh_state)
     if json_output:
-        console.print(json.dumps(doctor_report_to_dict(report), indent=2))
+        _emit_json(doctor_report_to_dict(report))
         return
     _render_doctor_report(report)
 
@@ -1184,7 +1340,7 @@ def savings(json_output: bool) -> None:
     project_path, _ = _resolve_project_context(Path.cwd())
     report = build_savings_report(project_path)
     if json_output:
-        console.print(json.dumps(report, indent=2))
+        _emit_json(report)
         return
     _render_savings_report(report)
 
@@ -1200,7 +1356,7 @@ def discover(json_output: bool, since_days: int) -> None:
     project_path, _ = _resolve_project_context(Path.cwd())
     report = build_discovery_report(project_path, since_days=max(1, since_days))
     if json_output:
-        console.print(json.dumps(report, indent=2))
+        _emit_json(report)
         return
     _render_discovery_report(report)
 
@@ -1222,7 +1378,7 @@ def filters_verify(filter_name: str | None, require_all: bool, json_output: bool
     project_path, _ = _resolve_project_context(Path.cwd())
     report = verify_filters(project_path, filter_name=filter_name, require_all=require_all)
     if json_output:
-        console.print(json.dumps(report, indent=2))
+        _emit_json(report)
         return
     status = "[green]passed[/green]" if report["passed"] else "[red]failed[/red]"
     console.print(f"Filter verification {status} ({report['filter_count']} filter(s))")
@@ -1240,7 +1396,7 @@ def filters_trust(json_output: bool) -> None:
     project_path, _ = _resolve_project_context(Path.cwd())
     report = trust_project_filters(project_path)
     if json_output:
-        console.print(json.dumps(report, indent=2))
+        _emit_json(report)
         return
     if report.get("trusted"):
         console.print(f"[green]Trusted project filters[/green] {report.get('filters_sha256')}")
@@ -1258,7 +1414,7 @@ def filters_untrust(json_output: bool) -> None:
     project_path, _ = _resolve_project_context(Path.cwd())
     report = untrust_project_filters(project_path)
     if json_output:
-        console.print(json.dumps(report, indent=2))
+        _emit_json(report)
         return
     console.print("[green]Project filter trust removed.[/green]")
 
@@ -1361,6 +1517,11 @@ def tui() -> None:
 @click.option(
     "--webhook-url", default=None, help="Webhook URL for notifications (or set MUSCLE_WEBHOOK_URL)"
 )
+@click.option(
+    "--visual/--no-visual",
+    default=True,
+    help="Emit lifecycle events to Visual DevFlow when enabled",
+)
 @click.option("--kb/--no-kb", default=True, help="Enable/disable knowledge base")
 @click.option("--kb-path", default=None, help="Knowledge base path")
 @click.option(
@@ -1385,6 +1546,7 @@ def run(
     format: str,
     output_file: str | None,
     webhook_url: str | None,
+    visual: bool,
     kb: bool,
     kb_path: str | None,
     template: bool | None,
@@ -1521,7 +1683,17 @@ def run(
     webhook_notifier = WebhookNotifier(webhook_url or os.environ.get("MUSCLE_WEBHOOK_URL"))
 
     interactive_handler = InteractiveHandler(enabled=interactive)
-    stream_state, event_handler = _create_event_handler()
+    visual_bridge = (
+        VisualDevFlowBridge.discover(
+            project_path,
+            run_task=task,
+            run_output_dir=output,
+            run_max_iterations=max_iterations,
+        )
+        if visual
+        else None
+    )
+    stream_state, event_handler = _create_event_handler(visual_bridge)
 
     controller = LoopController(
         config=config,
@@ -1783,7 +1955,13 @@ def resume(session_id: str) -> None:
 
     code_gen_wrapper.generate_streaming = code_gen.generate_streaming  # type: ignore[attr-defined]
 
-    stream_state, event_handler = _create_event_handler()
+    visual_bridge = VisualDevFlowBridge.discover(
+        project_path,
+        run_task=resume_ctx.config.task,
+        run_output_dir=resume_ctx.config.output_dir,
+        run_max_iterations=resume_ctx.config.max_iterations,
+    )
+    stream_state, event_handler = _create_event_handler(visual_bridge)
     controller = LoopController(
         config=resume_ctx.config,
         code_generator=code_gen_wrapper,
@@ -1937,7 +2115,7 @@ def check(target: str, language: str | None, format: str) -> None:
             "linter_warnings": result.linter_warnings,
             "assertion_failures": result.assertion_failures,
         }
-        console.print(json.dumps(output, indent=2))
+        _emit_json(output)
     else:
         if result.passed:
             console.print("[green]All checks passed[/green]")
@@ -2603,6 +2781,17 @@ def _parse_budget(budget_str: str) -> tuple[BudgetMode, int]:
     default=(),
     help="Explicit package(s) to fetch (repeatable); overrides import-based discovery",
 )
+@click.option(
+    "--visual/--no-visual",
+    default=True,
+    help="Emit lifecycle events to Visual DevFlow when enabled",
+)
+@click.option(
+    "--no-db",
+    is_flag=True,
+    default=False,
+    help="Skip ProjectMemory, learning, and optimization writes for this review",
+)
 def review(
     target: str,
     language: str | None,
@@ -2620,6 +2809,8 @@ def review(
     execution: str | None,
     fetch_sources: bool,
     source_package: tuple[str, ...],
+    visual: bool,
+    no_db: bool,
 ) -> None:
     """Review code for issues, auto-fix where possible, and generate handoff plans.
 
@@ -2677,16 +2868,19 @@ def review(
     )
     project_path = str(resolved_project_path)
     configured_workflow = workflow
-    try:
-        optimization_memory = ProjectMemory(project_path)
-        optimization_settings = WorkflowOptimizer(
-            optimization_memory,
-            project_path,
-        ).get_applied_settings()
-        if configured_workflow is None:
-            configured_workflow = optimization_settings.get("optimize.default_workflow")
-    except Exception as exc:
-        logger.warning("Could not resolve optimization defaults for %s: %s", project_path, exc)
+    if no_db:
+        logger.info("Memory-only review mode active (--no-db): skipping project memory defaults")
+    else:
+        try:
+            optimization_memory = ProjectMemory(project_path)
+            optimization_settings = WorkflowOptimizer(
+                optimization_memory,
+                project_path,
+            ).get_applied_settings()
+            if configured_workflow is None:
+                configured_workflow = optimization_settings.get("optimize.default_workflow")
+        except Exception as exc:
+            logger.warning("Could not resolve optimization defaults for %s: %s", project_path, exc)
 
     if challenge and mode != "pressure":
         raise click.UsageError("--challenge is only supported with --mode pressure.")
@@ -2730,6 +2924,16 @@ def review(
     if shadow:
         from .code_review.shadow_worker import WorkerManager
 
+        visual_bridge = (
+            VisualDevFlowBridge.discover(
+                project_path,
+                review_target=str(resolved_target),
+                review_mode=mode,
+                review_workflow=configured_workflow,
+            )
+            if visual
+            else None
+        )
         worker_manager = WorkerManager(project_path=project_path)
         job_id = worker_manager.submit_shadow_job(
             target_path=str(resolved_target),
@@ -2739,13 +2943,35 @@ def review(
             workflow_name=configured_workflow,
             detached=True,
         )
+        if visual_bridge is not None:
+            visual_bridge.emit_shadow_review_submitted(
+                job_id=job_id,
+                target_path=str(resolved_target),
+                mode=mode,
+                workflow_name=configured_workflow,
+            )
         console.print(f"[cyan]Shadow job created: {job_id}[/cyan]")
         console.print("Check status with: muscle probe")
         console.print("Get results with: muscle diagnosis")
         console.print("[dim]Detached worker launched in background...[/dim]")
         return
 
+    visual_bridge = (
+        VisualDevFlowBridge.discover(
+            project_path,
+            review_target=str(resolved_target),
+            review_mode=mode,
+            review_workflow=configured_workflow,
+        )
+        if visual
+        else None
+    )
+
     def event_handler(event: ReviewEvent, data: dict) -> None:
+        if visual_bridge is not None:
+            visual_bridge.handle_review_event(event, data)
+        if json_output:
+            return
         if event == ReviewEvent.REVIEW_START:
             console.print(f"\n[cyan]Starting code review session: {data['session']}[/cyan]")
         elif event == ReviewEvent.STATIC_ANALYSIS_COMPLETE:
@@ -2795,12 +3021,19 @@ def review(
     from .m27_client import M27Client
 
     m27_client = M27Client(api_key=api_key)
-    pm, optimizer, context_budgeter, telemetry_recorder, lesson_resolver, _, _ = (
-        _attach_optimization_runtime(
-            project_path,
-            m27_client,
+    if no_db:
+        pm = None
+        optimizer = None
+        context_budgeter = None
+        telemetry_recorder = None
+        lesson_resolver = None
+    else:
+        pm, optimizer, context_budgeter, telemetry_recorder, lesson_resolver, _, _ = (
+            _attach_optimization_runtime(
+                project_path,
+                m27_client,
+            )
         )
-    )
 
     config = ReviewConfig(
         target_path=str(resolved_target),
@@ -2823,11 +3056,16 @@ def review(
 
     # Initialize ProjectMemory and LearningIngestor early for correction signal callback
     try:
-        if pm is None:
+        if no_db:
+            pm = None
+            ingestor = None
+        elif pm is None:
             pm = ProjectMemory(project_path)
-        ingestor = LearningIngestor(pm)
+            ingestor = LearningIngestor(pm)
+        else:
+            ingestor = LearningIngestor(pm)
     except Exception as e:
-        logger.warning(f"ProjectMemory init failed: {e}")
+        logger.warning("ProjectMemory init failed: %s", e)
         pm = None
         ingestor = None
 
@@ -2860,7 +3098,7 @@ def review(
     controller = ReviewController(
         config=config,
         m27_client=m27_client,
-        event_callback=None if json_output else event_handler,
+        event_callback=event_handler if visual_bridge is not None or not json_output else None,
         correction_signal_callback=on_correction_signal,
         project_path=project_path,
         context_budgeter=context_budgeter,
@@ -2869,6 +3107,7 @@ def review(
 
     try:
         output_context = redirect_stdout(sys.stderr) if json_output else nullcontext()
+        output_data: dict[str, Any] | None = None
         with output_context:
             result = controller.run()
             review_result = controller.get_review_result()
@@ -2903,7 +3142,7 @@ def review(
                     logger.warning("Failed to record optimization outcome: %s", exc)
 
             # Self-learning: update CLAUDE.md, MEMORY.md, and skills
-            if review_result:
+            if review_result and not no_db:
                 learn_result: dict[str, Any] = {}
                 try:
                     duration_ms = int(result.stats.duration_seconds * 1000)
@@ -3013,9 +3252,12 @@ def review(
                             f"({recommendation.get('reason', '')})"
                         )
 
-        if output and result.handoff_plan:
-            Path(output).write_text(result.handoff_plan.markdown, encoding="utf-8")
-            if not json_output:
+        if output:
+            if json_output:
+                if output_data is not None:
+                    Path(output).write_text(_serialize_json(output_data), encoding="utf-8")
+            elif result.handoff_plan:
+                Path(output).write_text(result.handoff_plan.markdown, encoding="utf-8")
                 console.print(f"\n[green]Handoff plan written to {output}[/green]")
 
         _refresh_active_review_safe(project_path, reason="review-complete")
@@ -4445,7 +4687,7 @@ def model_history(limit: int) -> None:
 @click.option(
     "--canonical-model",
     type=str,
-    help="Canonical model key (for example minimax/m2.7@1)",
+    help="Canonical model key (for example minimax/m3@1)",
 )
 @click.option("--clear", is_flag=True, help="Clear the current manual override")
 @click.option(

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from fnmatch import fnmatch
 from functools import lru_cache
@@ -72,6 +73,13 @@ Your task is to:
    - CWE ID if applicable (e.g., CWE-89 for SQL injection)
 4. Determine if auto-fixable (code replacement) or requires human intervention
 5. If fixable, provide the specific code fix
+
+CRITICAL RULE - EVERY valid issue MUST include BOTH fields:
+- "auto_fixable": true/false (true if a code replacement can fix it)
+- "suggested_fix": the actual fixed code that replaces the buggy code
+
+If you identify a valid issue and know the fix, provide a suggested_fix. Never
+mark an issue non-fixable when you already supplied replacement code.
 
 SEVERITY EXAMPLES (borderline cases):
 - CRITICAL: RCE, SQL Injection, hardcoded secrets, unvalidated input leading to injection
@@ -334,19 +342,22 @@ class CodeReviewer:
     ) -> None:
         """Emit an escalation when M2.7 exhausts all retries without producing valid JSON."""
         session_id = telemetry_session_id or "unknown"
-        recorder = EscalationRecorder(self.project_path)
-        recorder.emit(
-            EscalationRecord(
-                session_id=session_id,
-                reason="schema_failure",
-                source_module="code_reviewer",
-                issue_summary=(
-                    f"M2.7 failed to produce valid JSON for {file_path} "
-                    f"after {attempt_count} attempt(s)."
-                ),
-                attempt_count=attempt_count,
+        try:
+            recorder = EscalationRecorder(self.project_path)
+            recorder.emit(
+                EscalationRecord(
+                    session_id=session_id,
+                    reason="schema_failure",
+                    source_module="code_reviewer",
+                    issue_summary=(
+                        f"M2.7 failed to produce valid JSON for {file_path} "
+                        f"after {attempt_count} attempt(s)."
+                    ),
+                    attempt_count=attempt_count,
+                )
             )
-        )
+        except Exception as exc:
+            logger.warning("Schema escalation recording failed for %s: %s", file_path, exc)
 
     @staticmethod
     def _prepare_trace_metadata(
@@ -669,9 +680,9 @@ Provide your review in JSON format."""
             result, metadata = self.m27_client.chat_structured(
                 schema=ReviewFindings,
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
+                system=SYSTEM_PROMPT,
                 telemetry_context=telemetry_context,
                 include_metadata=True,
             )
@@ -783,9 +794,9 @@ Provide your review in JSON format."""
                     result, metadata = self.m27_client.chat_structured(
                         schema=ReviewFindings,
                         messages=[
-                            {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": retry_envelope.prompt},
                         ],
+                        system=SYSTEM_PROMPT,
                         telemetry_context=retry_context,
                         include_metadata=True,
                     )
@@ -847,7 +858,21 @@ Provide your review in JSON format."""
                     attempt_count=3,
                     telemetry_session_id=telemetry_session_id,
                 )
-            return self._empty_review_summary(len(issues), 0)
+            return self._fallback_chat_review(
+                file_path=file_path,
+                code_content=code_content,
+                issues=issues,
+                proactive=proactive,
+                telemetry_session_id=telemetry_session_id,
+                telemetry_stage=telemetry_stage,
+                workflow_name=workflow_name,
+                review_mode=review_mode,
+                language=language,
+                complexity=complexity,
+                target_type=target_type,
+                artifact_store=artifact_store,
+                trace_reasons=trace_reasons,
+            )
 
     def _structured_review_result(
         self,
@@ -863,6 +888,146 @@ Provide your review in JSON format."""
         summary["proactive"] = int(proactive)
         return reviews, summary
 
+    def _fallback_chat_review(
+        self,
+        file_path: str,
+        code_content: str,
+        issues: list[dict],
+        proactive: bool,
+        telemetry_session_id: str | None,
+        telemetry_stage: str,
+        workflow_name: str | None,
+        review_mode: str | None,
+        language: str | None,
+        complexity: str | None,
+        target_type: str | None,
+        artifact_store: ReviewArtifactStore | None,
+        trace_reasons: list[str] | None,
+    ) -> tuple[list[ReviewIssue], dict[str, int]]:
+        """Fallback to plain chat when structured review parsing fails."""
+        prompt = f"""Review this file and list any issues found:
+
+File: {file_path}
+```{self._get_lang_from_ext(file_path)}
+{self._truncate_code(code_content, 800)}
+```
+
+{"No static analysis issues found. Review for bugs, security, and quality." if proactive else "Static analysis issues: " + json.dumps(issues, indent=2)}
+
+For each issue, provide: severity (CRITICAL/HIGH/MEDIUM/LOW/INFO), category
+(security/correctness/performance/style/documentation/best_practice), title,
+description, and line number. Format as a simple list."""
+
+        prompt_envelope = compose_prompt_envelope(
+            base_prompt=prompt,
+            lesson_resolver=self.lesson_resolver,
+            query_text=f"{file_path}\n{json.dumps(issues, sort_keys=True)}",
+            stage=telemetry_stage,
+            base_context_strategy="fallback_plain_chat_review",
+            session_id=telemetry_session_id,
+            language=language or self._get_lang_from_ext(file_path),
+        )
+        trace_metadata = self._prepare_trace_metadata(
+            artifact_store,
+            prompt_envelope=prompt_envelope,
+            telemetry_stage=telemetry_stage,
+            trace_reasons=[*(trace_reasons or []), "schema_failure", "plain_chat_fallback"],
+        )
+        telemetry_context = build_telemetry_context(
+            project_path=self.project_path,
+            session_id=telemetry_session_id,
+            stage=telemetry_stage,
+            prompt_envelope=prompt_envelope,
+            trace_artifacts=trace_metadata["trace_pointers"],
+            trace_policy=trace_metadata["trace_capture_policy"],
+            trace_reasons=trace_metadata["trace_capture_reasons"],
+            workflow_name=workflow_name,
+            review_mode=review_mode,
+            language=language or self._get_lang_from_ext(file_path),
+            complexity=complexity,
+            target_type=target_type,
+            metadata={
+                "file_path": file_path,
+                "issue_count": len(issues),
+                "proactive": proactive,
+                "fallback": "plain_chat",
+            },
+        )
+
+        try:
+            response_text, usage = self.m27_client.chat(
+                messages=[{"role": "user", "content": prompt_envelope.prompt}],
+                system=SYSTEM_PROMPT,
+                max_tokens=4096,
+                temperature=0.1,
+                telemetry_context=telemetry_context,
+            )
+            parsed_issues = self._parse_text_review(response_text, file_path)
+            final_trace = self._finalize_trace_metadata(
+                artifact_store,
+                call_id=telemetry_context.call_id if telemetry_context else prompt_envelope.call_id,
+                telemetry_stage=telemetry_stage,
+                trace_metadata=trace_metadata,
+                status="plain_chat_fallback",
+                parse_success=True,
+                validation_success=True,
+                trace_reasons=[*(trace_reasons or []), "schema_failure", "plain_chat_fallback"],
+                details={
+                    "file_path": file_path,
+                    "issue_count": len(parsed_issues),
+                    "token_usage": usage.total,
+                },
+            )
+            if telemetry_context is not None:
+                self.m27_client.update_telemetry_call(
+                    telemetry_context.call_id,
+                    metadata_updates=final_trace,
+                )
+            return parsed_issues, {
+                "total_reviewed": len(issues) if not proactive else 1,
+                "valid_issues": len(parsed_issues),
+                "false_positives": 0,
+                "intentional": 0,
+                "critical": sum(1 for i in parsed_issues if i.severity == Severity.CRITICAL),
+                "high": sum(1 for i in parsed_issues if i.severity == Severity.HIGH),
+                "medium": sum(1 for i in parsed_issues if i.severity == Severity.MEDIUM),
+                "low": sum(1 for i in parsed_issues if i.severity == Severity.LOW),
+                "info": sum(1 for i in parsed_issues if i.severity == Severity.INFO),
+                "token_usage": usage.total,
+            }
+        except Exception as exc:
+            logger.error("Fallback chat review failed for %s: %s", file_path, exc)
+            return self._empty_review_summary(len(issues), 0)
+
+    @classmethod
+    def _parse_text_review(cls, text: str, default_file_path: str) -> list[ReviewIssue]:
+        """Parse a simple unstructured review into complete ReviewIssue objects."""
+        issues: list[ReviewIssue] = []
+        pattern = re.compile(
+            r"(?:Line\s+(\d+):?\s*)?(?:\[?(CRITICAL|HIGH|MEDIUM|LOW|INFO)\]?)[\s:,-]+"
+            r"(?:\[?(security|correctness|performance|style|documentation|best_practice)\]?)?"
+            r"[\s:,-]+(.+?)(?=\n(?:Line\s+\d+:?\s*)?(?:\[?(?:CRITICAL|HIGH|MEDIUM|LOW|INFO)\]?)|\Z)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        for match in pattern.finditer(text):
+            title_desc = match.group(4).strip()
+            title = title_desc.split(".")[0].strip()[:100] or "Code issue"
+            issues.append(
+                ReviewIssue(
+                    file_path=default_file_path,
+                    line_number=int(match.group(1)) if match.group(1) else 0,
+                    severity=cls._parse_severity(match.group(2) or "MEDIUM"),
+                    category=cls._parse_category(match.group(3) or "best_practice"),
+                    cwe_id=None,
+                    title=title,
+                    description=title_desc,
+                    code_snippet="",
+                    suggested_fix=None,
+                    auto_fixable=False,
+                )
+            )
+        return issues
+
     @classmethod
     def _reviews_from_structured(
         cls,
@@ -874,6 +1039,10 @@ Provide your review in JSON format."""
             if not item.valid:
                 continue
 
+            suggested_fix = item.suggested_fix
+            auto_fixable = item.auto_fixable
+            if suggested_fix and not auto_fixable:
+                auto_fixable = True
             reviews.append(
                 ReviewIssue(
                     file_path=item.file_path or default_file_path,
@@ -884,8 +1053,8 @@ Provide your review in JSON format."""
                     title=item.title or "Code issue",
                     description=item.description,
                     code_snippet=item.code_snippet,
-                    suggested_fix=item.suggested_fix,
-                    auto_fixable=item.auto_fixable,
+                    suggested_fix=suggested_fix,
+                    auto_fixable=auto_fixable,
                 )
             )
         return reviews
@@ -941,6 +1110,10 @@ Provide your review in JSON format."""
             if not item.get("valid", False):
                 continue
 
+            suggested_fix = item.get("suggested_fix")
+            auto_fixable = item.get("auto_fixable", False)
+            if suggested_fix and not auto_fixable:
+                auto_fixable = True
             reviews.append(
                 ReviewIssue(
                     file_path=item.get("file_path", default_file_path),
@@ -951,8 +1124,8 @@ Provide your review in JSON format."""
                     title=item.get("title", "Code issue"),
                     description=item.get("description", ""),
                     code_snippet=item.get("code_snippet", ""),
-                    suggested_fix=item.get("suggested_fix"),
-                    auto_fixable=item.get("auto_fixable", False),
+                    suggested_fix=suggested_fix,
+                    auto_fixable=auto_fixable,
                 )
             )
         return reviews

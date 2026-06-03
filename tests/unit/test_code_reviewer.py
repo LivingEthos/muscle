@@ -188,6 +188,63 @@ class TestReviewFile:
         assert reviews[0].cwe_id == "CWE-89"
         assert summary["high"] == 1
 
+    def test_review_file_normalizes_auto_fixable_when_suggested_fix_exists(self):
+        mock_m27 = MagicMock()
+        response = json.dumps(
+            {
+                "reviews": [
+                    {
+                        "file_path": "test.py",
+                        "line_number": 3,
+                        "valid": True,
+                        "severity": "MEDIUM",
+                        "category": "correctness",
+                        "title": "Incorrect branch",
+                        "description": "The condition is inverted",
+                        "code_snippet": "if not enabled:",
+                        "auto_fixable": False,
+                        "suggested_fix": "if enabled:",
+                    }
+                ],
+                "summary": {
+                    "total_reviewed": 1,
+                    "valid_issues": 1,
+                    "false_positives": 0,
+                    "intentional": 0,
+                    "critical": 0,
+                    "high": 0,
+                    "medium": 1,
+                    "low": 0,
+                    "info": 0,
+                },
+            }
+        )
+        mock_m27.chat_structured.return_value = (
+            ReviewFindings.model_validate_json(response),
+            _structured_metadata(100),
+        )
+        reviewer = CodeReviewer(mock_m27)
+
+        reviews, _ = reviewer._review_file("test.py", "x = 1", [])
+
+        assert len(reviews) == 1
+        assert reviews[0].suggested_fix == "if enabled:"
+        assert reviews[0].auto_fixable is True
+
+    def test_fallback_text_parser_constructs_complete_review_issues(self):
+        issues = CodeReviewer._parse_text_review(
+            "Line 7: HIGH security: SQL injection. Use parameterized queries.",
+            "app.py",
+        )
+
+        assert len(issues) == 1
+        assert issues[0].file_path == "app.py"
+        assert issues[0].line_number == 7
+        assert issues[0].severity == Severity.HIGH
+        assert issues[0].category == IssueCategory.SECURITY
+        assert issues[0].cwe_id is None
+        assert issues[0].code_snippet == ""
+
     def test_review_file_with_fenced_json_response(self):
         mock_m27 = MagicMock()
         mock_m27.chat_structured.return_value = (

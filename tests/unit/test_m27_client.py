@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tools.muscle.m27_client import (
+    DEFAULT_MODEL,
+    OPENAI_BASE_URL_IO,
     ConcurrencyLimiter,
     M27Client,
     RateLimiter,
@@ -62,6 +64,25 @@ class TestM27Client:
         assert client.api_key == "test-key"
         assert client.model == "MiniMax-M2.7"
         assert client.timeout == 120
+
+    def test_default_model_is_m3(self):
+        assert DEFAULT_MODEL == "MiniMax-M3"
+
+    def test_init_uses_default_model_when_unspecified(self):
+        with patch(
+            "os.environ.get",
+            side_effect=lambda k, d=None: {
+                "ANTHROPIC_API_KEY": "test-key",
+                "MINIMAX_API_KEY": "test-key",
+            }.get(k, d),
+        ):
+            with patch(
+                "tools.muscle.m27_client._detect_api_base",
+                return_value="https://api.minimax.io/anthropic",
+            ):
+                with patch("tools.muscle.m27_client._create_session"):
+                    client = M27Client(api_key="test-key")
+        assert client.model == "MiniMax-M3"
 
     def test_should_retry_429(self, client):
         assert client._should_retry("rate limit", attempt=1) is True
@@ -126,7 +147,7 @@ class TestDetectApiBase:
         with patch.dict("os.environ", {}, clear=True):
             with patch.dict("os.environ", {"MINIMAX_API_KEY": "fake"}, clear=False):
                 result = _detect_api_base()
-        assert "minimax.io" in result
+        assert result == OPENAI_BASE_URL_IO
 
     def test_respects_anthropic_base_url_env(self):
         with patch.dict(
@@ -154,6 +175,15 @@ class TestDetectApiBase:
         ):
             result = _detect_api_base()
         assert "minimaxi.com" in result
+
+    def test_explicit_openai_env(self):
+        with patch.dict(
+            "os.environ",
+            {"MINIMAX_API_BASE": "openai", "ANTHROPIC_API_KEY": "fake"},
+            clear=True,
+        ):
+            result = _detect_api_base()
+        assert result == OPENAI_BASE_URL_IO
 
 
 @pytest.fixture
@@ -262,6 +292,43 @@ class TestChatSuccess:
         assert result == "Done"
         assert usage.total == 23
         assert mock_session.post.called
+
+    def test_chat_success_openai_compatible_shape(self, mock_client):
+        client, mock_session = mock_client
+        client.base_url = OPENAI_BASE_URL_IO
+        mock_session.post.return_value = _make_mock_response(
+            200,
+            json_data={
+                "choices": [{"message": {"role": "assistant", "content": "OpenAI shape"}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 6},
+            },
+        )
+
+        result, usage = client.chat([{"role": "user", "content": "hi"}], system="sys")
+
+        assert result == "OpenAI shape"
+        assert usage.input_tokens == 12
+        assert usage.output_tokens == 6
+        call_args = mock_session.post.call_args
+        assert call_args.args[0] == f"{OPENAI_BASE_URL_IO}/chat/completions"
+        payload = call_args.kwargs["json"]
+        assert payload["messages"][0] == {"role": "system", "content": "sys"}
+
+    def test_chat_estimates_zero_token_openai_response(self, mock_client):
+        client, mock_session = mock_client
+        client.base_url = OPENAI_BASE_URL_IO
+        mock_session.post.return_value = _make_mock_response(
+            200,
+            json_data={
+                "choices": [{"message": {"role": "assistant", "content": "Estimated usage"}}],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+            },
+        )
+
+        result, usage = client.chat([{"role": "user", "content": "hi"}], system="sys")
+
+        assert result == "Estimated usage"
+        assert usage.total > 0
 
     def test_chat_records_telemetry_when_sink_attached(self, mock_client):
         client, mock_session = mock_client
@@ -816,6 +883,17 @@ class TestHelperMethods:
         assert headers["Content-Type"] == "application/json; charset=utf-8"
         assert headers["anthropic-version"] == "2023-06-01"
 
+    def test_get_headers_uses_x_api_key_for_minimax_token_plan_keys(self, mock_client):
+        client, _ = mock_client
+        client.api_key = "sk-cp-test"
+        client.base_url = "https://api.minimax.io/anthropic"
+
+        headers = client._get_headers()
+
+        assert "Authorization" not in headers
+        assert headers["X-Api-Key"] == "sk-cp-test"
+        assert headers["anthropic-version"] == "2023-06-01"
+
     def test_should_retry_respects_max_retries(self, mock_client):
         client, _ = mock_client
         client.max_retries = 3
@@ -862,7 +940,7 @@ class TestHelperMethods:
         assert result == "Response"
 
 
-class TestM27_05RetryNarrow:
+class TestM2705RetryNarrow:
     """Fix M27-05: bare except narrowed to (RequestException, JSONDecodeError, ValueError)."""
 
     def test_connection_reset_error_continues_retry(self, mock_client):

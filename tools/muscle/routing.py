@@ -5,12 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+_THINKING_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
 class TaskTier(str, Enum):
@@ -122,13 +124,17 @@ class TaskRouter:
         if scope:
             user_prompt += f"\nScope hint: {scope}"
 
-        response, _ = self._m27.chat(
-            messages=[{"role": "user", "content": user_prompt}],
-            system=ROUTE_SYSTEM_PROMPT,
-            max_tokens=256,
-            temperature=0.1,
-        )
-        data = _parse_json_response(response)
+        try:
+            response, _ = self._m27.chat(
+                messages=[{"role": "user", "content": user_prompt}],
+                system=ROUTE_SYSTEM_PROMPT,
+                max_tokens=256,
+                temperature=0.1,
+            )
+            data = _parse_json_response(response)
+        except Exception as exc:
+            logger.warning("M2.7 routing failed (%s), falling back to offline routing", exc)
+            return _offline_route(task, ROUTING_PROFILE_CURRENT)
 
         tier = TaskTier(data["tier"])
         recommended = Recommendation(data["recommended"])
@@ -338,10 +344,28 @@ def _route_eval(case: RoutingBenchmarkCase, decision: RouteDecision) -> dict[str
 
 
 def _parse_json_response(text: str) -> dict[str, Any]:
-    """Strip fences if present; parse JSON; raise on malformed."""
-    if "```json" in text:
-        text = text.split("```json", 1)[1].split("```", 1)[0]
-    elif "```" in text:
-        text = text.split("```", 1)[1].split("```", 1)[0]
-    result: dict[str, Any] = json.loads(text.strip())
+    """Parse a route JSON object from fenced or prose-wrapped model output."""
+    cleaned = _THINKING_TAG_RE.sub("", text).strip()
+    if "```json" in cleaned:
+        cleaned = cleaned.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in cleaned:
+        cleaned = cleaned.split("```", 1)[1].split("```", 1)[0].strip()
+
+    decoder = json.JSONDecoder()
+    try:
+        result = decoder.decode(cleaned)
+    except json.JSONDecodeError as first_error:
+        for index, char in enumerate(cleaned):
+            if char != "{":
+                continue
+            try:
+                result, _ = decoder.raw_decode(cleaned[index:])
+                break
+            except json.JSONDecodeError:
+                continue
+        else:
+            raise first_error
+
+    if not isinstance(result, dict):
+        raise json.JSONDecodeError("Route response is not a JSON object", cleaned, 0)
     return result

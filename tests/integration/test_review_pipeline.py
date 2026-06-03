@@ -388,13 +388,27 @@ class TestFixGeneratorIntegration:
 
     def test_generate_fix_no_suggestion(self, mock_m27: MockM27Client):
         """FixGenerator should return empty strings when no suggested fix."""
-        generator = FixGenerator(mock_m27)
+        generator = FixGenerator(mock_m27, enable_fallback_fix_generation=False)
         issue = make_review_issue(suggested_fix=None)
 
         file_path, fixed_code = generator.generate_fix(issue)
 
         assert file_path == ""
         assert fixed_code == ""
+
+    def test_generate_fix_no_suggestion_with_fallback(self):
+        """FixGenerator should synthesize a safe suggested_fix before generating code."""
+        mock_m27 = MockM27Client(
+            responses={"specific code fix": "return json.loads(token)  # fallback"}
+        )
+        generator = FixGenerator(mock_m27)
+        issue = make_review_issue(suggested_fix=None)
+
+        file_path, fixed_code = generator.generate_fix(issue)
+
+        assert file_path == "src/api.py"
+        assert fixed_code
+        assert mock_m27._call_count == 2
 
     def test_apply_fix_to_real_file(self, sample_python_project: Path, mock_m27: MockM27Client):
         """FixGenerator should apply fix to an actual file with backup."""

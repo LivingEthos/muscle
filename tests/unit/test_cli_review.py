@@ -67,6 +67,26 @@ class TestReviewCommand:
         assert result.exit_code != 0
         assert "MINIMAX_API_KEY not set" in result.output
 
+    def test_review_does_not_trigger_foresight(self, runner, tmp_path):
+        """Normal review path should not invoke the opt-in foresight preflight."""
+        env = os.environ.copy()
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("MINIMAX_API_KEY", None)
+
+        with patch(
+            "tools.muscle.foresight.build_foresight_report",
+            side_effect=AssertionError("review should not call foresight"),
+        ) as build_foresight:
+            result = runner.invoke(
+                cli,
+                ["review", "--target", str(tmp_path)],
+                env=env,
+            )
+
+        assert result.exit_code != 0
+        assert "MINIMAX_API_KEY not set" in result.output
+        build_foresight.assert_not_called()
+
     def test_review_with_minimax_api_key(self, runner, mock_review_controller):
         """Test that review command works with MINIMAX_API_KEY set."""
         env = os.environ.copy()
@@ -137,6 +157,55 @@ class TestReviewCommand:
         assert payload["summary"]["high"] == 0
         assert "Starting code review session" not in result.output
         assert "Review Complete" not in result.output
+
+    def test_review_json_format_writes_output_file(
+        self,
+        runner,
+        mock_review_controller,
+        tmp_path,
+    ):
+        """JSON output files should be written even when no handoff plan exists."""
+        env = os.environ.copy()
+        env["MINIMAX_API_KEY"] = "test-key"
+        output_path = tmp_path / "review.json"
+
+        result = runner.invoke(
+            cli,
+            [
+                "review",
+                "--target",
+                "/tmp/test",
+                "--format",
+                "json",
+                "--output",
+                str(output_path),
+            ],
+            env=env,
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+        assert payload["session_id"] == "abc123"
+        assert payload["summary"]["critical"] == 0
+
+    def test_review_no_db_skips_memory_and_learning(self, runner, mock_review_controller):
+        """--no-db should not open ProjectMemory or write learning artifacts."""
+        env = os.environ.copy()
+        env["MINIMAX_API_KEY"] = "test-key"
+
+        with (
+            patch("tools.muscle.cli.ProjectMemory") as mock_project_memory,
+            patch("tools.muscle.cli.LearningPipeline") as mock_learning_pipeline,
+        ):
+            result = runner.invoke(
+                cli,
+                ["review", "--target", "/tmp/test", "--no-db"],
+                env=env,
+            )
+
+        assert result.exit_code == 0
+        mock_project_memory.assert_not_called()
+        mock_learning_pipeline.assert_not_called()
 
     def test_review_does_not_trigger_remote_model_pack_fetch(
         self,

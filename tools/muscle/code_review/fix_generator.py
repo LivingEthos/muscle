@@ -88,12 +88,14 @@ class FixGenerator:
         context_budgeter: ContextBudgeter | None = None,
         project_path: str | None = None,
         lesson_resolver: object | None = None,
+        enable_fallback_fix_generation: bool = True,
     ):
         self.m27_client = m27_client
         self.verify_compile = verify_compile
         self.context_budgeter = context_budgeter
         self.project_path = project_path or str(Path.cwd())
         self.lesson_resolver = lesson_resolver
+        self.enable_fallback_fix_generation = enable_fallback_fix_generation
 
     def generate_fix(
         self,
@@ -105,14 +107,6 @@ class FixGenerator:
         complexity: str | None = None,
         target_type: str | None = None,
     ) -> GeneratedFix:
-        if not issue.suggested_fix:
-            return GeneratedFix(
-                ok=False,
-                file_path=issue.file_path,
-                code="",
-                error="No suggested fix available",
-            )
-
         file_content = ""
         file_path = Path(issue.file_path)
         if file_path.exists():
@@ -120,6 +114,38 @@ class FixGenerator:
                 file_content = file_path.read_text(encoding="utf-8")
             except OSError:
                 file_content = ""
+
+        suggested_fix = issue.suggested_fix
+        if not suggested_fix and self.enable_fallback_fix_generation:
+            logger.info(
+                "No suggested_fix for %s:%s; generating fallback fix",
+                issue.file_path,
+                issue.line_number,
+            )
+            suggested_fix = self._generate_suggested_fix(
+                issue,
+                file_content,
+                session_id,
+                workflow_name,
+                review_mode,
+                language,
+                complexity,
+                target_type,
+            )
+            if not suggested_fix:
+                return GeneratedFix(
+                    ok=False,
+                    file_path=issue.file_path,
+                    code="",
+                    error="No suggested fix available and LLM fallback failed",
+                )
+        elif not suggested_fix:
+            return GeneratedFix(
+                ok=False,
+                file_path=issue.file_path,
+                code="",
+                error="No suggested fix available",
+            )
 
         fix_budget = (
             self.context_budgeter.build_fix_budget(issue.line_number, file_content)
@@ -140,7 +166,7 @@ Original code snippet:
 ```
 
 Suggested fix approach:
-{issue.suggested_fix}
+{suggested_fix}
 
 File context:
 ```
@@ -151,7 +177,7 @@ Provide the JSON output with the fixed code."""
         prompt_envelope = compose_prompt_envelope(
             base_prompt=user_prompt,
             lesson_resolver=self.lesson_resolver,
-            query_text=f"{issue.title}\n{issue.description}\n{issue.suggested_fix or ''}",
+            query_text=f"{issue.title}\n{issue.description}\n{suggested_fix or ''}",
             stage="fix_generation",
             base_context_strategy=fix_budget.strategy if fix_budget else "full_file_patch_context",
             session_id=session_id,
@@ -177,9 +203,9 @@ Provide the JSON output with the fixed code."""
 
         response_text, _ = self.m27_client.chat(
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
+            system=SYSTEM_PROMPT,
             telemetry_context=telemetry_context,
         )
 
@@ -216,6 +242,77 @@ Provide the JSON output with the fixed code."""
                 code="",
                 error="Failed to parse fix response",
             )
+
+    def _generate_suggested_fix(
+        self,
+        issue: ReviewIssue,
+        file_content: str,
+        session_id: str | None = None,
+        workflow_name: str | None = None,
+        review_mode: str | None = None,
+        language: str | None = None,
+        complexity: str | None = None,
+        target_type: str | None = None,
+    ) -> str | None:
+        """Generate a replacement snippet when the reviewer omitted suggested_fix."""
+        prompt = f"""You are an expert code fixer. Given this code issue, provide the specific code fix.
+
+File: {issue.file_path}
+Line: {issue.line_number}
+Issue: {issue.title}
+Description: {issue.description}
+
+Original code snippet:
+```
+{issue.code_snippet}
+```
+
+File context:
+```
+{file_content[:6000]}
+```
+
+Provide ONLY the corrected code that should replace the buggy snippet. Return plain text, no JSON."""
+
+        prompt_envelope = compose_prompt_envelope(
+            base_prompt=prompt,
+            lesson_resolver=self.lesson_resolver,
+            query_text=f"{issue.title}\n{issue.description}",
+            stage="fix_fallback_generation",
+            base_context_strategy="full_file_patch_context",
+            session_id=session_id,
+            language=language,
+        )
+        telemetry_context = build_telemetry_context(
+            project_path=self.project_path,
+            session_id=session_id,
+            stage="fix_fallback_generation",
+            prompt_envelope=prompt_envelope,
+            workflow_name=workflow_name,
+            review_mode=review_mode,
+            language=language,
+            complexity=complexity,
+            target_type=target_type,
+            metadata={
+                "file_path": issue.file_path,
+                "line_number": issue.line_number,
+                "issue_title": issue.title,
+            },
+        )
+        try:
+            response_text, _ = self.m27_client.chat(
+                messages=[{"role": "user", "content": prompt_envelope.prompt}],
+                system="You are an expert code fixer. Provide only corrected code.",
+                max_tokens=2048,
+                temperature=0.1,
+                telemetry_context=telemetry_context,
+            )
+            fix = response_text.strip()
+            if fix and len(fix) > 10:
+                return fix
+        except Exception as exc:
+            logger.warning("LLM fallback fix generation failed: %s", exc)
+        return None
 
     @staticmethod
     def _sweep_stale_baks(directory: Path) -> None:
