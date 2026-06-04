@@ -102,7 +102,13 @@ def compose_prompt_envelope(
         metadata["lesson_overlay_applied"] = bool(resolved.rendered_context)
         metadata["lesson_context_strategy"] = "budgeted_layered_overlay"
         if resolved.rendered_context:
-            prompt = f"{resolved.rendered_context}\n\n{base_prompt}"
+            # Append the volatile lesson overlay after the stable base prompt.
+            # The base prompt (system rubric + code + issues) is byte-identical
+            # across multi-pass calls on the same file, so keeping it as the
+            # prefix preserves MiniMax-M3 prefix-cache hits; the per-query lesson
+            # overlay is the most volatile content and goes last (also gaining a
+            # recency-placement adherence benefit).
+            prompt = f"{base_prompt}\n\n{resolved.rendered_context}"
             context_strategy = f"{base_context_strategy}+lesson_overlay"
 
     compaction_enabled = (

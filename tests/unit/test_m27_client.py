@@ -34,6 +34,15 @@ class TestTokenUsage:
     def test_reasoning_tokens_default_zero(self):
         assert TokenUsage().reasoning_tokens == 0
 
+    def test_cached_input_tokens_field(self):
+        tu = TokenUsage(input_tokens=1000, output_tokens=50, cached_input_tokens=800)
+        assert tu.cached_input_tokens == 800
+        # cached tokens are a subset of input; total stays input + output
+        assert tu.total == 1050
+
+    def test_cached_input_tokens_default_zero(self):
+        assert TokenUsage().cached_input_tokens == 0
+
 
 class TestOutputTokenCap:
     def test_m3_has_raised_cap(self):
@@ -326,6 +335,56 @@ class TestChatSuccess:
         assert usage.input_tokens == 10
         assert usage.output_tokens == 5
 
+    def test_chat_captures_cached_tokens_anthropic_shape(self, mock_client):
+        client, mock_session = mock_client
+        mock_session.post.return_value = _make_mock_response(
+            200,
+            json_data={
+                "content": [{"type": "text", "text": "Hello"}],
+                "usage": {
+                    "input_tokens": 1000,
+                    "output_tokens": 5,
+                    "cache_read_input_tokens": 800,
+                },
+            },
+        )
+
+        _, usage = client.chat([{"role": "user", "content": "hi"}])
+        assert usage.input_tokens == 1000
+        assert usage.cached_input_tokens == 800
+
+    def test_chat_captures_cached_tokens_openai_shape(self, mock_client):
+        client, mock_session = mock_client
+        client.base_url = OPENAI_BASE_URL_IO
+        mock_session.post.return_value = _make_mock_response(
+            200,
+            json_data={
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "usage": {
+                    "prompt_tokens": 1200,
+                    "completion_tokens": 6,
+                    "prompt_tokens_details": {"cached_tokens": 900},
+                },
+            },
+        )
+
+        _, usage = client.chat([{"role": "user", "content": "hi"}], system="sys")
+        assert usage.input_tokens == 1200
+        assert usage.cached_input_tokens == 900
+
+    def test_chat_cached_tokens_absent_defaults_zero(self, mock_client):
+        client, mock_session = mock_client
+        mock_session.post.return_value = _make_mock_response(
+            200,
+            json_data={
+                "content": [{"type": "text", "text": "Hello"}],
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            },
+        )
+
+        _, usage = client.chat([{"role": "user", "content": "hi"}])
+        assert usage.cached_input_tokens == 0
+
     def test_chat_success_with_system_prompt(self, mock_client):
         client, mock_session = mock_client
         mock_session.post.return_value = _make_mock_response(
@@ -418,6 +477,37 @@ class TestChatSuccess:
         assert event.canonical_model_key == "openai/gpt-5@1"
         assert event.identity_source == "manual_override"
         assert event.manual_override is True
+
+    def test_chat_records_cached_tokens_in_telemetry_metadata(self, mock_client):
+        import json as _json
+
+        client, mock_session = mock_client
+        mock_session.post.return_value = _make_mock_response(
+            200,
+            json_data={
+                "content": [{"type": "text", "text": "Cached"}],
+                "usage": {
+                    "input_tokens": 1000,
+                    "output_tokens": 4,
+                    "cache_read_input_tokens": 750,
+                },
+            },
+        )
+        telemetry_sink = MagicMock()
+        client.set_telemetry_sink(telemetry_sink)
+
+        client.chat(
+            [{"role": "user", "content": "hi"}],
+            telemetry_context=TelemetryContext(
+                project_path="/tmp/project",
+                session_id="sess-1",
+                stage="semantic_review",
+            ),
+        )
+
+        event = telemetry_sink.record_llm_call.call_args.args[0]
+        metadata = _json.loads(event.metadata_json)
+        assert metadata["cached_input_tokens"] == 750
 
     def test_chat_adopts_trusted_provider_introspection_and_records_history(self, mock_client):
         client, mock_session = mock_client

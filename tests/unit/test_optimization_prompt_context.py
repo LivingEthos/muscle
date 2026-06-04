@@ -50,7 +50,14 @@ def test_compose_prompt_envelope_applies_shared_lesson_overlay() -> None:
         render_budget=budget,
     )
 
-    assert envelope.prompt.startswith("Project-local lessons")
+    # The volatile lesson overlay is appended after the stable base prompt so the
+    # base prefix stays byte-identical and cacheable across multi-pass calls on the
+    # same file; the overlay also benefits from recency placement.
+    assert envelope.prompt.startswith("Review this file.")
+    assert "Project-local lessons" in envelope.prompt
+    assert envelope.prompt.index("Review this file.") < envelope.prompt.index(
+        "Project-local lessons"
+    )
     assert envelope.context_strategy == "issue_windows+lesson_overlay"
     assert envelope.metadata["lesson_overlay_applied"] is True
     assert envelope.metadata["lesson_render_budget"] == "review_overlay"

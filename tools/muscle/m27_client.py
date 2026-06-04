@@ -133,6 +133,10 @@ class TokenUsage:
     input_tokens: int = 0
     output_tokens: int = 0
     reasoning_tokens: int = 0
+    # Subset of input_tokens served from MiniMax-M3's passive prefix cache at the
+    # discounted cache-hit rate. Captured from the provider usage payload so cost
+    # accounting can credit the discount and cache-hit rate stays observable.
+    cached_input_tokens: int = 0
 
     @property
     def total(self) -> int:
@@ -515,6 +519,11 @@ class M27Client:
             metadata["identity_source"] = model_identity["identity_source"]
             metadata["identity_confidence"] = model_identity["confidence"]
             metadata["manual_override"] = model_identity["manual_override"]
+            # Persist prefix-cache hits so the savings report can credit the
+            # discount and surface cache-hit rate (savings.build_savings_report
+            # aggregates the "cached_input_tokens" metadata key).
+            if usage.cached_input_tokens:
+                metadata["cached_input_tokens"] = usage.cached_input_tokens
             self._telemetry_sink.record_llm_call(
                 LLMCallEvent(
                     project_path=telemetry_context.project_path,
@@ -708,10 +717,26 @@ class M27Client:
                         )
                         or 0
                     )
+                    # Prefix-cache hits are reported either as a flat field
+                    # (Anthropic-shape: cache_read_input_tokens) or nested under
+                    # prompt_tokens_details (OpenAI-shape: cached_tokens). Capture
+                    # either so the cache discount is credited and observable.
+                    prompt_details = usage_payload.get("prompt_tokens_details")
+                    cached_input_tokens = int(
+                        usage_payload.get("cache_read_input_tokens")
+                        or usage_payload.get("cached_tokens")
+                        or (
+                            prompt_details.get("cached_tokens")
+                            if isinstance(prompt_details, dict)
+                            else 0
+                        )
+                        or 0
+                    )
                     usage = TokenUsage(
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
                         reasoning_tokens=reasoning_tokens,
+                        cached_input_tokens=cached_input_tokens,
                     )
                     # Fix: M27-06. Non-empty 200 response with zero tokens on both
                     # sides is almost always a provider telemetry gap worth

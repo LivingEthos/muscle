@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from fnmatch import fnmatch
@@ -26,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from ..escalation import EscalationRecord, EscalationRecorder
 from ..m27_client import M27Client, M27StructuredError, StructuredCallMetadata
 from ..optimization.prompt_context import build_telemetry_context, compose_prompt_envelope
+from ..optimization.structured_compactor import compact_records
 from ..structured_io import ReviewFindings
 from .review_artifacts import resolve_trace_policy
 from .thinking_policy import thinking_for
@@ -124,6 +126,32 @@ Your response MUST be valid JSON with this exact structure:
   }
 }
 """
+
+
+def _structured_compaction_enabled() -> bool:
+    """Whether analyzer-finding payloads are rendered as compact tables.
+
+    Defaults on; set MUSCLE_STRUCTURED_COMPACTION to 0/false/off/no to disable.
+    """
+    raw = os.environ.get("MUSCLE_STRUCTURED_COMPACTION", "").strip().lower()
+    return raw not in {"0", "false", "off", "no"}
+
+
+def _render_issue_block(
+    issues: list[dict[str, Any]], *, label: str = "Static analysis issues"
+) -> str:
+    """Render analyzer findings for a prompt.
+
+    Uses a deterministic, prefix-cache-friendly compact table that is ~40-60%
+    smaller than indented JSON while preserving every field value; falls back to
+    indented JSON when compaction is disabled or would not shrink the payload.
+    """
+    if _structured_compaction_enabled():
+        result = compact_records(issues, label=label)
+        if result.applied:
+            return result.text
+    return f"{label} ({len(issues)}):\n{json.dumps(issues, indent=2)}"
+
 
 PRESSURE_PROMPT = """You are performing a PRESSURE TEST review. This is NOT a normal code review.
 Your goal is to CHALLENGE the implementation and expose weaknesses, hidden assumptions, and risks.
@@ -628,8 +656,7 @@ Source code:
 {prompt_code}
 ```
 
-Static analysis issues found:
-{json.dumps(issues, indent=2)}
+{_render_issue_block(issues)}
 
 Provide your review in JSON format."""
         if supplemental_context:
@@ -754,8 +781,7 @@ Source code:
 {expanded_budget.content}
 ```
 
-Static analysis issues found:
-{json.dumps(issues, indent=2)}
+{_render_issue_block(issues)}
 
 Provide your review in JSON format."""
                 retry_envelope = compose_prompt_envelope(
@@ -915,7 +941,7 @@ File: {file_path}
 {self._truncate_code(code_content, 800)}
 ```
 
-{"No static analysis issues found. Review for bugs, security, and quality." if proactive else "Static analysis issues: " + json.dumps(issues, indent=2)}
+{"No static analysis issues found. Review for bugs, security, and quality." if proactive else _render_issue_block(issues)}
 
 For each issue, provide: severity (CRITICAL/HIGH/MEDIUM/LOW/INFO), category
 (security/correctness/performance/style/documentation/best_practice), title,

@@ -692,8 +692,9 @@ class TestCR05MaxIssuesPerBatch:
         # The truncated issues list should contain exactly 3 entries
         import re
 
-        # Count occurrences of "issue " in the serialised issues block
-        issue_count = len(re.findall(r'"message":', user_message))
+        # Count distinct issue messages in the serialised issues block. This is
+        # format-agnostic (works for both indented JSON and the compact table).
+        issue_count = len(re.findall(r"issue \d+", user_message))
         assert issue_count == 3, f"Expected 3 issues in prompt (batch limit), got {issue_count}"
 
     def test_reviewer_config_threaded_via_review_config(self, tmp_path):
