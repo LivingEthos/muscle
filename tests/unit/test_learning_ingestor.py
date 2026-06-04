@@ -205,7 +205,7 @@ class TestLearningIngestorWriteFindings:
 
     def test_write_findings_single_issue(self):
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory():
             mock_pm = MagicMock()
             mock_pm.insert_review_finding.return_value = 1
 
@@ -224,7 +224,7 @@ class TestLearningIngestorWriteFindings:
 
     def test_write_findings_multiple_issues(self):
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory():
             mock_pm = MagicMock()
             mock_pm.insert_review_finding.return_value = 1
 
@@ -241,7 +241,7 @@ class TestLearningIngestorWriteFindings:
 
     def test_write_findings_with_fix_results(self):
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory():
             mock_pm = MagicMock()
             mock_pm.insert_review_finding.return_value = 1
 
@@ -262,7 +262,7 @@ class TestLearningIngestorWriteFindings:
 
     def test_write_findings_empty_list(self):
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory():
             mock_pm = MagicMock()
 
             ingestor = LearningIngestor(mock_pm)
@@ -273,7 +273,7 @@ class TestLearningIngestorWriteFindings:
 
     def test_write_findings_db_error_continues(self):
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory():
             mock_pm = MagicMock()
             # First call succeeds, second fails
             mock_pm.insert_review_finding.side_effect = [1, Exception("DB error"), 3]
@@ -291,7 +291,7 @@ class TestLearningIngestorWriteFindings:
 
     def test_write_findings_with_ids_preserves_issue_order(self):
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory():
             mock_pm = MagicMock()
             mock_pm.insert_review_finding.side_effect = [11, Exception("DB error"), 13]
 
@@ -312,7 +312,7 @@ class TestLearningIngestorIssueToRuleId:
 
     def test_cwe_id_used_when_present(self):
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory():
             mock_pm = MagicMock()
             ingestor = LearningIngestor(mock_pm)
 
@@ -323,7 +323,7 @@ class TestLearningIngestorIssueToRuleId:
 
     def test_generated_id_from_title(self):
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory():
             mock_pm = MagicMock()
             ingestor = LearningIngestor(mock_pm)
 
@@ -506,7 +506,7 @@ class TestLearningIngestorBuildFixResults:
 
     def test_build_fix_results_mixed(self):
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory():
             mock_pm = MagicMock()
             ingestor = LearningIngestor(mock_pm)
 
@@ -523,7 +523,7 @@ class TestLearningIngestorBuildFixResults:
 
     def test_build_fix_results_none_fixed(self):
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory():
             mock_pm = MagicMock()
             ingestor = LearningIngestor(mock_pm)
 

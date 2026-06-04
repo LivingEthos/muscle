@@ -869,7 +869,7 @@ class TestSkillAgentIntegration:
         pm = ProjectMemory(str(project_with_muscle_dir))
 
         # Insert active skill into DB
-        skill_id = pm.insert_skill(
+        _ = pm.insert_skill(
             project_path=str(project_with_muscle_dir),
             name="secure_hashing",
             description="Detects insecure hashing",
@@ -895,7 +895,7 @@ class TestSkillAgentIntegration:
         pm = ProjectMemory(str(project_with_muscle_dir))
 
         # Insert active agent into DB
-        agent_id = pm.insert_agent(
+        _ = pm.insert_agent(
             project_path=str(project_with_muscle_dir),
             name="security_reviewer",
             description="Reviews security patterns",

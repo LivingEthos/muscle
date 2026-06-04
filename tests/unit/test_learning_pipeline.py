@@ -387,7 +387,7 @@ class TestLearningPipelineValidation:
             issue = _make_issue(title="SQL injection risk", severity=Severity.HIGH)
             result = _make_review_result([issue])
 
-            actions = pipeline.learn_from_review(result)
+            _ = pipeline.learn_from_review(result)
 
             # Rule should NOT be validated (pattern still seen)
             rules = pipeline.memory_manager.read_rules()
@@ -452,7 +452,7 @@ class TestLearningPipelineMemoryMd:
             )
             result = _make_review_result([medium_issue])
 
-            actions = pipeline.learn_from_review(result)
+            _ = pipeline.learn_from_review(result)
 
             # Medium issues should be tracked in MEMORY.md via update_memory_md
             memory_md = pipeline.memory_manager.muscle_dir / "MEMORY.md"
@@ -714,7 +714,7 @@ class TestSkillLifecycleDB:
         # Pre-create a skill in DB
         pipeline = LearningPipeline(str(tmp_path))
         pm = pipeline._pm
-        skill_id = pm.insert_skill(
+        _ = pm.insert_skill(
             project_path=str(tmp_path),
             name="existing_skill",
             description="Already exists",
@@ -901,7 +901,7 @@ class TestSkillLifecycleDB:
         conn.commit()
         conn.close()
 
-        archived = pipeline._archive_stale_skills()
+        _ = pipeline._archive_stale_skills()
 
         # Skill should be archived
         skill = pm.get_skill(skill_id)

@@ -78,42 +78,42 @@ class TestHelperFunctions:
         def test_valid_seconds(self):
             assert _parse_timeout("30s") == 30
 
-        def test_validMinutes(self):
+        def test_valid_minutes(self):
             assert _parse_timeout("5m") == 300
 
-        def test_validHours(self):
+        def test_valid_hours(self):
             assert _parse_timeout("2h") == 7200
 
-        def test_validDays(self):
+        def test_valid_days(self):
             assert _parse_timeout("1d") == 86400
 
-        def test_bareNumber(self):
+        def test_bare_number(self):
             assert _parse_timeout("120") == 120
 
-        def test_emptyString(self):
+        def test_empty_string(self):
             assert _parse_timeout("") == 3600
 
-        def test_negativeNumber(self):
+        def test_negative_number(self):
             assert _parse_timeout("-10") == 3600
 
-        def test_exceedsMax(self):
+        def test_exceeds_max(self):
             from tools.muscle.cli import MAX_TIMEOUT_SECONDS
 
             assert _parse_timeout("100d") == MAX_TIMEOUT_SECONDS
 
-        def test_invalidFormat(self):
+        def test_invalid_format(self):
             assert _parse_timeout("abc") == 3600
 
-        def test_invalidUnit(self):
+        def test_invalid_unit(self):
             assert _parse_timeout("5x") == 3600
 
-        def test_zeroValue(self):
+        def test_zero_value(self):
             assert _parse_timeout("0s") == 0
 
-        def test_floatValue(self):
+        def test_float_value(self):
             assert _parse_timeout("1.5m") == 3600
 
-        def test_negativeWithUnit(self):
+        def test_negative_with_unit(self):
             assert _parse_timeout("-5m") == 3600
 
     class TestParseBudget:
@@ -122,7 +122,7 @@ class TestHelperFunctions:
             assert mode == BudgetMode.UNLIMITED
             assert limit == 0
 
-        def test_unlimitedUppercase(self):
+        def test_unlimited_uppercase(self):
             mode, limit = _parse_budget("UNLIMITED")
             assert mode == BudgetMode.UNLIMITED
 
@@ -131,50 +131,50 @@ class TestHelperFunctions:
             assert mode == BudgetMode.AUTO
             assert limit == 0
 
-        def test_autoMixedCase(self):
+        def test_auto_mixed_case(self):
             mode, limit = _parse_budget("Auto")
             assert mode == BudgetMode.AUTO
 
-        def test_fixedNumber(self):
+        def test_fixed_number(self):
             mode, limit = _parse_budget("100")
             assert mode == BudgetMode.FIXED
             assert limit == 100
 
-        def test_fixedWithK(self):
+        def test_fixed_with_k(self):
             mode, limit = _parse_budget("50k")
             assert mode == BudgetMode.UNLIMITED
 
-        def test_fixedWithM(self):
+        def test_fixed_with_m(self):
             mode, limit = _parse_budget("2m")
             assert mode == BudgetMode.UNLIMITED
 
-        def test_invalidString(self):
+        def test_invalid_string(self):
             mode, limit = _parse_budget("abc")
             assert mode == BudgetMode.UNLIMITED
             assert limit == 0
 
-        def test_emptyString(self):
+        def test_empty_string(self):
             mode, limit = _parse_budget("")
             assert mode == BudgetMode.UNLIMITED
 
     class TestTruncate:
-        def test_underLimit(self):
+        def test_under_limit(self):
             result = _truncate("hello", 10)
             assert result == "hello"
 
-        def test_exactLimit(self):
+        def test_exact_limit(self):
             result = _truncate("hello", 5)
             assert result == "hello"
 
-        def test_overLimit(self):
+        def test_over_limit(self):
             result = _truncate("hello world", 8)
             assert result == "hello..."
 
-        def test_exactlyThreeOver(self):
+        def test_exactly_three_over(self):
             result = _truncate("abcdefgh", 5)
             assert result == "ab..."
 
-        def test_emptyString(self):
+        def test_empty_string(self):
             result = _truncate("", 10)
             assert result == ""
 
@@ -484,9 +484,9 @@ class TestInitCommand:
         assert "could not confidently verify the backing model" in result.output
 
     def test_init_interactive_detects_no_project(self, runner):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory():
             with patch("builtins.input", return_value=""):
-                result = runner.invoke(init, [], input="\n")
+                runner.invoke(init, [], input="\n")
                 # May succeed or gracefully exit depending on project detection
 
 
@@ -670,7 +670,7 @@ class TestHistoryCommand:
         return CliRunner()
 
     def test_history_empty(self, runner):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory():
             result = runner.invoke(history, [], catch_exceptions=False)
             assert result.exit_code == 0
 

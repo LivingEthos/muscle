@@ -291,10 +291,10 @@ class TestStrategyKBIntegration:
 # Tests for LegacyImporter (MUS-012)
 # -----------------------------------------------------------------------------
 
-from datetime import datetime
+from datetime import datetime  # noqa: E402
 
-from tools.muscle.legacy_importer import LegacyImporter
-from tools.muscle.project_memory import ProjectMemory
+from tools.muscle.legacy_importer import LegacyImporter  # noqa: E402
+from tools.muscle.project_memory import ProjectMemory  # noqa: E402
 
 
 class TestLegacyImporterReviewKB:
@@ -483,7 +483,7 @@ class TestLegacyImporterStrategies:
         importer = LegacyImporter(memory, str(tmp_path))
 
         importer._import_strategies_db()
-        first_imported = importer.stats.get("strategies", {}).get("imported", 0)
+        _ = importer.stats.get("strategies", {}).get("imported", 0)
 
         importer2 = LegacyImporter(memory, str(tmp_path))
         importer2._import_strategies_db()
@@ -604,7 +604,7 @@ class TestLegacyImporterSessions:
 
         importer1 = LegacyImporter(memory, str(tmp_path))
         importer1._import_sessions()
-        first = importer1.stats.get("sessions", {}).get("imported", 0)
+        _ = importer1.stats.get("sessions", {}).get("imported", 0)
 
         importer2 = LegacyImporter(memory, str(tmp_path))
         importer2._import_sessions()

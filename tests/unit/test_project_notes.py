@@ -185,7 +185,7 @@ class TestProjectNotesDedupe:
         """Notes with very similar titles (>= 0.85 similarity) should be merged."""
         with (
             patch("tools.muscle.project_notes._list_project_notes") as mock_list,
-            patch("tools.muscle.project_notes._update_project_note") as mock_update,
+            patch("tools.muscle.project_notes._update_project_note"),
             patch("tools.muscle.project_notes._delete_project_note") as mock_delete,
         ):
             mock_list.return_value = [

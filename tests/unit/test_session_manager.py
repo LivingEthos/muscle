@@ -366,8 +366,8 @@ class TestSM03SessionIdSanitizer:
             # Verify only safe ASCII chars remain.
             import string
 
-            _SAFE = frozenset(string.ascii_letters + string.digits + "_-")
-            assert all(c in _SAFE for c in result), (
+            _safe = frozenset(string.ascii_letters + string.digits + "_-")
+            assert all(c in _safe for c in result), (
                 f"Result {result!r} contains non-safe characters"
             )
 

@@ -236,7 +236,7 @@ class TestContextBudget:
         builder = SourceContextBuilder(tmp_path)
         context = builder._build_context(["lodash"], listing, tmp_path)
         # Should have content but capped at 60 lines per snippet
-        snippet_lines = [l for l in context.split("\n") if l.startswith("line")]
+        snippet_lines = [line for line in context.split("\n") if line.startswith("line")]
         assert len(snippet_lines) <= 60
 
     def test_metadata_present_even_without_entry_file(self, tmp_path: Path) -> None:
