@@ -217,14 +217,38 @@ How MUSCLE exploits M3 over M2.7 (design doc: `docs/plans/m3-thinking-toggle-sco
 - Python 3.10+ required.
 
 <!-- MUSCLE_PUBLISHED_START -->
+### Methodology
+- Think before coding: state assumptions; if multiple interpretations fit, surface them.
+- Simplicity first: ship the minimum code that solves the problem.
+- Surgical changes: touch only what the task requires; match existing style.
+- Goal-driven execution: define the verification check first, then loop until it passes.
+
+### Delegation Protocol (Plan-Then-Hand-Off)
+You (Claude Code / Codex) are the planner and synthesizer. MUSCLE's MiniMax M2.7 agents are the execution muscle — they do bulk, mechanical work at ~5–10× lower token cost per equivalent pass.
+
+Division of labor:
+- **You do:** understand intent, form the approach, make architectural and UX calls, write a focused plan, integrate results, present to the user.
+- **MUSCLE does:** execute that plan — bulk code reviews across many files, generating fix candidates, running test/type-check sweeps, collecting diagnostics, validating changes, pattern scans.
+
+Once you've decided what needs to happen, write a concise plan and hand execution to MUSCLE:
+- Multi-file code review, bug hunting, security audit → `/muscle:review` with a targeted scope and focus.
+- Deep investigation of a specific failure → MUSCLE rescue agent (`/muscle:rescue`).
+- Validating a fix, running tests / type-checks / linters → MUSCLE verification agent.
+- Pressure-testing a design you've proposed → `/muscle:pressure`.
+
+Keep the planning with you. Do not ask MUSCLE to plan the work. Do not do the bulk execution yourself. When MUSCLE reports back, integrate and decide — cite the MUSCLE session id so follow-ups stay linked. If MUSCLE's output is clearly off-target on a novel problem (empty pattern memory, low confidence across findings), fall back to direct reasoning.
+
+_These commands require the MUSCLE plugin bundle to be active in this project (for example, the Claude or Codex plugin bundle under `tools/muscle/plugin`). Without it, reason directly._
+
+### Effort & Tool Guidance
+- On Claude Code (Opus 4.8): run MUSCLE fix-application flows at `xhigh` effort; summarization-only at `high`. In auto mode, proceed through delegations without confirmation prompts.
+- Opus 4.8 interprets instructions literally. If a MUSCLE finding is ambiguous, ask the user before generalizing.
+- Opus 4.8 provides its own progress updates — do not add interim summary instructions.
+
 ### Critical Rules
-
-### Frequent Mistakes
-
-### Active Agent Calls
-
-### Active Skill Calls
-
-### Tooling Notes
-
+- Unvalidated path fields enable arbitrary file write (path traversal) — Validate paths with pathlib.Path.resolve(strict=False), require absolute paths or constrain to a project root, reject parent directory traversal segments, and reject world-writable or sensitive directories such as HOME, /etc, and SSH dirs. Centralize this in a helper used by __post_init__. (score: 16.5, validated: 1x)
+- all_errors silently conflates warnings with errors; downstream fixers chase linter noise — Rename all_errors to all_issues, or split into all_errors and all_warnings. Make has_warnings_only a constructor flag or policy attribute, not a derived property. Better: change the passed field to a tri-state (PASS, WARN, FAIL) and let policies decide what triggers another iteration. (score: 16.5, validated: 1x)
+- SessionReport loses temporal context; no start/end time, no version, no schema — Add schema_version (int = 1), started_at, ended_at, host, and model_version to SessionReport. Add an explicit module-level __version__ constant and a migration layer for deserialization. Consider a content hash of the report body for tamper detection. (score: 10.899999999999999, validated: 1x)
+- IterationResult vs IterationReport: two near-identical dataclasses invite drift — Collapse to a single IterationRecord dataclass used for both in-memory and serialized states. If two views are truly needed, derive one from the other via a method, not a copy-paste dataclass. (score: 10.899999999999999, validated: 1x)
+- BudgetInfo silently treats limit=0 as 'no budget' but percentage masks division-by-zero differently — Validate in RunConfig.__post_init__ that if budget_mode is FIXED, then budget_tokens must be greater than 0. In BudgetInfo, raise an explicit error or return a sentinel (e.g., None for percentage) when limit is 0 and mode is FIXED, rather than silently returning 0.0. (score: 10.899999999999999, validated: 1x)
 <!-- MUSCLE_PUBLISHED_END -->

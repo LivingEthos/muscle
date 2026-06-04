@@ -80,3 +80,31 @@ class TestRoundTrip:
         recovered = expand_records(result.text)
         expected = [{k: str(v) for k, v in record.items()} for record in records]
         assert recovered == expected
+
+    def test_round_trip_200_records(self):
+        large = [{"id": str(i), "status": "ok" if i % 2 == 0 else "fail", "msg": f"item {i}"} for i in range(200)]
+        result = compact_records(large, label="bulk")
+        assert result.applied is True
+        recovered = expand_records(result.text)
+        expected = [{k: str(v) for k, v in record.items()} for record in large]
+        assert recovered == expected
+
+    def test_round_trip_with_pipe_and_newline_in_values(self):
+        records = [
+            {"id": "1", "desc": "has | pipe"},
+            {"id": "2", "desc": "has \n newline"},
+            {"id": "3", "desc": "has | pipe and \n newline"},
+            {"id": "4", "desc": "has \\ backslash"},
+            {"id": "5", "desc": "has | \n \\ all three"},
+        ]
+        result = compact_records(records, label="x")
+        recovered = expand_records(result.text)
+        expected = [{k: str(v) for k, v in record.items()} for record in records]
+        assert recovered == expected
+
+    def test_json_fallback_when_table_not_smaller(self):
+        # Empty records have header overhead that exceeds JSON, so fallback.
+        records = [{}, {}]
+        result = compact_records(records, label="x")
+        assert result.applied is False
+        assert "{}" in result.text
