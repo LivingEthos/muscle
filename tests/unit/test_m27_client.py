@@ -342,7 +342,9 @@ class TestChatSuccess:
             json_data={
                 "content": [{"type": "text", "text": "Hello"}],
                 "usage": {
-                    "input_tokens": 1000,
+                    # Anthropic/MiniMax shape: input_tokens is FRESH-only and
+                    # cache_read_input_tokens is disjoint. Full prompt = 200 + 800.
+                    "input_tokens": 200,
                     "output_tokens": 5,
                     "cache_read_input_tokens": 800,
                 },
@@ -350,8 +352,10 @@ class TestChatSuccess:
         )
 
         _, usage = client.chat([{"role": "user", "content": "hi"}])
+        # input_tokens is normalized to the full prompt size (fresh + cached).
         assert usage.input_tokens == 1000
         assert usage.cached_input_tokens == 800
+        assert usage.cached_input_tokens <= usage.input_tokens
 
     def test_chat_captures_cached_tokens_openai_shape(self, mock_client):
         client, mock_session = mock_client

@@ -134,8 +134,10 @@ class TokenUsage:
     output_tokens: int = 0
     reasoning_tokens: int = 0
     # Subset of input_tokens served from MiniMax-M3's passive prefix cache at the
-    # discounted cache-hit rate. Captured from the provider usage payload so cost
-    # accounting can credit the discount and cache-hit rate stays observable.
+    # discounted cache-hit rate. input_tokens is normalized to the full prompt size
+    # (fresh + cached), so cached_input_tokens <= input_tokens always holds. Captured
+    # from the provider usage payload so cost accounting can credit the discount and
+    # the cache-hit rate stays observable.
     cached_input_tokens: int = 0
 
     @property
@@ -717,21 +719,31 @@ class M27Client:
                         )
                         or 0
                     )
-                    # Prefix-cache hits are reported either as a flat field
-                    # (Anthropic-shape: cache_read_input_tokens) or nested under
-                    # prompt_tokens_details (OpenAI-shape: cached_tokens). Capture
-                    # either so the cache discount is credited and observable.
+                    # Prefix-cache hits, normalized so input_tokens is always the
+                    # FULL prompt size and cached_input_tokens is the cached subset.
+                    # The two API shapes disagree on what input_tokens counts
+                    # (verified against live MiniMax-M3 responses):
+                    #   Anthropic shape (MiniMax /anthropic): `input_tokens` counts
+                    #     only FRESH input; `cache_read_input_tokens` is DISJOINT, so
+                    #     the full prompt is their sum. Fold cached back in.
+                    #   OpenAI shape: `prompt_tokens` already INCLUDES cached, exposed
+                    #     as a subset under `prompt_tokens_details.cached_tokens`.
+                    cache_read = int(usage_payload.get("cache_read_input_tokens") or 0)
                     prompt_details = usage_payload.get("prompt_tokens_details")
-                    cached_input_tokens = int(
-                        usage_payload.get("cache_read_input_tokens")
-                        or usage_payload.get("cached_tokens")
-                        or (
+                    openai_cached = int(
+                        (
                             prompt_details.get("cached_tokens")
                             if isinstance(prompt_details, dict)
                             else 0
                         )
+                        or usage_payload.get("cached_tokens")
                         or 0
                     )
+                    if cache_read:
+                        input_tokens += cache_read
+                        cached_input_tokens = cache_read
+                    else:
+                        cached_input_tokens = min(openai_cached, input_tokens)
                     usage = TokenUsage(
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,

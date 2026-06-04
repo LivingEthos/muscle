@@ -5,6 +5,7 @@ Unit tests for savings and discovery reports.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from tools.muscle.command_evidence import ParserTier, build_command_evidence
@@ -82,10 +83,13 @@ def test_discovery_reports_repeated_failed_commands_and_does_not_write_memory(
         source_path="session.jsonl",
         normalized_project_path=str(tmp_path),
     )
+    # Seed timestamps relative to "now" so the 30-day discovery window always
+    # includes them; absolute dates here rot once the clock passes the window.
+    recent = datetime.now(timezone.utc) - timedelta(days=1)
     for index in range(2):
         pm.insert_external_benchmark_turn(
             benchmark_session_id=session_id,
-            timestamp=f"2026-05-01T00:00:0{index}+00:00",
+            timestamp=(recent + timedelta(seconds=index)).isoformat(),
             category="verify",
             model="m",
             input_tokens=10,
