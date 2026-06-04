@@ -863,6 +863,36 @@ class TestChatStreaming:
 
         assert len(chunks) >= 1
 
+    def test_chat_streaming_captures_cached_tokens(self, mock_client):
+        client, mock_session = mock_client
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {}
+        mock_response.iter_lines = MagicMock(
+            return_value=iter(
+                [
+                    'data: {"type": "content_block", "content": [{"type": "text", "text": "hi"}]}',
+                    'data: {"usage": {"input_tokens": 20, "output_tokens": 3, '
+                    '"cache_read_input_tokens": 80}}',
+                    "data: [DONE]",
+                ]
+            )
+        )
+        mock_session.post.return_value = mock_response
+
+        usages = [
+            usage
+            for _, usage in client.chat_streaming([{"role": "user", "content": "hi"}])
+            if usage is not None
+        ]
+        assert usages, "expected at least one usage event"
+        final = usages[-1]
+        # input_tokens folds in the disjoint cache_read count (20 + 80).
+        assert final.input_tokens == 100
+        assert final.cached_input_tokens == 80
+        assert final.cached_input_tokens <= final.input_tokens
+
     def test_chat_streaming_429_retries(self, mock_client):
         client, mock_session = mock_client
 

@@ -1068,9 +1068,16 @@ class M27Client:
                                 yield accumulated_text, None
 
                 if "usage" in event_data:
+                    stream_usage = event_data["usage"]
+                    stream_input = int(stream_usage.get("input_tokens", 0) or 0)
+                    # Anthropic-shape streaming reports cache_read_input_tokens
+                    # disjoint from input_tokens; fold it in so input_tokens is the
+                    # full prompt and cached_input_tokens is a subset (matches chat()).
+                    stream_cache_read = int(stream_usage.get("cache_read_input_tokens", 0) or 0)
                     usage = TokenUsage(
-                        input_tokens=event_data["usage"].get("input_tokens", 0),
-                        output_tokens=event_data["usage"].get("output_tokens", 0),
+                        input_tokens=stream_input + stream_cache_read,
+                        output_tokens=int(stream_usage.get("output_tokens", 0) or 0),
+                        cached_input_tokens=stream_cache_read,
                     )
                     yield accumulated_text, usage
 
