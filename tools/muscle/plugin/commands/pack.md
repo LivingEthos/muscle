@@ -21,4 +21,4 @@ muscle pack list
 muscle pack gc --older-than 30d
 ```
 
-Pass the resulting pack id to downstream commands that accept `--pack <id>` so the response cache key incorporates it (Phase B.3 integration): identical pack + identical task produces a cache hit instead of a fresh M2.7 call.
+Pass the resulting pack id to downstream commands that accept `--pack <id>` so the response cache key incorporates it (Phase B.3 integration): identical pack + identical task produces a cache hit instead of a fresh M3 call.

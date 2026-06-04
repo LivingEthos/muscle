@@ -3,7 +3,7 @@
 ## Scope
 
 This review covers the current on-disk checkout at
-`/Users/ryan/Documents/Projects/Minimax-Self-Improving`. I did not change
+`<repo-root>`. I did not change
 production code. The only artifact produced by this pass is this review
 document.
 
@@ -489,7 +489,7 @@ YAML while accepting existing JSON.
 
 Examples:
 
-- README "More docs" links point to `/Users/frisson1/Desktop/PROJECTS/...`
+- README "More docs" links point to `<absolute-user-path>/...`
   absolute paths instead of repo-relative paths:
   `README.md:227`.
 - `PROJECT_INDEX.md` lists `pressure_reviewer.py`, but that file is not present

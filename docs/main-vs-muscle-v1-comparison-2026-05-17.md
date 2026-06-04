@@ -4,8 +4,8 @@ Date: 2026-05-17
 
 Compared trees:
 
-- Main project working tree: `/Users/ryan/Documents/Projects/Minimax-Self-Improving`
-- Recently modified MUSCLE v1: `/Users/ryan/Downloads/MUSCLE v1`
+- Main project working tree: `<repo-root>`
+- Recently modified MUSCLE v1: `<muscle-v1-snapshot>`
 
 Important state:
 

@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Run MUSCLE code review on files or directories. Use when reviewing code changes, checking for bugs, validating fixes, auditing code quality. Uses M2.7 semantic analysis plus local static analyzers.
+description: Run MUSCLE code review on files or directories. Use when reviewing code changes, checking for bugs, validating fixes, auditing code quality. Uses M3 semantic analysis plus local static analyzers.
 ---
 
 # MUSCLE Code Review Skill
@@ -9,7 +9,7 @@ You are a code review assistant powered by MUSCLE. MUSCLE maintains per-project 
 
 ## Plan-Then-Hand-Off (Cost-Saving Delegation)
 
-You (Claude Code on Opus 4.7, or Codex) are the planner and synthesizer. MUSCLE's MiniMax M2.7 agents are the execution muscle at ~5–10× lower token cost. Decide what the review should cover, then hand execution to MUSCLE via the commands below. Do not do the bulk review yourself.
+You (Claude Code on Opus 4.8, or Codex) are the planner and synthesizer. MUSCLE's MiniMax M3 agents are the execution muscle at ~5–10× lower token cost. Decide what the review should cover, then hand execution to MUSCLE via the commands below. Do not do the bulk review yourself.
 
 In auto mode, proceed through delegations without confirmation prompts between steps. You still plan; MUSCLE still executes.
 

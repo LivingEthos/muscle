@@ -173,7 +173,7 @@ Completed:
 
 Current live rerun result:
 - `sqlite3 .muscle/project_memory.db 'PRAGMA integrity_check;'` returns `ok`
-- `ProjectMemory('/Users/ryan/Documents/Projects/Minimax-Self-Improving')`
+- `ProjectMemory('<repo-root>')`
   opens the root database successfully
 - recovered row counts include:
   - `tasks`: `218`
@@ -209,7 +209,7 @@ Completed:
 - changed the prompt-overhead release gate to use captured prompt-side
   telemetry when available, with total-token fallback only for older reports
 - reran the full credentialed benchmark/release flow with the MiniMax token-plan
-  key loaded from `/Users/ryan/Documents/Projects/TEST-API-KEYS.md` without
+  key loaded from a local credentials file (outside the repo) without
   printing the key:
   - benchmark JSON:
     `.muscle/reports/benchmarks/benchmark_20260517_201913.json`

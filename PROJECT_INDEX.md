@@ -91,7 +91,7 @@ Global (`~/.muscle/`):
 
 ## Key Data Flow
 
-Review completes → `LearningPipeline.learn_from_review()` → `project_memory.db` (via `LearningIngestor`) → `MemoryDecisionEngine` scores → `ClaudePublisher.publish()` writes root `CLAUDE.md` inside `MUSCLE_PUBLISHED_START/END` markers (size-capped, M2.7-consolidated on overflow). `MemoryManager` also mirrors to `.muscle/` internal markdowns.
+Review completes → `LearningPipeline.learn_from_review()` → `project_memory.db` (via `LearningIngestor`) → `MemoryDecisionEngine` scores → `ClaudePublisher.publish()` writes root `CLAUDE.md` inside `MUSCLE_PUBLISHED_START/END` markers (size-capped, M3-consolidated on overflow). `MemoryManager` also mirrors to `.muscle/` internal markdowns.
 
 ## Testing
 
@@ -105,6 +105,6 @@ Review completes → `LearningPipeline.learn_from_review()` → `project_memory.
 
 See `docs/REMAINING_TODOS.md` for the active backlog. Recently closed items (no longer gaps):
 - **Host-docs optimizer is built.** `tools/muscle/code_review/host_memory_optimizer.py` is shipped and exposed via `muscle optimize-host-docs` for non-destructive reorganization of pre-existing `CLAUDE.md` / `AGENTS.md`.
-- **`ClaudePublisher.publish()` is multi-target.** It writes to both `CLAUDE.md` and `AGENTS.md` by default (`target_files` list in `claude_publisher.py`), with size-capped sections and M2.7 consolidation on overflow.
+- **`ClaudePublisher.publish()` is multi-target.** It writes to both `CLAUDE.md` and `AGENTS.md` by default (`target_files` list in `claude_publisher.py`), with size-capped sections and M3 consolidation on overflow.
 
 Open items live in `docs/REMAINING_TODOS.md`. No production-readiness blocker is currently tracked there; deferred product experiments are the opt-in foresight preflight and consensus supervision workstreams.

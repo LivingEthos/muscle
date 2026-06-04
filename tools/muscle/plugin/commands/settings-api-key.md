@@ -1,5 +1,5 @@
 ---
-description: Set or configure the MINIMAX/M2.7 API key for MUSCLE
+description: Set or configure the MINIMAX/M3 API key for MUSCLE
 argument-hint: "[--key <key>] [--source env|opencode|ask]"
 ---
 

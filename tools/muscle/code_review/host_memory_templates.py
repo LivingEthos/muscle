@@ -46,9 +46,9 @@ Keep the planning with you. Do not ask MUSCLE to plan the work. Do not do the bu
 _These commands require the MUSCLE plugin bundle to be active in this project (for example, the Claude or Codex plugin bundle under `tools/muscle/plugin`). Without it, reason directly._
 
 ### Effort & Tool Guidance
-- On Claude Code (Opus 4.7): run MUSCLE fix-application flows at `xhigh` effort; summarization-only at `high`. In auto mode, proceed through delegations without confirmation prompts.
-- Opus 4.7 interprets instructions literally. If a MUSCLE finding is ambiguous, ask the user before generalizing.
-- Opus 4.7 provides its own progress updates — do not add interim summary instructions.
+- On Claude Code (Opus 4.8): run MUSCLE fix-application flows at `xhigh` effort; summarization-only at `high`. In auto mode, proceed through delegations without confirmation prompts.
+- Opus 4.8 interprets instructions literally. If a MUSCLE finding is ambiguous, ask the user before generalizing.
+- Opus 4.8 provides its own progress updates — do not add interim summary instructions.
 """
 
 INTERNAL_SEED: str = """### Methodology

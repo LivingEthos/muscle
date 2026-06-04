@@ -135,12 +135,12 @@ Each module MUST pass all checks before merging:
 tools/muscle/
 ├── cli.py                      # CLI entry point (click-based)
 ├── types.py                    # Core data types (RunConfig, SessionReport, etc.)
-├── m27_client.py               # MiniMax M2.7 API client
+├── m27_client.py               # MiniMax M3 API client
 ├── budget_manager.py            # Token budget tracking
 ├── session_manager.py           # Session persistence to disk
 ├── strategy_kb.py              # SQLite + VSS knowledge base
-├── code_generator.py           # M2.7 code generation
-├── evolver.py                  # M2.7 strategy evolution
+├── code_generator.py           # M3 code generation
+├── evolver.py                  # M3 strategy evolution
 ├── loop_controller.py          # Core Generate→Evaluate→Evolve loop
 ├── self_improver.py            # Self-review and improvement analysis
 ├── cost_optimizer.py           # Cost estimation and cache
@@ -151,10 +151,10 @@ tools/muscle/
 ├── code_review/                # Code review subsystem
 │   ├── __init__.py
 │   ├── types.py                # Review-specific types (ReviewConfig, Severity, etc.)
-│   ├── code_reviewer.py        # M2.7 semantic review with pressure mode
+│   ├── code_reviewer.py        # M3 semantic review with pressure mode
 │   ├── review_controller.py    # Review orchestration
 │   ├── review_kb.py           # Review knowledge base
-│   ├── fix_generator.py        # M2.7 fix generation
+│   ├── fix_generator.py        # M3 fix generation
 │   ├── fix_tracker.py         # Fix attempt tracking & validation
 │   ├── handoff_generator.py   # Markdown handoff plan generation
 │   ├── memory_manager.py      # CLAUDE.md/AGENT.md/MEMORY.md updates

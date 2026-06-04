@@ -4,8 +4,8 @@ Date: 2026-05-15
 
 Compared sources:
 
-- v2 snapshot: `/Users/ryan/Downloads/muscle-v2-inspection`
-- current app: `/Users/ryan/Documents/Projects/Minimax-Self-Improving`
+- v2 snapshot: `<muscle-v2-snapshot>`
+- current app: `<repo-root>`
 
 Important context:
 

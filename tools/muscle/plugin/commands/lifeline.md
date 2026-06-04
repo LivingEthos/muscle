@@ -1,9 +1,9 @@
 ---
-description: Throw a lifeline to MUSCLE's M2.7 model for active investigation, bug-hunting, or exploratory analysis
+description: Throw a lifeline to MUSCLE's M3 model for active investigation, bug-hunting, or exploratory analysis
 argument-hint: "[prompt] [target] [intensity=minimal|moderate|intensive|exhaustive]"
 ---
 
-Throw a lifeline to MUSCLE's M2.7 for deep investigation. Execute:
+Throw a lifeline to MUSCLE's M3 for deep investigation. Execute:
 
 ```bash
 muscle lifeline --target . --prompt "$ARGUMENTS" --intensity moderate

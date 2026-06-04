@@ -2,7 +2,7 @@
 
 ## Description
 
-SCLE (Self-Correcting Loop Engine) is an autonomous code generation and improvement skill that uses MiniMax M2.7's self-improvement capabilities to iteratively generate, evaluate, and refine code until it passes all quality checks.
+SCLE (Self-Correcting Loop Engine) is an autonomous code generation and improvement skill that uses MiniMax M3's self-improvement capabilities to iteratively generate, evaluate, and refine code until it passes all quality checks.
 
 ## Usage
 
@@ -56,9 +56,9 @@ Runs silently and returns the final result.
 
 ## How It Works
 
-1. **Generate**: M2.7 generates code based on the task description
+1. **Generate**: M3 generates code based on the task description
 2. **Evaluate**: Code is tested with compiler, linter, and unit tests
-3. **Evolve**: If evaluation fails, M2.7 analyzes errors and generates improved strategy
+3. **Evolve**: If evaluation fails, M3 analyzes errors and generates improved strategy
 4. **Repeat**: Loop continues until success or max iterations
 
 ## Integration

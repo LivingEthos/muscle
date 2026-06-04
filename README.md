@@ -93,7 +93,7 @@ Every review feeds **`project_memory.db`** — the single source of truth for
 learned rules, recurring patterns, fix outcomes, and decision provenance. As
 patterns repeat, MUSCLE promotes them into project-specific **skills** and
 **agents**, and publishes a bounded summary into your root `CLAUDE.md` and
-`AGENTS.md` so the *host* coding agent (Opus 4.7, Codex, etc.) starts every
+`AGENTS.md` so the *host* coding agent (Opus 4.8, Codex, etc.) starts every
 new session aware of the project's hard-won lessons.
 
 ### 2. The dynamic harness

@@ -27,7 +27,7 @@ MUSCLE has two primary runtime loops:
 1. A generate -> evaluate -> evolve loop exposed by `muscle run`
 2. A review -> fix/plan -> learn loop exposed by `muscle review`
 
-Both loops are powered by the MiniMax M2.7 API through an Anthropic-compatible
+Both loops are powered by the MiniMax M3 API through an Anthropic-compatible
 client and both persist state so the project can compound over time.
 
 MUSCLE is now explicitly project-first:
@@ -134,7 +134,7 @@ until success, budget exhaustion, timeout, abort, or max iterations.
 ### `muscle review` ✅
 
 `muscle review` is the code review workflow. It combines local static analysis,
-M2.7 semantic review, optional fix application, and post-review learning.
+M3 semantic review, optional fix application, and post-review learning.
 
 ### `muscle tui` 🚧
 
@@ -194,17 +194,17 @@ can propose validated provisional rules for promotion into the project layer.
 
 #### `ModelIdentityResolver`
 
-`ModelIdentityResolver` maps the raw API model string returned by M2.7 (or
+`ModelIdentityResolver` maps the raw API model string returned by M3 (or
 the user-supplied override) to a stable *canonical model identity* that the
 rest of MUSCLE uses for pack scoping, memory keying, and history tracking.
 
 Resolution example:
 
 ```
-api returns: "MiniMax-M2.7-2026-03-preview"
-ModelIdentityResolver.resolve(raw="MiniMax-M2.7-2026-03-preview")
+api returns: "MiniMax-M3-2026-06-01"
+ModelIdentityResolver.resolve(raw="MiniMax-M3-2026-06-01")
   → lookup alias table in system.db
-  → canonical = "minimax-m2.7"
+  → canonical = "minimax-m3"
   → persist identity event in project_memory.db
 ```
 
@@ -225,7 +225,7 @@ accept a pack change that regresses the default project-only path.
 
 - `cli.py` builds the runtime config and dependencies
 - `LoopController` owns iteration state and stop conditions
-- `CodeGenerator` calls M2.7 and writes generated files
+- `CodeGenerator` calls M3 and writes generated files
 - `EvaluatorRegistry` selects compiler, test, and lint evaluators by language
 - `Evolver` analyzes failures and produces the next strategy
 - `SessionManager` persists progress under `.muscle/sessions/`
@@ -271,7 +271,7 @@ sequenceDiagram
 ### What Happens In Each Iteration
 
 1. `LoopController` optionally pauses for interactive approval or user hints.
-2. `CodeGenerator` sends the task and the latest evolved strategy to M2.7.
+2. `CodeGenerator` sends the task and the latest evolved strategy to M3.
 3. The generator parses fenced code blocks and writes files into `output_dir`.
 4. `EvaluatorRegistry` picks evaluators based on detected or supplied language.
 5. Evaluation failures are flattened into error lists.
@@ -315,7 +315,7 @@ This is wired through `LoopController._auto_commit()` and `adapters/git_adapter.
 
 - `ReviewController` orchestrates the review mode
 - `StaticAnalyzer` runs local tools such as Ruff, ESLint, TSC, Clippy, and more
-- `CodeReviewer` asks M2.7 to validate and classify findings
+- `CodeReviewer` asks M3 to validate and classify findings
 - `FixGenerator` applies suggested code replacements for fixable issues
 - `HandoffGenerator` produces markdown plans for issues not auto-fixed
 - `LearningPipeline` updates memory files and attempts recurring-pattern skill generation
@@ -374,7 +374,7 @@ The output is normalized into `StaticIssue` records before the semantic pass.
 
 ### Semantic Review Layer
 
-`CodeReviewer` groups issues by file, reads source content, and asks M2.7 to:
+`CodeReviewer` groups issues by file, reads source content, and asks M3 to:
 
 - confirm whether the issue is real
 - classify severity and category
@@ -548,7 +548,7 @@ commands.
 
 ### Fully Wired From The CLI ✅
 
-- MiniMax M2.7 API client
+- MiniMax M3 API client
 - session persistence and resume
 - evaluator selection and execution
 - review modes
@@ -591,17 +591,17 @@ MUSCLE's plugin publishes structured content to the **host CLI**'s memory files 
 
 **Pinned** — always present, byte-identical across consolidation cycles, exempt from the 50-line section cap:
 - `### Methodology` — four-principle design guide (think / simplicity / surgical / goal-driven).
-- `### Delegation Protocol` — plan-then-hand-off posture directing the host model to delegate bulk execution to MUSCLE's M2.7 agents.
-- `### Effort & Tool Guidance` — Opus 4.7 effort hints (`xhigh` for coding) and auto-mode guidance.
+- `### Delegation Protocol` — plan-then-hand-off posture directing the host model to delegate bulk execution to MUSCLE's M3 agents.
+- `### Effort & Tool Guidance` — Opus 4.8 effort hints (`xhigh` for coding) and auto-mode guidance.
 
 All pinned content is sourced from `tools/muscle/code_review/host_memory_templates.py` (constant strings; no dynamic rendering).
 
-**Dynamic** — populated from `project_memory.db` via `LearningPipeline` → `MemoryDecisionEngine` → `ClaudePublisher.publish()`. Subject to the 50-line section cap and M2.7 consolidation when caps are exceeded:
+**Dynamic** — populated from `project_memory.db` via `LearningPipeline` → `MemoryDecisionEngine` → `ClaudePublisher.publish()`. Subject to the 50-line section cap and M3 consolidation when caps are exceeded:
 - `### Critical Rules`, `### Frequent Mistakes`, `### Active Agent Calls`, `### Active Skill Calls`, `### Tooling Notes`.
 
 ### Optimizer flow
 
-`tools/muscle/code_review/host_memory_optimizer.py` provides a non-destructive rewriter for pre-existing `CLAUDE.md` / `AGENTS.md` files that predate the MUSCLE plugin. Exposed as `muscle optimize-host-docs`. It wraps user content in `MUSCLE_PUBLISHED` markers (if absent) and injects the pinned block. Content outside the markers is never reordered, rewritten, or deleted. Pure and deterministic — no M2.7 calls.
+`tools/muscle/code_review/host_memory_optimizer.py` provides a non-destructive rewriter for pre-existing `CLAUDE.md` / `AGENTS.md` files that predate the MUSCLE plugin. Exposed as `muscle optimize-host-docs`. It wraps user content in `MUSCLE_PUBLISHED` markers (if absent) and injects the pinned block. Content outside the markers is never reordered, rewritten, or deleted. Pure and deterministic — no M3 calls.
 
 ### File map
 

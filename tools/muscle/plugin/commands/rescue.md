@@ -1,11 +1,11 @@
 ---
-description: Delegate a focused root-cause investigation to MUSCLE's M2.7 rescue subagent — race conditions, memory leaks, hard-to-reproduce bugs
+description: Delegate a focused root-cause investigation to MUSCLE's M3 rescue subagent — race conditions, memory leaks, hard-to-reproduce bugs
 argument-hint: "[prompt] [target] [intensity=minimal|moderate|intensive|exhaustive]"
 ---
 
 > **Plan-then-hand-off:** Use MUSCLE for bulk execution; you retain planning and synthesis. Pass a focused scope — don't ask MUSCLE to plan the work.
 
-Hand off a directed root-cause investigation to MUSCLE's M2.7 rescue subagent. Execute:
+Hand off a directed root-cause investigation to MUSCLE's M3 rescue subagent. Execute:
 
 ```bash
 muscle lifeline --target . --prompt "$ARGUMENTS" --intensity moderate
