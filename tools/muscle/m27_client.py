@@ -200,7 +200,7 @@ def _detect_api_base() -> str:
         return ANTHROPIC_BASE_URL_COM
     elif explicit_io == "openai":
         return OPENAI_BASE_URL_IO
-    return OPENAI_BASE_URL_IO
+    return ANTHROPIC_BASE_URL_IO
 
 
 def _create_session() -> requests.Session:

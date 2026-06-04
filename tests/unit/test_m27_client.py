@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tools.muscle.m27_client import (
+    ANTHROPIC_BASE_URL_IO,
     DEFAULT_MODEL,
     OPENAI_BASE_URL_IO,
     ConcurrencyLimiter,
@@ -204,7 +205,7 @@ class TestDetectApiBase:
         with patch.dict("os.environ", {}, clear=True):
             with patch.dict("os.environ", {"MINIMAX_API_KEY": "fake"}, clear=False):
                 result = _detect_api_base()
-        assert result == OPENAI_BASE_URL_IO
+        assert result == ANTHROPIC_BASE_URL_IO
 
     def test_respects_anthropic_base_url_env(self):
         with patch.dict(
