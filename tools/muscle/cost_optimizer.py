@@ -39,6 +39,42 @@ M3_CACHE_HIT_INPUT = 0.12 / 1_000_000
 FALLBACK_INPUT_RATE = 0.28 / 1_000_000
 FALLBACK_OUTPUT_RATE = 1.20 / 1_000_000
 
+# Host-model pricing (USD per token): (input, output, cache_read). Used to express
+# delegation and crush savings in host dollars. Anthropic list prices, 2026-06:
+# Fable 5 $10/$50, Opus 4.8/4.7 $5/$25, Sonnet 4.6 $3/$15; cache reads ~0.1x input.
+# Codex hosts bill in the Opus range per docs; modeled at Opus rates.
+HOST_MODEL_PRICING: dict[str, tuple[float, float, float]] = {
+    "claude-fable-5": (10.00 / 1_000_000, 50.00 / 1_000_000, 1.00 / 1_000_000),
+    "claude-opus-4-8": (5.00 / 1_000_000, 25.00 / 1_000_000, 0.50 / 1_000_000),
+    "claude-opus-4-7": (5.00 / 1_000_000, 25.00 / 1_000_000, 0.50 / 1_000_000),
+    "claude-sonnet-4-6": (3.00 / 1_000_000, 15.00 / 1_000_000, 0.30 / 1_000_000),
+    "codex-default": (5.00 / 1_000_000, 25.00 / 1_000_000, 0.50 / 1_000_000),
+}
+DEFAULT_HOST_PRICING_MODEL = "claude-fable-5"
+
+
+def estimate_host_request_cost(
+    host_model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int = 0,
+) -> float:
+    """Estimate the USD cost of one request on a *host* model (Fable 5, Opus, Codex).
+
+    Raises ``ValueError`` for unknown host models rather than silently falling back
+    to some default pricing — a typo here would corrupt every savings report.
+    """
+    pricing = HOST_MODEL_PRICING.get(host_model)
+    if pricing is None:
+        known = ", ".join(sorted(HOST_MODEL_PRICING))
+        raise ValueError(f"unknown host model {host_model!r}; known: {known}")
+    input_rate, output_rate, cache_rate = pricing
+    input_tokens = max(0, input_tokens)
+    output_tokens = max(0, output_tokens)
+    cached = max(0, min(cached_input_tokens, input_tokens))
+    fresh_input = input_tokens - cached
+    return fresh_input * input_rate + cached * cache_rate + output_tokens * output_rate
+
 
 def m3_pricing_tier(input_tokens: int) -> str:
     """Return the M3 input-length pricing tier for a request."""
@@ -135,7 +171,6 @@ class CostOptimizer:
         self._init_db()
 
     def _init_db(self) -> None:
-        self.cache_dir / "cache.db"
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""

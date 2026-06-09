@@ -1358,6 +1358,73 @@ def savings(json_output: bool) -> None:
     _render_savings_report(report)
 
 
+@cli.command(name="crush")
+@click.argument("file", required=False, type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--label", default="records", show_default=True, help="Label for JSON record payloads"
+)
+@click.option(
+    "--budget-lines",
+    type=int,
+    default=None,
+    help="Line budget for windowing (default: crusher default)",
+)
+@click.option("--no-store", is_flag=True, help="Do not save the original for `muscle expand`")
+@click.option("--json", "json_output", is_flag=True, help="Emit a JSON envelope with metrics")
+def crush(
+    file: str | None,
+    label: str,
+    budget_lines: int | None,
+    no_store: bool,
+    json_output: bool,
+) -> None:
+    """Compress a large tool output before it enters the host model's context.
+
+    Reads FILE or stdin. Compressed text goes to stdout (pipe-clean); metrics and
+    the `ccr:` retrieval handle go to stderr. Recover the original with
+    `muscle expand <handle>`.
+    """
+    from .optimization.tool_output_crusher import DEFAULT_LINE_BUDGET, CcrStore, crush_text
+
+    text = Path(file).read_text() if file else click.get_text_stream("stdin").read()
+    store = None if no_store else CcrStore(Path.cwd() / ".muscle" / "ccr")
+    result = crush_text(
+        text,
+        label=label,
+        line_budget=budget_lines if budget_lines is not None else DEFAULT_LINE_BUDGET,
+        store=store,
+    )
+    if json_output:
+        click.echo(json.dumps({"text": result.text, **result.to_metadata()}))
+        return
+    click.echo(result.text)
+    pct = (
+        100.0 * (result.original_chars - result.compact_chars) / result.original_chars
+        if result.original_chars
+        else 0.0
+    )
+    footer = (
+        f"[crush] strategy={result.strategy} chars {result.original_chars}->"
+        f"{result.compact_chars} (-{pct:.0f}%) ~{result.estimated_tokens_saved} tokens saved"
+    )
+    if result.handle:
+        footer += f" original={result.handle}"
+    click.echo(footer, err=True)
+
+
+@cli.command(name="expand")
+@click.argument("handle")
+def expand(handle: str) -> None:
+    """Print the stored original for a `ccr:` handle produced by `muscle crush`."""
+    from .optimization.tool_output_crusher import CcrStore, CcrStoreError
+
+    store = CcrStore(Path.cwd() / ".muscle" / "ccr")
+    try:
+        click.echo(store.load(handle), nl=False)
+    except CcrStoreError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @cli.command()
 @click.option("--json", "json_output", is_flag=True, help="Emit structured discovery output")
 @click.option("--since", "since_days", type=int, default=30, show_default=True)
@@ -2324,7 +2391,10 @@ def _parse_since(since_str: str) -> timedelta:
 @click.option("--since", "since_str", default="7d", help="Lookback window (e.g. 7d, 14d, 30d)")
 @click.option("--format", "fmt", type=click.Choice(["text", "json"]), default="text")
 @click.option(
-    "--host-model", default="claude-opus-4-7", help="Host model for token-avoidance estimate"
+    "--host-model",
+    default="claude-fable-5",
+    show_default=True,
+    help="Host model for token-avoidance and dollar-savings estimates",
 )
 def cost_delegation_report(since_str: str, fmt: str, host_model: str) -> None:
     """Show cost-delegation observability report."""
@@ -2332,7 +2402,10 @@ def cost_delegation_report(since_str: str, fmt: str, host_model: str) -> None:
 
     since_td = _parse_since(since_str)
     metrics = DelegationMetrics(Path.cwd())
-    rpt = metrics.report(since=since_td, host_model=host_model)
+    try:
+        rpt = metrics.report(since=since_td, host_model=host_model)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--host-model") from exc
 
     if fmt == "json":
         click.echo(metrics.format_json(rpt))

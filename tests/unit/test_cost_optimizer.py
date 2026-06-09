@@ -7,9 +7,11 @@ import json
 import pytest
 
 from tools.muscle.cost_optimizer import (
+    HOST_MODEL_PRICING,
     M3_LONG_CONTEXT_THRESHOLD,
     CostOptimizer,
     CostTier,
+    estimate_host_request_cost,
     estimate_request_cost,
     m3_pricing_tier,
 )
@@ -54,6 +56,35 @@ class TestM3Pricing:
         assert result["model"] == "MiniMax-M3"
         assert result["pricing_tier"] == "standard"
         assert result["estimated_cost_usd"] >= 0
+
+
+class TestHostPricing:
+    def test_fable5_rates(self):
+        # 1M input + 1M output on Fable 5 ($10/$50 per MTok).
+        cost = estimate_host_request_cost("claude-fable-5", 1_000_000, 1_000_000)
+        assert cost == pytest.approx(10.00 + 50.00)
+
+    def test_fable5_cache_read_discount(self):
+        # 1M input fully cached bills at $1.00/MTok instead of $10.00.
+        cost = estimate_host_request_cost("claude-fable-5", 1_000_000, 0, 1_000_000)
+        assert cost == pytest.approx(1.00)
+
+    def test_opus48_is_half_fable5(self):
+        fable = estimate_host_request_cost("claude-fable-5", 1_000_000, 1_000_000)
+        opus = estimate_host_request_cost("claude-opus-4-8", 1_000_000, 1_000_000)
+        assert opus == pytest.approx(fable / 2)
+
+    def test_cached_tokens_clamped_to_input(self):
+        cost = estimate_host_request_cost("claude-fable-5", 100, 0, 10_000)
+        assert cost == pytest.approx(100 * 1.00 / 1_000_000)
+
+    def test_unknown_host_model_fails_loudly(self):
+        with pytest.raises(ValueError, match="unknown host model"):
+            estimate_host_request_cost("claude-opus-99", 100, 100)
+
+    def test_pricing_table_covers_default_and_codex(self):
+        assert "claude-fable-5" in HOST_MODEL_PRICING
+        assert "codex-default" in HOST_MODEL_PRICING
 
 
 class TestCostTier:

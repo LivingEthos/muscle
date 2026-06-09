@@ -187,6 +187,28 @@ class TestReportFormatting:
         assert "total_events" in parsed
         assert "m27_usd_cents" in parsed
         assert "estimated_host_tokens_avoided" in parsed
+        assert "estimated_host_usd_avoided" in parsed
+        assert "estimated_net_savings_usd" in parsed
+        assert parsed["host_model"] == "claude-fable-5"
+
+    def test_host_dollar_estimate_uses_fable5_pricing(self, project_db: Path) -> None:
+        _insert_event(project_db, session_id="s1", m27_usd_cents=100)
+
+        metrics = DelegationMetrics(project_db)
+        rpt = metrics.report(since=timedelta(days=1), host_model="claude-fable-5")
+
+        # 8000 avoided tokens at 75% input ($10/MTok) + 25% output ($50/MTok).
+        expected = (6000 * 10.00 + 2000 * 50.00) / 1_000_000
+        assert rpt.estimated_host_usd_avoided == pytest.approx(expected)
+        assert rpt.estimated_net_savings_usd == pytest.approx(expected - 1.00)
+        text = metrics.format_text(rpt)
+        assert "claude-fable-5" in text
+        assert "Est. host cost avoided" in text
+
+    def test_unknown_host_model_is_rejected(self, project_db: Path) -> None:
+        metrics = DelegationMetrics(project_db)
+        with pytest.raises(ValueError, match="unknown host model"):
+            metrics.report(since=timedelta(days=1), host_model="claude-typo-9")
 
 
 class TestReconcileWithBudgetManager:

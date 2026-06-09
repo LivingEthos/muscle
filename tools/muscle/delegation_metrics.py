@@ -9,17 +9,26 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .cost_optimizer import HOST_MODEL_PRICING, estimate_host_request_cost
+
 logger = logging.getLogger(__name__)
 
 # Average tokens per equivalent task on the host model.  Clearly labeled as
 # "estimated" in every report surface — these are NOT measured.
 HOST_TOKEN_ESTIMATES: dict[str, int] = {
+    "claude-fable-5": 8000,
+    "claude-opus-4-8": 8000,
     "claude-opus-4-7": 8000,
     "claude-sonnet-4-6": 5000,
     "codex-default": 8000,
 }
 
-DEFAULT_HOST_MODEL = "claude-opus-4-7"
+DEFAULT_HOST_MODEL = "claude-fable-5"
+
+# Assumed share of avoided host tokens that would have been *output* tokens.
+# Output bills 5x input on Claude hosts, so the split materially affects the
+# dollar estimate; like HOST_TOKEN_ESTIMATES this is an assumption, not measured.
+HOST_AVOIDED_OUTPUT_SHARE = 0.25
 
 
 @dataclass
@@ -51,6 +60,9 @@ class DelegationReport:
     estimated_host_tokens_avoided: int = 0
     m27_usd_cents: int = 0
     route_breakdown: dict[str, dict[str, float | int]] = field(default_factory=dict)
+    host_model: str = DEFAULT_HOST_MODEL
+    estimated_host_usd_avoided: float = 0.0
+    estimated_net_savings_usd: float = 0.0
 
 
 class DelegationMetrics:
@@ -106,10 +118,17 @@ class DelegationMetrics:
         since: timedelta = timedelta(days=7),
         host_model: str = DEFAULT_HOST_MODEL,
     ) -> DelegationReport:
-        """Build a DelegationReport covering the trailing *since* window."""
+        """Build a DelegationReport covering the trailing *since* window.
+
+        Raises ``ValueError`` for a host model with no pricing entry — a silent
+        fallback here would misprice every savings line in the report.
+        """
+        if host_model not in HOST_MODEL_PRICING:
+            known = ", ".join(sorted(HOST_MODEL_PRICING))
+            raise ValueError(f"unknown host model {host_model!r}; known: {known}")
         cutoff = datetime.now(timezone.utc) - since
         if not self._db_path.exists():
-            return DelegationReport(since=cutoff, total_events=0)
+            return DelegationReport(since=cutoff, total_events=0, host_model=host_model)
 
         try:
             with self._connect() as conn:
@@ -122,9 +141,9 @@ class DelegationMetrics:
                 ).fetchall()
         except sqlite3.OperationalError:
             logger.debug("delegation_events table missing — returning empty report")
-            return DelegationReport(since=cutoff, total_events=0)
+            return DelegationReport(since=cutoff, total_events=0, host_model=host_model)
 
-        rpt = DelegationReport(since=cutoff, total_events=len(rows))
+        rpt = DelegationReport(since=cutoff, total_events=len(rows), host_model=host_model)
         if not rows:
             return rpt
 
@@ -175,6 +194,12 @@ class DelegationMetrics:
 
         avg = HOST_TOKEN_ESTIMATES.get(host_model, 8000)
         rpt.estimated_host_tokens_avoided = total * avg
+        avoided_output = int(rpt.estimated_host_tokens_avoided * HOST_AVOIDED_OUTPUT_SHARE)
+        avoided_input = rpt.estimated_host_tokens_avoided - avoided_output
+        rpt.estimated_host_usd_avoided = estimate_host_request_cost(
+            host_model, avoided_input, avoided_output
+        )
+        rpt.estimated_net_savings_usd = rpt.estimated_host_usd_avoided - rpt.m27_usd_cents / 100
         return rpt
 
     def format_text(self, rpt: DelegationReport) -> str:
@@ -194,8 +219,12 @@ class DelegationMetrics:
                 f"Cache hit rate:              {rpt.cache_hit_rate:.1%}",
                 f"Cache tokens saved:          {rpt.cache_tokens_saved:,}",
                 f"Escalation rate:             {rpt.escalation_rate:.1%}",
+                f"Host model:                  {rpt.host_model}",
                 f"Estimated host tokens        {rpt.estimated_host_tokens_avoided:,}",
                 "  avoided (NOT measured):",
+                f"Est. host cost avoided:      ${rpt.estimated_host_usd_avoided:.2f}",
+                f"Est. net savings:            ${rpt.estimated_net_savings_usd:.2f}",
+                "  (both estimated, NOT measured)",
             ]
         )
         if rpt.route_breakdown:
@@ -222,6 +251,9 @@ class DelegationMetrics:
                 "cache_tokens_saved": rpt.cache_tokens_saved,
                 "escalation_rate": rpt.escalation_rate,
                 "estimated_host_tokens_avoided": rpt.estimated_host_tokens_avoided,
+                "host_model": rpt.host_model,
+                "estimated_host_usd_avoided": round(rpt.estimated_host_usd_avoided, 4),
+                "estimated_net_savings_usd": round(rpt.estimated_net_savings_usd, 4),
                 "route_breakdown": rpt.route_breakdown,
             },
             indent=2,
