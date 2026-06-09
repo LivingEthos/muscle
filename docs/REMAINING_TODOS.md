@@ -1,6 +1,6 @@
 # MUSCLE Remaining Plan
 
-Last updated: 2026-05-24
+Last updated: 2026-06-09
 Status: Living backlog
 
 This is the single living document for remaining MUSCLE work.
@@ -32,6 +32,35 @@ still need to be folded back into this file when the design pass ends.
   has been folded into this document.
 
 ## Just completed
+
+### 2026-06-09 — host context crusher + Fable 5 host-dollar accounting
+
+Status: completed
+
+Completed:
+
+- `optimization/tool_output_crusher.py`: headroom-style host-side tool-output
+  compression (`muscle crush` / `muscle expand`). Strategies: JSON
+  array-of-records → deterministic table (reuses the structured compactor,
+  −65% chars measured on an 80-finding payload), consecutive-duplicate log
+  collapsing, anomaly-preserving head/tail windowing (−67% measured on a 600
+  line log). All elisions explicit; anomaly lines never dropped; output
+  deterministic for host prompt-cache stability.
+- `CcrStore`: bounded content-addressed reversible store under `.muscle/ccr/`
+  (atomic writes, sha256-named files, fail-closed integrity verification on
+  load, oldest-first pruning).
+- `cost_optimizer.HOST_MODEL_PRICING` + `estimate_host_request_cost`: Fable 5
+  ($10/$50, cache read $1.00), Opus 4.8/4.7, Sonnet 4.6, codex-default; unknown
+  host models fail loudly. `muscle cost delegation-report` defaults to
+  `claude-fable-5` and reports estimated host USD avoided and net savings
+  (labeled estimated).
+- Design doc: `docs/superpowers/specs/2026-06-09-host-context-crusher-design.md`.
+- Environment fix (not a repo change): the venv's editable-install `.pth`
+  files carried the macOS `hidden` file flag (iCloud/Finder artifact), which
+  Python 3.13's `site.py` silently skips — the `muscle` console script was
+  broken outside pytest. Fixed with `chflags -R nohidden` on site-packages; a
+  stray `_editable_impl_muscle 2.pth` Finder duplicate was removed. If the CLI
+  ever reports `No module named 'tools'` again, re-run the chflags fix.
 
 ### 2026-05-24 — clean installed-wheel smoke for the foresight package
 
