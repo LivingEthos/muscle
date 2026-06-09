@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from tools.muscle.optimization.structured_compactor import expand_records
 from tools.muscle.optimization.tool_output_crusher import (
+    DEFAULT_RECORD_CAP,
     CcrStore,
     CcrStoreError,
+    _crush_records,
     crush_text,
 )
 
@@ -20,6 +25,13 @@ def _make_records(n: int) -> list[dict[str, object]]:
         {"file": f"src/module_{i}.py", "line": i * 10, "rule": "E501", "message": f"detail {i}"}
         for i in range(n)
     ]
+
+
+def _save_worker(root: str, max_entries: int, count: int, proc_id: int) -> None:
+    """Module-level worker (spawn-picklable) that hammers CcrStore.save."""
+    store = CcrStore(Path(root), max_entries=max_entries)
+    for i in range(count):
+        store.save(f"proc {proc_id} payload {i} " * 200)
 
 
 class TestJsonRecordsStrategy:
@@ -50,6 +62,22 @@ class TestJsonRecordsStrategy:
     def test_non_record_json_falls_through(self) -> None:
         result = crush_text(json.dumps([1, 2, 3]))
         assert result.strategy != "json_records"
+
+    def test_smaller_dedupe_window_candidate_wins_over_table(self) -> None:
+        # Wide records with identical values: the indented JSON has long runs of
+        # identical consecutive lines (dedupe + window crushes hard), while the
+        # table keeps every wide row. The dedupe/window candidate is the smaller
+        # one, so the table candidate must NOT short-circuit it.
+        records = [{f"col{k}": "value" for k in range(15)} for _ in range(60)]
+        text = json.dumps(records, indent=2)
+        result = crush_text(text)
+        assert result.applied
+        # The smaller candidate (dedupe/window) wins, not json_records.
+        assert result.strategy != "json_records"
+        assert "window" in result.strategy or "dedupe" in result.strategy
+        table = _crush_records(records, "records", DEFAULT_RECORD_CAP)
+        assert table is not None
+        assert result.compact_chars < len(table)
 
 
 class TestLineStrategies:
@@ -147,3 +175,61 @@ class TestCcrStore:
         store = CcrStore(tmp_path / "ccr")
         assert store.save("same") == store.save("same")
         assert len(list((tmp_path / "ccr").glob("*.txt"))) == 1
+
+    def test_save_acquires_store_lock_around_prune(self, tmp_path: Path) -> None:
+        """The save+prune unit must run under the store-wide advisory lock.
+
+        Locking contract test: fcntl locks are per-process and do not exclude
+        sibling threads, so rather than race threads we assert the lock is taken
+        on the store sentinel for the duration of save (which contains prune).
+        """
+        import tools.muscle.optimization.tool_output_crusher as toc
+
+        store = CcrStore(tmp_path / "ccr")
+        locked_paths: list[Path] = []
+        real_lock = toc.advisory_file_lock
+
+        @contextmanager
+        def spy_lock(path: Path):  # type: ignore[no-untyped-def]
+            locked_paths.append(path)
+            with real_lock(path):
+                yield
+
+        with patch.object(toc, "advisory_file_lock", spy_lock):
+            store.save("x" * 5000)
+
+        assert locked_paths == [store._lock_target()]
+        assert store._lock_target() == (tmp_path / "ccr" / ".prune")
+
+    def test_concurrent_processes_keep_store_bounded_and_uncorrupted(self, tmp_path: Path) -> None:
+        """Concurrent cross-process saves keep the store bounded and intact.
+
+        fcntl advisory locks are per-process, so this drives the real contract:
+        three processes hammer save() (each of which prunes) at once. Without the
+        store-wide lock, two prunes can interleave their glob+delete and either
+        over-evict below the bound or unlink a half-written entry. With it, the
+        store stays at or under ``max_entries`` and every surviving file still
+        passes its integrity check (``load`` re-hashes and fails closed).
+        """
+        ctx = multiprocessing.get_context("spawn")
+        root = tmp_path / "ccr"
+        n_per_proc = 12
+        max_entries = 5
+        procs = [
+            ctx.Process(target=_save_worker, args=(str(root), max_entries, n_per_proc, pid))
+            for pid in range(3)
+        ]
+        for p in procs:
+            p.start()
+        for p in procs:
+            p.join(timeout=30)
+            assert p.exitcode == 0
+
+        # Prune still enforces the bound under concurrency.
+        survivors = list(root.glob("*.txt"))
+        assert len(survivors) <= max_entries
+        # Every survivor is intact: load re-hashes and raises on mismatch/partial.
+        store = CcrStore(root, max_entries=max_entries)
+        for path in survivors:
+            handle = "ccr:" + path.stem
+            assert store.load(handle)  # raises CcrStoreError if corrupted

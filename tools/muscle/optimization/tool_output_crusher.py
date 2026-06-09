@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..io_safety import advisory_file_lock
 from .structured_compactor import compact_records
 
 HANDLE_PREFIX = "ccr:"
@@ -103,25 +104,35 @@ class CcrStore:
     def _path_for(self, digest: str) -> Path:
         return self.root / f"{digest}.txt"
 
+    def _lock_target(self) -> Path:
+        """Sentinel path whose advisory lock serializes save+prune for the store."""
+        return self.root / ".prune"
+
     def save(self, text: str) -> str:
-        """Persist ``text`` and return its retrieval handle (``ccr:<hash16>``)."""
+        """Persist ``text`` and return its retrieval handle (``ccr:<hash16>``).
+
+        Save and prune run as a unit under a store-wide advisory lock so a
+        concurrent pruner cannot evict this entry in the window between its write
+        and the prune scan (which would silently break a later ``load``).
+        """
         data = text.encode("utf-8")
         digest = self._digest(data)
         path = self._path_for(digest)
         self.root.mkdir(parents=True, exist_ok=True)
-        if not path.exists():
-            fd, tmp_name = tempfile.mkstemp(dir=self.root, suffix=".tmp")
-            try:
-                with os.fdopen(fd, "wb") as fh:
-                    fh.write(data)
-                    fh.flush()
-                    os.fsync(fh.fileno())
-                os.chmod(tmp_name, 0o600)
-                os.replace(tmp_name, path)
-            except BaseException:
-                Path(tmp_name).unlink(missing_ok=True)
-                raise
-            self._prune()
+        with advisory_file_lock(self._lock_target()):
+            if not path.exists():
+                fd, tmp_name = tempfile.mkstemp(dir=self.root, suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "wb") as fh:
+                        fh.write(data)
+                        fh.flush()
+                        os.fsync(fh.fileno())
+                    os.chmod(tmp_name, 0o600)
+                    os.replace(tmp_name, path)
+                except BaseException:
+                    Path(tmp_name).unlink(missing_ok=True)
+                    raise
+                self._prune()
         return f"{HANDLE_PREFIX}{digest}"
 
     def load(self, handle: str) -> str:
@@ -138,7 +149,13 @@ class CcrStore:
         return data.decode("utf-8")
 
     def _prune(self) -> int:
-        """Drop oldest entries beyond the entry/byte bounds. Returns count removed."""
+        """Drop oldest entries beyond the entry/byte bounds. Returns count removed.
+
+        Must be called while holding the store-wide advisory lock (see ``save``);
+        the scan + delete is otherwise racy with a concurrent writer's save. The
+        lock is intentionally not re-acquired here because ``advisory_file_lock``
+        is not reentrant within a process (it opens a fresh fd per call).
+        """
         entries = sorted(
             (p for p in self.root.glob("*.txt") if p.is_file()),
             key=lambda p: (p.stat().st_mtime, p.name),
@@ -262,29 +279,36 @@ def crush_text(
     original_chars = len(text)
     original_lines = text.count("\n") + 1 if text else 0
 
-    crushed: str | None = None
-    strategy = "none"
+    # Compute every candidate that beats the original, then keep the smallest.
+    # The table transform must never short-circuit the dedupe/window path: a
+    # record-shaped payload that the table barely shrinks should still lose to a
+    # smaller dedupe/window candidate, and a table that fails to beat the original
+    # must not block one that does.
+    candidates: list[tuple[str, str]] = []  # (strategy, text)
 
     records = _try_parse_records(text)
     if records is not None:
-        crushed = _crush_records(records, label, record_cap)
-        if crushed is not None:
-            strategy = "json_records"
+        table = _crush_records(records, label, record_cap)
+        if table is not None and len(table) < original_chars:
+            candidates.append(("json_records", table))
 
-    if crushed is None:
-        lines = text.split("\n")
-        deduped = _dedupe_lines(lines)
-        applied_parts: list[str] = []
-        if len(deduped) < len(lines):
-            applied_parts.append("dedupe")
-        windowed = _window_lines(deduped, line_budget)
-        if len(windowed) < len(deduped):
-            applied_parts.append("window")
-        if applied_parts:
-            candidate = "\n".join(windowed)
-            if len(candidate) < original_chars:
-                crushed = candidate
-                strategy = "+".join(applied_parts)
+    lines = text.split("\n")
+    deduped = _dedupe_lines(lines)
+    applied_parts: list[str] = []
+    if len(deduped) < len(lines):
+        applied_parts.append("dedupe")
+    windowed = _window_lines(deduped, line_budget)
+    if len(windowed) < len(deduped):
+        applied_parts.append("window")
+    if applied_parts:
+        candidate = "\n".join(windowed)
+        if len(candidate) < original_chars:
+            candidates.append(("+".join(applied_parts), candidate))
+
+    crushed: str | None = None
+    strategy = "none"
+    if candidates:
+        strategy, crushed = min(candidates, key=lambda c: len(c[1]))
 
     if crushed is None or len(crushed) >= original_chars:
         return CrushResult(

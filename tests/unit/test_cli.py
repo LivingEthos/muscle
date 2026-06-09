@@ -32,10 +32,13 @@ from tools.muscle.cli import (
     agents_list,
     backups_group,
     check,
+    cost_delegation_report,
     cost_group,
+    crush,
     diagnosis,
     disable,
     enable,
+    expand,
     foresight,
     history,
     improve_group,
@@ -1553,9 +1556,7 @@ class TestMemoryGroup:
         assert result.exit_code == 0
         assert "Memory Status" in result.output
 
-    def test_memory_status_shows_db_path(
-        self, runner, mock_project_memory, tmp_path, monkeypatch
-    ):
+    def test_memory_status_shows_db_path(self, runner, mock_project_memory, tmp_path, monkeypatch):
         """memory status shows database path."""
         monkeypatch.chdir(tmp_path)
         with patch("tools.muscle.cli.ProjectMemory", return_value=mock_project_memory):
@@ -1572,9 +1573,7 @@ class TestMemoryGroup:
             result = runner.invoke(memory_history, [], catch_exceptions=False)
         assert result.exit_code == 0
 
-    def test_memory_history_with_limit(
-        self, runner, mock_project_memory, tmp_path, monkeypatch
-    ):
+    def test_memory_history_with_limit(self, runner, mock_project_memory, tmp_path, monkeypatch):
         """memory history accepts --limit flag."""
         monkeypatch.chdir(tmp_path)
         with patch("tools.muscle.cli.ProjectMemory", return_value=mock_project_memory):
@@ -1634,10 +1633,7 @@ class TestAgentsGroup:
         with runner.isolated_filesystem():
             result = runner.invoke(agents_list, [], catch_exceptions=False)
             assert result.exit_code == 0
-            assert (
-                "not found" in result.output.lower()
-                or "no agents" in result.output.lower()
-            )
+            assert "not found" in result.output.lower() or "no agents" in result.output.lower()
 
     def test_agents_list_empty_dir(self, runner):
         """agents list handles empty agents directory."""
@@ -1660,3 +1656,95 @@ class TestAgentsGroup:
             assert result.exit_code == 0
             assert "coder" in result.output
             assert "reviewer" in result.output
+
+
+class TestCrushExpandRoundTrip:
+    """CLI-level round-trip: muscle crush -> muscle expand <ccr:handle>."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_crush_then_expand_recovers_original_byte_identical(self, runner):
+        original = "\n".join([f"info line {i % 5}" for i in range(400)])
+        with runner.isolated_filesystem():
+            Path("payload.txt").write_text(original)
+            # --json puts the ccr handle on stdout in a clean envelope.
+            crush_result = runner.invoke(crush, ["payload.txt", "--json"], catch_exceptions=False)
+            assert crush_result.exit_code == 0
+            envelope = json.loads(crush_result.output)
+            assert envelope["crush_applied"] is True
+            handle = envelope["crush_handle"]
+            assert handle and handle.startswith("ccr:")
+
+            expand_result = runner.invoke(expand, [handle], catch_exceptions=False)
+            assert expand_result.exit_code == 0
+            assert expand_result.output == original
+
+    def test_expand_unknown_handle_errors_cleanly(self, runner):
+        with runner.isolated_filesystem():
+            result = runner.invoke(expand, ["ccr:" + "0" * 16])
+            assert result.exit_code != 0
+
+
+class TestCostDelegationReport:
+    """CLI smoke test for `muscle cost delegation-report`."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def _make_project_with_event(self, tmp_path: Path) -> None:
+        """Create a migrated project_memory.db and record one DelegationEvent."""
+        from tools.muscle.delegation_metrics import DelegationEvent, DelegationMetrics
+        from tools.muscle.migrations._0013_delegation_events import MIGRATION_SQL
+        from tools.muscle.migrations._0017_delegation_event_metadata import (
+            migrate as migrate_metadata,
+        )
+
+        muscle_dir = tmp_path / ".muscle"
+        muscle_dir.mkdir(parents=True, exist_ok=True)
+        import sqlite3
+
+        conn = sqlite3.connect(str(muscle_dir / "project_memory.db"))
+        conn.executescript(MIGRATION_SQL)
+        migrate_metadata(conn)
+        conn.close()
+
+        metrics = DelegationMetrics(tmp_path)
+        metrics.record(
+            DelegationEvent(
+                session_id="sess-cli-001",
+                entry_point="review:review",
+                task_tier="bulk_review",
+                m27_tokens_in=12000,
+                m27_tokens_out=3000,
+                m27_usd_cents=7,
+            )
+        )
+
+    def test_delegation_report_text_renders_recorded_tokens(self, runner, tmp_path):
+        self._make_project_with_event(tmp_path)
+        with patch("tools.muscle.cli.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(
+                cost_delegation_report, ["--since", "30d"], catch_exceptions=False
+            )
+        assert result.exit_code == 0
+        assert "Total delegated tasks: 1" in result.output
+        assert "bulk_review" in result.output
+        # 12000 in + 3000 out = 15,000 tokens for the tier line.
+        assert "15,000" in result.output
+
+    def test_delegation_report_json_renders_recorded_tokens(self, runner, tmp_path):
+        self._make_project_with_event(tmp_path)
+        with patch("tools.muscle.cli.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(
+                cost_delegation_report,
+                ["--since", "30d", "--format", "json"],
+                catch_exceptions=False,
+            )
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["total_events"] == 1
+        assert payload["m27_tokens_by_tier"]["bulk_review"] == 15000
+        assert payload["m27_usd_cents"] == 7
