@@ -49,6 +49,10 @@ def test_needs_work_verifier_response_rejects_and_reverts(tmp_path, monkeypatch)
     assert result.reverted is True
     assert result.failure_analysis == "incomplete"
     assert target.read_text(encoding="utf-8") == original
+    # The verifier usage split is threaded onto the result alongside the total.
+    assert result.tokens_spent == 3
+    assert result.input_tokens_spent == 1
+    assert result.output_tokens_spent == 2
 
 
 def test_validator_exceptions_fail_closed(tmp_path, monkeypatch):

@@ -28,7 +28,7 @@ from .delegation_metrics import (
     DelegationEvent,
     DelegationMetrics,
     estimate_m27_cents,
-    split_m27_tokens,
+    resolve_m27_token_split,
 )
 from .escalation import EscalationRecord, EscalationRecorder
 from .interactive import InteractiveChoice, InteractiveHandler
@@ -196,11 +196,16 @@ class LoopController:
                 else ctx.config.output_dir
             )
             metrics = DelegationMetrics(project_path)
-            # ctx.stats.total_tokens is a combined (input + output) figure — the
-            # loop only accumulates usage.total — so split it into in/out and price
-            # MUSCLE's own M3 spend rather than recording output as 0 (COST#1/#2).
+            # ctx.stats now carries the real per-call input/output split threaded
+            # through the loop. resolve_m27_token_split returns those values
+            # verbatim and only falls back to the combined total for resumed legacy
+            # sessions whose split fields are still 0 (COST#1/#2).
             model = getattr(self._m27_client, "model", None)
-            tokens_in, tokens_out = split_m27_tokens(ctx.stats.total_tokens)
+            tokens_in, tokens_out = resolve_m27_token_split(
+                ctx.stats.input_tokens,
+                ctx.stats.output_tokens,
+                ctx.stats.total_tokens,
+            )
             metrics.record(
                 DelegationEvent(
                     session_id=ctx.session_id,
@@ -389,6 +394,8 @@ class LoopController:
         )
 
         ctx.stats.total_tokens += usage.total
+        ctx.stats.input_tokens += usage.input_tokens
+        ctx.stats.output_tokens += usage.output_tokens
         budget_ok, budget_reason = self._check_budget(usage.total)
         if not budget_ok:
             self._abort_requested = True
@@ -523,6 +530,8 @@ class LoopController:
             iteration=iter_num,
             success=False,
             token_cost=gen_usage.total,
+            input_token_cost=gen_usage.input_tokens,
+            output_token_cost=gen_usage.output_tokens,
             duration_seconds=duration,
             files_generated=changed_files,
         )
@@ -783,6 +792,8 @@ class LoopController:
                 ctx.iterations.append(iteration_result)
                 ctx.stats.total_iterations = ctx.current_iteration
                 ctx.stats.total_tokens += iteration_result.token_cost
+                ctx.stats.input_tokens += iteration_result.input_token_cost
+                ctx.stats.output_tokens += iteration_result.output_token_cost
                 ctx.stats.total_duration_seconds += iteration_result.duration_seconds
 
                 # LC-01: emit overspend event exactly once when budget is first exceeded

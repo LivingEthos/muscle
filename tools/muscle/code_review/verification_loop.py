@@ -52,6 +52,8 @@ class VerificationResult:
     reverted: bool
     failure_analysis: str | None = None
     tokens_spent: int = 0
+    input_tokens_spent: int = 0
+    output_tokens_spent: int = 0
 
 
 @dataclass
@@ -141,6 +143,8 @@ class VerificationLoop:
                 verification_text, usage = self._m27_verify(issue, fixed_content)
                 result.verification_details = verification_text
                 result.tokens_spent = usage.total if usage else 0
+                result.input_tokens_spent = usage.input_tokens if usage else 0
+                result.output_tokens_spent = usage.output_tokens if usage else 0
 
                 verification_status = self._parse_verification_status(verification_text)
                 if verification_status is not VerificationStatus.VERIFIED:

@@ -982,3 +982,127 @@ class TestUnknownReviewModeRaises:
         ):
             with pytest.raises(ValueError, match="Unknown review mode"):
                 controller.run()
+
+
+class TestReviewDelegationTokenSplit:
+    """COST#1/#2: review delegation events record the measured input/output split."""
+
+    def test_record_delegation_event_uses_real_token_split(self, tmp_path):
+        from tools.muscle.delegation_metrics import estimate_m27_cents
+
+        config = ReviewConfig(target_path=str(tmp_path), mode=ReviewMode.REVIEW)
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+        ctx = ReviewContext(
+            session_id="rev-split",
+            config=config,
+            stats=ReviewStats(input_tokens=900, output_tokens=300, tokens_used=1200),
+        )
+
+        recorded = []
+        fake_metrics = MagicMock()
+        fake_metrics.record.side_effect = lambda event: recorded.append(event)
+        with patch(
+            "tools.muscle.code_review.review_controller.DelegationMetrics",
+            return_value=fake_metrics,
+        ):
+            controller._record_delegation_event(ctx)
+
+        assert len(recorded) == 1
+        event = recorded[0]
+        assert event.m27_tokens_in == 900
+        assert event.m27_tokens_out == 300
+        assert event.m27_usd_cents == estimate_m27_cents("MiniMax-M2.7", 900, 300)
+
+    def test_record_delegation_event_attributes_legacy_remainder_to_input(self, tmp_path):
+        from tools.muscle.delegation_metrics import estimate_m27_cents
+
+        config = ReviewConfig(target_path=str(tmp_path), mode=ReviewMode.REVIEW)
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+        ctx = ReviewContext(
+            session_id="rev-legacy",
+            config=config,
+            stats=ReviewStats(input_tokens=0, output_tokens=0, tokens_used=1200),
+        )
+
+        recorded = []
+        fake_metrics = MagicMock()
+        fake_metrics.record.side_effect = lambda event: recorded.append(event)
+        with patch(
+            "tools.muscle.code_review.review_controller.DelegationMetrics",
+            return_value=fake_metrics,
+        ):
+            controller._record_delegation_event(ctx)
+
+        assert recorded[0].m27_tokens_in == 1200
+        assert recorded[0].m27_tokens_out == 0
+        assert recorded[0].m27_usd_cents == estimate_m27_cents("MiniMax-M2.7", 1200, 0)
+
+
+def test_apply_fix_accumulates_verification_token_split(tmp_path):
+    """The verification token split lands on ctx.stats alongside the combined total."""
+    current = tmp_path / "current"
+    current.mkdir()
+    ProjectManager(current).init_project(
+        ProjectConfig(name="current", path=current, languages=["Python"])
+    )
+    file_path = current / "module.py"
+    file_path.write_text("x = 1\n", encoding="utf-8")
+
+    controller = ReviewController(
+        config=ReviewConfig(target_path=str(file_path), mode=ReviewMode.AUTO_FIX),
+        m27_client=MockM27Client(),
+        use_kb=False,
+        project_path=str(current),
+    )
+    issue = ReviewIssue(
+        file_path=str(file_path),
+        line_number=1,
+        severity=Severity.MEDIUM,
+        category=IssueCategory.CORRECTNESS,
+        cwe_id=None,
+        title="Bug",
+        description="Bug description",
+        code_snippet="x = 1",
+        suggested_fix="x = 2",
+        auto_fixable=True,
+    )
+    ctx = ReviewContext(session_id="review-session", config=controller.config, stats=ReviewStats())
+    controller._review_context = ctx
+
+    with patch.object(
+        controller.fix_generator,
+        "generate_fix",
+        return_value=GeneratedFix(ok=True, file_path=str(file_path), code="x = 2\n"),
+    ):
+        with patch.object(
+            controller.fix_generator,
+            "apply_fix",
+            return_value=FixResult(
+                success=True,
+                file_path=str(file_path),
+                original_content="x = 1\n",
+                fixed_content="x = 2\n",
+                applied=True,
+                verified=False,
+            ),
+        ):
+            with patch.object(
+                controller.verification_loop,
+                "verify_fix",
+                return_value=VerificationResult(
+                    issue=issue,
+                    fix_applied=True,
+                    fix_verified=True,
+                    verification_details="verified",
+                    reverted=False,
+                    tokens_spent=150,
+                    input_tokens_spent=110,
+                    output_tokens_spent=40,
+                ),
+            ):
+                success, _ = controller._apply_fix_with_verification(ctx, issue)
+
+    assert success is True
+    assert ctx.stats.tokens_used == 150
+    assert ctx.stats.input_tokens == 110
+    assert ctx.stats.output_tokens == 40

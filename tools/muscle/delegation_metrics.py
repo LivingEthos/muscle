@@ -18,25 +18,27 @@ from .cost_optimizer import (
 
 logger = logging.getLogger(__name__)
 
-# Assumed share of MUSCLE's *own* M3 spend that was output tokens. The runtime
-# token accounting that reaches the delegation-event call sites only exposes a
-# single combined total (input + output) — the per-call in/out split from
-# TokenUsage is collapsed before it gets here — so we split the recorded total
-# with this documented assumption rather than reporting output as 0. Output bills
-# ~4x input on M3, so making it visible is what keeps the net-savings figure
-# honest. This is an estimate, not a measurement.
-M27_OUTPUT_SHARE = 0.25
 
+def resolve_m27_token_split(
+    input_tokens: int, output_tokens: int, combined_total: int
+) -> tuple[int, int]:
+    """Resolve the real (input, output) M3 token split for a delegation event.
 
-def split_m27_tokens(total_tokens: int) -> tuple[int, int]:
-    """Split a combined M3 token total into (input, output) using M27_OUTPUT_SHARE.
-
-    Used at delegation-event call sites where only a combined token count is
-    available. See ``M27_OUTPUT_SHARE`` for why the split is assumption-based.
+    The runtime now threads the measured per-call ``input_tokens`` /
+    ``output_tokens`` split through every layer, so the common case returns those
+    values verbatim. The ``combined_total`` argument is the legacy-data fallback:
+    sessions resumed from older persisted state expose only a combined token
+    count (``total``) with both split fields at 0. Any remainder of
+    ``combined_total`` not covered by ``input_tokens + output_tokens`` is
+    attributed to input so resumed legacy sessions are still priced rather than
+    silently dropping their spend. Negative inputs are clamped to 0.
     """
-    total = max(0, total_tokens)
-    out = int(total * M27_OUTPUT_SHARE)
-    return total - out, out
+    tokens_in = max(0, input_tokens)
+    tokens_out = max(0, output_tokens)
+    remainder = max(0, combined_total) - (tokens_in + tokens_out)
+    if remainder > 0:
+        tokens_in += remainder
+    return tokens_in, tokens_out
 
 
 def estimate_m27_cents(model: str | None, tokens_in: int, tokens_out: int) -> int:

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Thread
 
 from tools.muscle.code_review.code_reviewer import CodeReviewer
-from tools.muscle.code_review.committee_reviewer import AGENT_CORRECTNESS, CommitteeReviewer
+from tools.muscle.code_review.committee_reviewer import (
+    AGENT_CORRECTNESS,
+    CommitteeReviewer,
+    _split_from_summary,
+)
 from tools.muscle.code_review.types import IssueCategory, ReviewIssue, ReviewScope, Severity
 
 
@@ -57,7 +62,7 @@ class TestCommitteeReviewer:
         assert "Unsafe eval execution" in titles
         assert "Hardcoded password or API key secret" in titles
         assert "SQL injection via formatted query" in titles
-        assert reviewer.consume_agent_tokens(AGENT_CORRECTNESS) == 0
+        assert reviewer.consume_agent_tokens(AGENT_CORRECTNESS) == (0, 0)
 
     def test_synthesize_dedupes_and_keeps_highest_severity(self):
         reviewer = CommitteeReviewer(CodeReviewer(DummyM27()))
@@ -168,3 +173,42 @@ class TestCommitteeReviewer:
 
         assert findings
         assert findings[0].severity == Severity.LOW
+
+
+class TestAgentTokenSplitAccounting:
+    def test_record_consume_split_round_trip(self) -> None:
+        reviewer = CommitteeReviewer(CodeReviewer(DummyM27()))
+        reviewer._record_agent_tokens(AGENT_CORRECTNESS, 100, 40)
+        reviewer._record_agent_tokens(AGENT_CORRECTNESS, 100, 40)
+        assert reviewer.consume_agent_tokens(AGENT_CORRECTNESS) == (200, 80)
+        # Second consume drains the entry to the empty default.
+        assert reviewer.consume_agent_tokens(AGENT_CORRECTNESS) == (0, 0)
+
+    def test_concurrent_record_does_not_lose_tokens(self) -> None:
+        reviewer = CommitteeReviewer(CodeReviewer(DummyM27()))
+
+        def worker() -> None:
+            for _ in range(100):
+                reviewer._record_agent_tokens(AGENT_CORRECTNESS, 1, 2)
+
+        threads = [Thread(target=worker) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        # 8 threads * 100 iterations * (1 in, 2 out) with no lost updates.
+        assert reviewer.consume_agent_tokens(AGENT_CORRECTNESS) == (800, 1600)
+
+
+class TestSplitFromSummary:
+    def test_both_split_keys_present(self) -> None:
+        summary = {"token_usage": 1200, "token_usage_input": 900, "token_usage_output": 300}
+        assert _split_from_summary(summary) == (900, 300)
+
+    def test_legacy_dict_with_only_combined_total(self) -> None:
+        # Older summaries that never carried the split: attribute all to input.
+        assert _split_from_summary({"token_usage": 1200}) == (1200, 0)
+
+    def test_empty_dict_yields_zero_split(self) -> None:
+        assert _split_from_summary({}) == (0, 0)

@@ -33,14 +33,14 @@ from ..delegation_metrics import (
     DelegationEvent,
     DelegationMetrics,
     estimate_m27_cents,
-    split_m27_tokens,
+    resolve_m27_token_split,
 )
 from ..escalation import EscalationPolicy, EscalationRecord, EscalationRecorder
 from ..m27_client import M27Client
 from ..project_memory import ProjectMemory
 from ..routing import Recommendation, TaskRouter, offline_route
 from .code_reviewer import CodeReviewer, _read_file_cached
-from .committee_reviewer import AGENT_PRESSURE, CommitteeReviewer
+from .committee_reviewer import AGENT_PRESSURE, CommitteeReviewer, _split_from_summary
 from .fix_generator import FixGenerator
 from .handoff_generator import HandoffGenerator
 from .review_artifacts import ReviewArtifactStore, resolve_trace_policy, review_issue_to_dict
@@ -264,12 +264,17 @@ class ReviewController:
             )
             route_cache_hit = int(bool(route_summary.get("from_cache")))
             metrics = DelegationMetrics(self.project_path)
-            # ctx.stats.tokens_used is a combined (input + output) figure — every
-            # token source in the review path collapses to usage.total before it
-            # reaches here — so split it into in/out and price MUSCLE's own M3 spend
-            # rather than recording output as 0 (COST#1/#2).
+            # ctx.stats now carries the real per-call input/output split threaded
+            # through every review token source. resolve_m27_token_split returns
+            # those values verbatim and only falls back to the combined
+            # tokens_used total for resumed legacy sessions whose split fields are
+            # still 0 (COST#1/#2).
             model = getattr(self.m27_client, "model", None)
-            tokens_in, tokens_out = split_m27_tokens(ctx.stats.tokens_used)
+            tokens_in, tokens_out = resolve_m27_token_split(
+                ctx.stats.input_tokens,
+                ctx.stats.output_tokens,
+                ctx.stats.tokens_used,
+            )
             metrics.record(
                 DelegationEvent(
                     session_id=ctx.session_id,
@@ -780,9 +785,10 @@ class ReviewController:
                 trace_reasons=self._base_trace_reasons(),
             )
             ctx.agent_findings[node.agent or node.id] = issues
-            ctx.stats.tokens_used += self.committee_reviewer.consume_agent_tokens(
-                node.agent or node.id
-            )
+            tin, tout = self.committee_reviewer.consume_agent_tokens(node.agent or node.id)
+            ctx.stats.input_tokens += tin
+            ctx.stats.output_tokens += tout
+            ctx.stats.tokens_used += tin + tout
             return issues
 
         def handle_synthesize(
@@ -941,6 +947,8 @@ class ReviewController:
             )
             if self._review_context is not None:
                 self._review_context.stats.tokens_used += verification_result.tokens_spent
+                self._review_context.stats.input_tokens += verification_result.input_tokens_spent
+                self._review_context.stats.output_tokens += verification_result.output_tokens_spent
 
             if verification_result.fix_verified:
                 self._record_external_lesson_outcome(
@@ -1158,7 +1166,10 @@ class ReviewController:
         ctx.raw_issues = list(semantic_issues)
         ctx.stats.valid_issues = len(ctx.issues)
         if isinstance(summary, dict):
-            ctx.stats.tokens_used += int(summary.get("token_usage", 0))
+            tin, tout = _split_from_summary(summary)
+            ctx.stats.input_tokens += tin
+            ctx.stats.output_tokens += tout
+            ctx.stats.tokens_used += tin + tout
         artifact_store.write_synthesis(ctx.issues, summary if isinstance(summary, dict) else {})
         artifact_store.write_summary(
             self._build_summary_markdown(
@@ -1406,9 +1417,12 @@ class ReviewController:
         issues_lock = Lock()
         found_issues: list[ReviewIssue] = []
 
-        def review_single_file(file_path: Path) -> tuple[list[ReviewIssue], int]:
+        def review_single_file(
+            file_path: Path,
+        ) -> tuple[list[ReviewIssue], int, int]:
             issues: list[ReviewIssue] = []
-            token_usage = 0
+            tokens_in = 0
+            tokens_out = 0
             try:
                 cached_content = _read_file_cached(str(file_path))
                 if cached_content is not None:
@@ -1436,7 +1450,9 @@ class ReviewController:
                         artifact_store,
                         self._base_trace_reasons(),
                     )
-                    token_usage = self.committee_reviewer.consume_agent_tokens(AGENT_PRESSURE)
+                    tokens_in, tokens_out = self.committee_reviewer.consume_agent_tokens(
+                        AGENT_PRESSURE
+                    )
                     issues.extend(
                         issue
                         for issue in pressure_issues
@@ -1444,17 +1460,19 @@ class ReviewController:
                     )
             except Exception as e:
                 logger.warning(f"Pressure review failed for {file_path}: {e}")
-            return issues, token_usage
+            return issues, tokens_in, tokens_out
 
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FILE_REVIEWS) as executor:
             futures = {executor.submit(review_single_file, fp): fp for fp in files_to_review}
 
             for future in as_completed(futures):
                 try:
-                    issues, token_usage = future.result()
+                    issues, tokens_in, tokens_out = future.result()
                     with issues_lock:
                         found_issues.extend(issues)
-                        ctx.stats.tokens_used += token_usage
+                        ctx.stats.input_tokens += tokens_in
+                        ctx.stats.output_tokens += tokens_out
+                        ctx.stats.tokens_used += tokens_in + tokens_out
                 except Exception as e:
                     logger.warning(f"Pressure review failed: {e}")
 

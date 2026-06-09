@@ -905,3 +905,71 @@ def test_lc05_loop_stats_start_time_uses_factory_not_call():
         "LoopStats.start_time must differ between instances created at different times. "
         "If they are equal, start_time is using a fixed default= instead of default_factory=."
     )
+
+
+def test_record_delegation_event_uses_real_token_split():
+    """COST#1/#2: the delegation event records the measured input/output split,
+    not the retired 0.25 heuristic."""
+    from tools.muscle.delegation_metrics import estimate_m27_cents
+
+    config = RunConfig(task="Build a thing", max_iterations=5)
+    controller = LoopController(
+        config=config,
+        code_generator=DummyGenerator(),
+        evaluator=DummyEvaluator(should_pass=True),
+        evolver=DummyEvolver(),
+        budget_manager=DummyBudgetManager(),
+    )
+    controller._m27_client = Mock(model="MiniMax-M3")
+    controller._project_memory = None
+
+    ctx = LoopContext(
+        session_id="sess-split",
+        config=config,
+        stats=LoopStats(input_tokens=900, output_tokens=300, total_tokens=1200),
+    )
+
+    recorded = []
+    fake_metrics = Mock()
+    fake_metrics.record.side_effect = lambda event: recorded.append(event)
+    with patch("tools.muscle.loop_controller.DelegationMetrics", return_value=fake_metrics):
+        controller._record_delegation_event(ctx)
+
+    assert len(recorded) == 1
+    event = recorded[0]
+    assert event.m27_tokens_in == 900
+    assert event.m27_tokens_out == 300
+    assert event.m27_usd_cents == estimate_m27_cents("MiniMax-M3", 900, 300)
+
+
+def test_record_delegation_event_attributes_legacy_remainder_to_input():
+    """Resumed legacy session: split fields are 0 but total_tokens is positive,
+    so the whole combined total is priced as input rather than dropped."""
+    from tools.muscle.delegation_metrics import estimate_m27_cents
+
+    config = RunConfig(task="Build a thing", max_iterations=5)
+    controller = LoopController(
+        config=config,
+        code_generator=DummyGenerator(),
+        evaluator=DummyEvaluator(should_pass=True),
+        evolver=DummyEvolver(),
+        budget_manager=DummyBudgetManager(),
+    )
+    controller._m27_client = Mock(model="MiniMax-M3")
+    controller._project_memory = None
+
+    ctx = LoopContext(
+        session_id="sess-legacy",
+        config=config,
+        stats=LoopStats(input_tokens=0, output_tokens=0, total_tokens=1200),
+    )
+
+    recorded = []
+    fake_metrics = Mock()
+    fake_metrics.record.side_effect = lambda event: recorded.append(event)
+    with patch("tools.muscle.loop_controller.DelegationMetrics", return_value=fake_metrics):
+        controller._record_delegation_event(ctx)
+
+    assert recorded[0].m27_tokens_in == 1200
+    assert recorded[0].m27_tokens_out == 0
+    assert recorded[0].m27_usd_cents == estimate_m27_cents("MiniMax-M3", 1200, 0)

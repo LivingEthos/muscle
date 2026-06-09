@@ -197,6 +197,8 @@ class ReviewStats:
     failed_fixes: int = 0
     handoffs_generated: int = 0
     tokens_used: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
     duration_seconds: float = 0
 
 

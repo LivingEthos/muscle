@@ -85,6 +85,8 @@ class IterationResult:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     token_cost: int = 0
+    input_token_cost: int = 0
+    output_token_cost: int = 0
     duration_seconds: float = 0
     evolved_strategy: str | None = None
     artifacts_dir: str | None = None
@@ -95,6 +97,8 @@ class IterationResult:
 class LoopStats:
     total_iterations: int = 0
     total_tokens: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
     total_duration_seconds: float = 0
     session_id: str | None = None
     status: SessionStatus = SessionStatus.RUNNING

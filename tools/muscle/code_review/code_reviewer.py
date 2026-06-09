@@ -497,6 +497,8 @@ class CodeReviewer:
             "low": 0,
             "info": 0,
             "token_usage": 0,
+            "token_usage_input": 0,
+            "token_usage_output": 0,
             "files_failed": 0,
             "files_skipped": 0,
             "scope_limited": False,
@@ -596,6 +598,8 @@ class CodeReviewer:
                     summary["low"] += file_summary["low"]
                     summary["info"] += file_summary["info"]
                     summary["token_usage"] += file_summary.get("token_usage", 0)
+                    summary["token_usage_input"] += file_summary.get("token_usage_input", 0)
+                    summary["token_usage_output"] += file_summary.get("token_usage_output", 0)
                 except Exception as e:
                     logger.warning(f"File review failed for {file_path}: {e}")
                     summary["files_failed"] += 1
@@ -935,6 +939,8 @@ Provide your review in JSON format."""
         reviews = self._reviews_from_structured(result, default_file_path)
         summary = result.summary.model_dump()
         summary["token_usage"] = metadata.usage.total
+        summary["token_usage_input"] = metadata.usage.input_tokens
+        summary["token_usage_output"] = metadata.usage.output_tokens
         summary["cache_hit"] = int(metadata.cache_hit)
         summary["proactive"] = int(proactive)
         return reviews, summary
@@ -1046,6 +1052,8 @@ description, and line number. Format as a simple list."""
                 "low": sum(1 for i in parsed_issues if i.severity == Severity.LOW),
                 "info": sum(1 for i in parsed_issues if i.severity == Severity.INFO),
                 "token_usage": usage.total,
+                "token_usage_input": usage.input_tokens,
+                "token_usage_output": usage.output_tokens,
             }
         except Exception as exc:
             logger.error("Fallback chat review failed for %s: %s", file_path, exc)
@@ -1127,6 +1135,8 @@ description, and line number. Format as a simple list."""
             "low": 0,
             "info": 0,
             "token_usage": token_usage,
+            "token_usage_input": 0,
+            "token_usage_output": 0,
         }
 
     @staticmethod
@@ -1343,6 +1353,8 @@ Focus areas for this review:
             data.setdefault("summary", {})
             if isinstance(data["summary"], dict):
                 data["summary"]["token_usage"] = metadata.usage.total
+                data["summary"]["token_usage_input"] = metadata.usage.input_tokens
+                data["summary"]["token_usage_output"] = metadata.usage.output_tokens
                 data["summary"]["cache_hit"] = int(metadata.cache_hit)
                 data["summary"]["challenge_mode"] = challenge_label
             final_trace = self._finalize_trace_metadata(
@@ -1427,6 +1439,8 @@ Focus areas for this review:
         raw_response: str,
         parse_error: str,
         token_usage: int,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
         artifact_store: ReviewArtifactStore | None = None,
     ) -> dict[str, Any]:
         payload = {
@@ -1439,6 +1453,8 @@ Focus areas for this review:
                 "low": 0,
                 "info": 0,
                 "token_usage": token_usage,
+                "token_usage_input": input_tokens,
+                "token_usage_output": output_tokens,
                 "parse_error": parse_error,
             },
         }

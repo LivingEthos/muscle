@@ -11,11 +11,10 @@ import pytest
 
 from tools.muscle.cost_optimizer import estimate_request_cost
 from tools.muscle.delegation_metrics import (
-    M27_OUTPUT_SHARE,
     DelegationEvent,
     DelegationMetrics,
     estimate_m27_cents,
-    split_m27_tokens,
+    resolve_m27_token_split,
 )
 from tools.muscle.migrations._0013_delegation_events import MIGRATION_SQL
 from tools.muscle.migrations._0017_delegation_event_metadata import (
@@ -283,13 +282,26 @@ class TestSavingsMath:
 
 
 class TestSplitAndCostHelpers:
-    def test_split_partitions_total(self) -> None:
-        tokens_in, tokens_out = split_m27_tokens(1000)
-        assert tokens_in + tokens_out == 1000
-        assert tokens_out == int(1000 * M27_OUTPUT_SHARE)
+    def test_real_split_passes_through(self) -> None:
+        # When the measured split is present, it is returned verbatim.
+        assert resolve_m27_token_split(900, 300, 1200) == (900, 300)
 
-    def test_split_clamps_negative(self) -> None:
-        assert split_m27_tokens(-5) == (0, 0)
+    def test_zero_split_attributes_remainder_to_input(self) -> None:
+        # Resumed legacy session: split fields are 0 but a combined total exists.
+        assert resolve_m27_token_split(0, 0, 1200) == (1200, 0)
+
+    def test_partial_split_attributes_only_the_remainder(self) -> None:
+        # Combined total exceeds the recorded split: the unaccounted remainder
+        # (1200 - (700 + 200) = 300) lands on input; output is left untouched.
+        assert resolve_m27_token_split(700, 200, 1200) == (1000, 200)
+
+    def test_split_clamps_negative_inputs(self) -> None:
+        assert resolve_m27_token_split(-5, -3, -10) == (0, 0)
+
+    def test_split_no_remainder_when_split_covers_total(self) -> None:
+        # Combined total smaller than the measured split (e.g. stale total):
+        # no negative remainder is fabricated.
+        assert resolve_m27_token_split(900, 300, 100) == (900, 300)
 
     def test_estimate_cents_matches_cost_optimizer(self) -> None:
         cents = estimate_m27_cents("MiniMax-M3", 6000, 2000)
