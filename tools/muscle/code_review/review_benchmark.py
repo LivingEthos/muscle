@@ -267,8 +267,33 @@ class ReviewBenchmarkRunner:
     def _load_manifest(self) -> dict[str, Any]:
         manifest_path = self.fixture_root / "manifest.json"
         manifest: dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self._validate_manifest(manifest)
         self.fixture_manifest_version = int(manifest.get("manifest_version", 1))
         return manifest
+
+    @staticmethod
+    def _validate_manifest(manifest: Any) -> None:
+        """Validate the manifest shape before any value is trusted.
+
+        The manifest is on-disk untrusted input: it must be an object with a
+        ``scenarios`` list, and every scenario must carry string ``name`` and
+        ``target_path`` fields (the values that flow into path resolution).
+        """
+        if not isinstance(manifest, dict):
+            msg = "Benchmark manifest must be a JSON object"
+            raise ValueError(msg)
+        scenarios = manifest.get("scenarios", [])
+        if not isinstance(scenarios, list):
+            msg = "Benchmark manifest 'scenarios' must be a list"
+            raise ValueError(msg)
+        for index, item in enumerate(scenarios):
+            if not isinstance(item, dict):
+                msg = f"Benchmark manifest scenario #{index} must be an object"
+                raise ValueError(msg)
+            for key in ("name", "target_path"):
+                if not isinstance(item.get(key), str) or not item[key]:
+                    msg = f"Benchmark manifest scenario #{index} missing string '{key}'"
+                    raise ValueError(msg)
 
     def _load_scenarios(self, suite: str = "all") -> list[BenchmarkScenario]:
         if suite not in SUPPORTED_BENCHMARK_SUITES:
@@ -278,7 +303,11 @@ class ReviewBenchmarkRunner:
         manifest = self._load_manifest()
         scenarios: list[BenchmarkScenario] = []
         for item in manifest.get("scenarios", []):
-            scenario_target = str((self.fixture_root / item["target_path"]).resolve())
+            scenario_target = str(
+                self._assert_within_fixture_root(
+                    (self.fixture_root / item["target_path"]).resolve()
+                )
+            )
             expected_findings = [
                 BenchmarkExpectedFinding(
                     file_path=finding["file_path"],
@@ -301,7 +330,9 @@ class ReviewBenchmarkRunner:
             )
             if suite == "all" or scenario.suite == suite:
                 scenarios.append(scenario)
-        if suite != "all" and not scenarios:
+        # A zero-scenario benchmark must hard-fail rather than silently pass
+        # every downstream gate — this holds for "all" too.
+        if not scenarios:
             msg = f"No benchmark scenarios found for suite: {suite}"
             raise ValueError(msg)
         return scenarios
@@ -393,6 +424,7 @@ class ReviewBenchmarkRunner:
         workspace_root = workspace_root.resolve()
         current_project_root = (workspace_root / "current_project").resolve()
         fixture_project_root = self._resolve_fixture_project_root(scenario)
+        self._assert_no_symlinks(fixture_project_root)
         shutil.copytree(fixture_project_root, current_project_root, dirs_exist_ok=True)
         target_path = (current_project_root / self._target_relative_path(scenario)).resolve()
         languages = list(scenario.languages or self._infer_languages(target_path))
@@ -431,6 +463,7 @@ class ReviewBenchmarkRunner:
                 str(related_setup["source_project_path"])
             )
             source_project_root = (workspace_root / "related_source_project").resolve()
+            self._assert_no_symlinks(source_fixture_root)
             shutil.copytree(source_fixture_root, source_project_root, dirs_exist_ok=True)
             source_config = ProjectConfig(
                 name=f"{scenario.name}-source",
@@ -1314,13 +1347,44 @@ class ReviewBenchmarkRunner:
         return self.m27_client
 
     def _resolve_fixture_path(self, relative_path: str) -> Path:
-        return (self.fixture_root / relative_path).resolve()
+        return self._assert_within_fixture_root((self.fixture_root / relative_path).resolve())
+
+    def _assert_within_fixture_root(self, resolved: Path) -> Path:
+        """Reject any path that escapes the fixture root.
+
+        Manifest values are treated as untrusted input; a ``..`` segment or an
+        absolute path must not be allowed to resolve outside the fixture tree
+        before it flows into copytree/read operations.
+        """
+        root = self.fixture_root.resolve()
+        if not resolved.is_relative_to(root):
+            msg = f"Fixture path escapes fixture root: {resolved}"
+            raise ValueError(msg)
+        return resolved
+
+    @staticmethod
+    def _assert_no_symlinks(source: Path) -> None:
+        """Reject symlinks anywhere in a fixture source tree before copying.
+
+        ``shutil.copytree`` with the default ``symlinks=False`` dereferences
+        symlinks, which would let a malicious fixture pull arbitrary files into
+        the benchmark workspace. Pre-walk and refuse outright instead.
+        """
+        if source.is_symlink():
+            msg = f"Fixture source is a symlink: {source}"
+            raise ValueError(msg)
+        if source.is_dir():
+            for child in source.rglob("*"):
+                if child.is_symlink():
+                    msg = f"Fixture source contains a symlink: {child}"
+                    raise ValueError(msg)
 
     def _resolve_fixture_project_root(self, scenario: BenchmarkScenario) -> Path:
         if scenario.project_root:
             return self._resolve_fixture_path(scenario.project_root)
         target_path = Path(scenario.target_path)
-        return target_path.parent if target_path.is_file() else target_path
+        root = target_path.parent if target_path.is_file() else target_path
+        return self._assert_within_fixture_root(root.resolve())
 
     def _target_relative_path(self, scenario: BenchmarkScenario) -> Path:
         target_path = Path(scenario.target_path)

@@ -76,7 +76,11 @@ class MemoryCircuitBreaker(CircuitBreaker):
     async def call(self, fn: Callable[[], Awaitable[T]]) -> T:
         async with self._lock:
             if self._state == "open":
-                assert self._last_failure_time is not None
+                # Fail safe: if the failure timestamp is somehow missing, treat
+                # the breaker as still open rather than relying on an assert that
+                # is stripped under `python -O`.
+                if self._last_failure_time is None:
+                    raise CircuitBreakerOpenError("Circuit breaker is open")
                 if time.monotonic() - self._last_failure_time >= self.recovery_timeout:
                     self._state = "half-open"
                     self._half_open_calls = 0

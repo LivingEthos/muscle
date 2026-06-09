@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+import weakref
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
@@ -28,7 +29,12 @@ from threading import Lock
 from time import perf_counter
 from typing import TYPE_CHECKING, cast
 
-from ..delegation_metrics import DelegationEvent, DelegationMetrics
+from ..delegation_metrics import (
+    DelegationEvent,
+    DelegationMetrics,
+    estimate_m27_cents,
+    split_m27_tokens,
+)
 from ..escalation import EscalationPolicy, EscalationRecord, EscalationRecorder
 from ..m27_client import M27Client
 from ..project_memory import ProjectMemory
@@ -186,7 +192,10 @@ class ReviewController:
         self.scope_classifier = ReviewScopeClassifier()
         self.workflow_loader = ReviewWorkflowLoader()
         self.workflow_engine = ReviewWorkflowEngine()
-        self._fix_locks: dict[str, Lock] = {}
+        # In-process per-file fix locks. WeakValueDictionary so an entry is
+        # reclaimed once no fix holds the lock, preventing unbounded growth.
+        # Scope is this controller instance / process only — not cross-process.
+        self._fix_locks: weakref.WeakValueDictionary[str, Lock] = weakref.WeakValueDictionary()
         self._fix_locks_guard = Lock()
 
         self._review_context: ReviewContext | None = None
@@ -219,7 +228,16 @@ class ReviewController:
 
     def _emit(self, event: ReviewEvent, data: dict) -> None:
         if self.event_callback:
-            self.event_callback(event, data)
+            # Event emission is fire-and-forget observability: a throwing observer
+            # must not abort the in-flight review (FAILOPEN#6).
+            try:
+                self.event_callback(event, data)
+            except Exception:
+                logger.warning(
+                    "event_callback raised for review event %s — continuing review",
+                    event.value,
+                    exc_info=True,
+                )
         logger.debug(f"Review Event: {event.value} - {data}")
 
     def _ensure_artifact_store(self, ctx: ReviewContext) -> ReviewArtifactStore:
@@ -246,13 +264,20 @@ class ReviewController:
             )
             route_cache_hit = int(bool(route_summary.get("from_cache")))
             metrics = DelegationMetrics(self.project_path)
+            # ctx.stats.tokens_used is a combined (input + output) figure — every
+            # token source in the review path collapses to usage.total before it
+            # reaches here — so split it into in/out and price MUSCLE's own M3 spend
+            # rather than recording output as 0 (COST#1/#2).
+            model = getattr(self.m27_client, "model", None)
+            tokens_in, tokens_out = split_m27_tokens(ctx.stats.tokens_used)
             metrics.record(
                 DelegationEvent(
                     session_id=ctx.session_id,
                     entry_point=f"review:{self.config.mode.value}",
                     task_tier=route_summary.get("tier"),
-                    m27_tokens_in=ctx.stats.tokens_used,
-                    m27_tokens_out=0,
+                    m27_tokens_in=tokens_in,
+                    m27_tokens_out=tokens_out,
+                    m27_usd_cents=estimate_m27_cents(model, tokens_in, tokens_out),
                     verifications_run=ctx.stats.auto_fixed + ctx.stats.failed_fixes,
                     verifications_failed=ctx.stats.failed_fixes,
                     escalations_emitted=int(
@@ -363,10 +388,15 @@ class ReviewController:
             self._record_delegation_event(result)
             return result
 
-        result = self._run_hybrid_mode(ctx)
-        result.stats.duration_seconds = perf_counter() - started_at
-        self._record_delegation_event(result)
-        return result
+        if self.config.mode == ReviewMode.HYBRID:
+            result = self._run_hybrid_mode(ctx)
+            result.stats.duration_seconds = perf_counter() - started_at
+            self._record_delegation_event(result)
+            return result
+
+        # An unrecognized mode must fail loudly rather than silently running as
+        # hybrid (FAILOPEN#7).
+        raise ValueError(f"Unknown review mode: {self.config.mode}")
 
     @staticmethod
     def _structured_workflow_mutated(ctx: ReviewContext) -> bool:

@@ -24,7 +24,12 @@ from pathlib import Path
 from typing import Any
 
 from .adapters.git_adapter import GitAdapter
-from .delegation_metrics import DelegationEvent, DelegationMetrics
+from .delegation_metrics import (
+    DelegationEvent,
+    DelegationMetrics,
+    estimate_m27_cents,
+    split_m27_tokens,
+)
 from .escalation import EscalationRecord, EscalationRecorder
 from .interactive import InteractiveChoice, InteractiveHandler
 from .m27_client import TokenUsage
@@ -191,13 +196,19 @@ class LoopController:
                 else ctx.config.output_dir
             )
             metrics = DelegationMetrics(project_path)
+            # ctx.stats.total_tokens is a combined (input + output) figure — the
+            # loop only accumulates usage.total — so split it into in/out and price
+            # MUSCLE's own M3 spend rather than recording output as 0 (COST#1/#2).
+            model = getattr(self._m27_client, "model", None)
+            tokens_in, tokens_out = split_m27_tokens(ctx.stats.total_tokens)
             metrics.record(
                 DelegationEvent(
                     session_id=ctx.session_id,
                     entry_point="run",
                     task_tier=(ctx.delegation_route or {}).get("tier"),
-                    m27_tokens_in=ctx.stats.total_tokens,
-                    m27_tokens_out=0,
+                    m27_tokens_in=tokens_in,
+                    m27_tokens_out=tokens_out,
+                    m27_usd_cents=estimate_m27_cents(model, tokens_in, tokens_out),
                     escalations_emitted=int(
                         bool(
                             ctx.delegation_route

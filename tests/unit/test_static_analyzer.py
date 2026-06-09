@@ -612,6 +612,79 @@ test.ts(10,5): warning TS6032: File change detected. Starting fresh analysis."""
         assert result.parser_tier == ParserTier.FULL.value
         assert result.evidence is not None
 
+    def test_run_tool_inserts_end_of_options_separator_multi_file(self, tmp_path, monkeypatch):
+        """File args must follow a ``--`` token so dash-prefixed names are not flags."""
+        (tmp_path / "src.py").write_text("print('ok')\n", encoding="utf-8")
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+
+            class Result:
+                returncode = 0
+                stdout = "[]"
+                stderr = ""
+
+            return Result()
+
+        monkeypatch.setattr(
+            "tools.muscle.code_review.static_analyzer.shutil.which",
+            lambda _: "/bin/tool",
+        )
+        monkeypatch.setattr(
+            "tools.muscle.code_review.static_analyzer.subprocess.run",
+            fake_run,
+        )
+
+        analyzer = StaticAnalyzer(target_path=str(tmp_path), language="python")
+        result = analyzer._run_tool(LANGUAGE_TOOLS["python"][0])
+
+        assert result is not None
+        cmd = captured["cmd"]
+        assert "--" in cmd
+        sep = cmd.index("--")
+        # Every file arg comes after the separator.
+        assert "src.py" in cmd[sep + 1 :]
+        # Exactly one separator (no double-add).
+        assert cmd.count("--") == 1
+
+    def test_run_tool_inserts_end_of_options_separator_single_file(self, tmp_path, monkeypatch):
+        """Single-file invocation must also fence the file name behind ``--``."""
+        target = tmp_path / "src.py"
+        target.write_text("print('ok')\n", encoding="utf-8")
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+
+            class Result:
+                returncode = 0
+                stdout = "[]"
+                stderr = ""
+
+            return Result()
+
+        monkeypatch.setattr(
+            "tools.muscle.code_review.static_analyzer.shutil.which",
+            lambda _: "/bin/tool",
+        )
+        monkeypatch.setattr(
+            "tools.muscle.code_review.static_analyzer.subprocess.run",
+            fake_run,
+        )
+
+        analyzer = StaticAnalyzer(target_path=str(target), language="python")
+        result = analyzer._run_tool(LANGUAGE_TOOLS["python"][0])
+
+        assert result is not None
+        cmd = captured["cmd"]
+        assert "--" in cmd
+        sep = cmd.index("--")
+        assert cmd[sep + 1 :] == ["src.py"]
+        assert cmd.count("--") == 1
+
     def test_parse_clippy_json(self, analyzer):
         """Test clippy JSON parser (newline-delimited JSON with compiler-message)."""
         output = json.dumps(

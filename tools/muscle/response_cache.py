@@ -35,8 +35,15 @@ class ResponseCache:
         self._db.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db)
+        # Wait (rather than immediately raising) when another writer holds the
+        # database lock; bounded so callers never block indefinitely.
+        conn.execute("PRAGMA busy_timeout = 5000")
+        return conn
+
     def _init_schema(self) -> None:
-        with sqlite3.connect(self._db) as conn:
+        with self._connect() as conn:
             conn.executescript(RESPONSE_CACHE_SCHEMA_SQL)
 
     @staticmethod
@@ -58,22 +65,29 @@ class ResponseCache:
         return hashlib.sha256(payload.encode()).hexdigest()
 
     def get(self, key: str) -> dict | None:
-        with sqlite3.connect(self._db) as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 "SELECT response_json, created_at, ttl_seconds FROM response_cache WHERE key = ?",
                 (key,),
             ).fetchone()
-        if row is None:
-            return None
-        created = datetime.fromisoformat(row[1])
-        if datetime.now(timezone.utc) - created > timedelta(seconds=row[2]):
-            return None  # expired
-        # Update hit counter
-        with sqlite3.connect(self._db) as conn:
+            if row is None:
+                return None
+            created = datetime.fromisoformat(row[1])
+            if datetime.now(timezone.utc) - created > timedelta(seconds=row[2]):
+                return None  # expired
+            # Decode before bumping the hit counter; treat a corrupt payload as a
+            # miss rather than raising on a poisoned/partial-write entry.
+            try:
+                result: dict = json.loads(row[0])
+            except (json.JSONDecodeError, ValueError, TypeError):
+                logger.warning(
+                    "ResponseCache decode failure for key=%s; treating as miss", key[:12]
+                )
+                return None
+            # Bump hit counter on the same connection (atomic with the read).
             conn.execute(
                 "UPDATE response_cache SET hit_count = hit_count + 1 WHERE key = ?", (key,)
             )
-        result: dict = json.loads(row[0])
         return result
 
     def put(
@@ -84,7 +98,7 @@ class ResponseCache:
         ttl_seconds: int,
         tokens_saved: int = 0,
     ) -> None:
-        with sqlite3.connect(self._db) as conn:
+        with self._connect() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO response_cache
                    (key, model_id, response_json, tokens_saved, created_at, ttl_seconds, hit_count)
@@ -101,7 +115,7 @@ class ResponseCache:
 
     def clear(self, older_than: timedelta | None = None) -> int:
         """Delete entries older than `older_than`. Return count removed."""
-        with sqlite3.connect(self._db) as conn:
+        with self._connect() as conn:
             if older_than:
                 cutoff = (datetime.now(timezone.utc) - older_than).isoformat()
                 cur = conn.execute("DELETE FROM response_cache WHERE created_at < ?", (cutoff,))
@@ -111,7 +125,7 @@ class ResponseCache:
 
     def hit_count(self, key: str) -> int:
         """Return the current hit count for a cache entry (0 if missing)."""
-        with sqlite3.connect(self._db) as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 "SELECT hit_count FROM response_cache WHERE key = ?", (key,)
             ).fetchone()

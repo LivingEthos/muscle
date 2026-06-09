@@ -441,3 +441,67 @@ class TestMultiTargetPublish:
 
             assert len(compacted) < len(baseline)
             assert "Investigate thoroughly and propose validated fixes." in compacted
+
+
+class TestClaudePublisherAtomicWrite:
+    """Crash-safety: authoritative files are written via atomic_write_text."""
+
+    def test_publish_uses_atomic_write(self):
+        from unittest.mock import patch
+
+        from tools.muscle import claude_publisher as cp_module
+        from tools.muscle.claude_publisher import ClaudePublisher
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            (project / "CLAUDE.md").write_text("# CLAUDE.md\n\nSome content\n")
+
+            publisher = ClaudePublisher(tmpdir, target_files=["CLAUDE.md"])
+            with patch.object(
+                cp_module, "atomic_write_text", wraps=cp_module.atomic_write_text
+            ) as spy:
+                result = publisher.publish(
+                    critical_rules=[{"text": "Use type hints", "score": 0.8, "validated_count": 3}],
+                )
+            assert result is True
+            assert spy.called
+
+    def test_publish_rolls_back_file_on_action_log_failure(self):
+        from unittest.mock import patch
+
+        from tools.muscle.claude_publisher import ClaudePublisher
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            claude_md = project / "CLAUDE.md"
+            original = "# CLAUDE.md\n\nOriginal user content\n"
+            claude_md.write_text(original)
+
+            publisher = ClaudePublisher(tmpdir, target_files=["CLAUDE.md"])
+            with patch.object(
+                publisher._backup_manager._pm,
+                "insert_action_log",
+                side_effect=RuntimeError("db down"),
+            ):
+                result = publisher.publish(
+                    critical_rules=[{"text": "Use type hints", "score": 0.8, "validated_count": 3}],
+                )
+            # Write was rolled back; file restored to its pre-publish content.
+            assert result is False
+            assert claude_md.read_text() == original
+
+    def test_insert_markers_uses_atomic_write(self):
+        from unittest.mock import patch
+
+        from tools.muscle import claude_publisher as cp_module
+        from tools.muscle.claude_publisher import ClaudePublisher
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            (project / "CLAUDE.md").write_text("# CLAUDE.md\n\nSome content\n")
+            publisher = ClaudePublisher(tmpdir, target_files=["CLAUDE.md"])
+            with patch.object(
+                cp_module, "atomic_write_text", wraps=cp_module.atomic_write_text
+            ) as spy:
+                assert publisher.insert_markers_if_missing() is True
+            assert spy.called

@@ -1001,7 +1001,15 @@ class TestParseSseStream:
         )
 
         chunks = list(client._parse_sse_stream(mock_response))
-        assert chunks[-1] == ("", None)
+        # Fix: H3. A provider mid-stream error event must surface a sentinel-prefixed
+        # payload (not a clean ("", None) end-of-stream) so chat_streaming records
+        # success=False instead of treating the error as a successful empty finish.
+        from tools.muscle.m27_client import STREAM_ERROR_PREFIX
+
+        assert chunks[-1][0].startswith(STREAM_ERROR_PREFIX)
+        assert "Server error" in chunks[-1][0]
+        # The response must be closed even when the stream ends on an error event.
+        mock_response.close.assert_called_once()
 
     def test_skips_invalid_json(self, mock_client):
         client, _ = mock_client
@@ -1189,3 +1197,256 @@ class TestRateLimiterWait:
         limiter.wait()
         elapsed = time.time() - start
         assert elapsed >= 0.09
+
+    def test_wait_does_not_sleep_while_holding_lock(self):
+        """Fix: M6. sleep must run OUTSIDE the lock so callers can overlap."""
+        import threading
+
+        limiter = RateLimiter(calls_per_second=5)
+        # Prime last_call so the next wait() computes a real sleep.
+        limiter.wait()
+
+        sleeping = threading.Event()
+        lock_free_during_sleep = threading.Event()
+
+        real_sleep = __import__("time").sleep
+
+        def fake_sleep(duration):
+            sleeping.set()
+            # The limiter lock must be acquirable while we are "sleeping".
+            if limiter.lock.acquire(blocking=False):
+                lock_free_during_sleep.set()
+                limiter.lock.release()
+            real_sleep(0)
+
+        with patch("tools.muscle.m27_client.time.sleep", side_effect=fake_sleep):
+            limiter.wait()
+
+        assert sleeping.is_set()
+        assert lock_free_during_sleep.is_set(), "lock was held during sleep (M6 regression)"
+
+
+class TestStreamingResourceSafety:
+    """Fix: C1/C2. Streaming response lifecycle and mid-stream failure handling."""
+
+    def test_parse_sse_stream_closes_response_on_normal_finish(self, mock_client):
+        client, _ = mock_client
+
+        mock_response = MagicMock()
+        mock_response.iter_lines = MagicMock(
+            return_value=iter(
+                [
+                    'data: {"content": [{"type": "text", "text": "hi"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        )
+
+        list(client._parse_sse_stream(mock_response))
+        mock_response.close.assert_called_once()
+
+    def test_parse_sse_stream_closes_response_on_abandoned_iteration(self, mock_client):
+        client, _ = mock_client
+
+        mock_response = MagicMock()
+        mock_response.iter_lines = MagicMock(
+            return_value=iter(
+                [
+                    'data: {"content": [{"type": "text", "text": "a"}]}',
+                    'data: {"content": [{"type": "text", "text": "b"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        )
+
+        gen = client._parse_sse_stream(mock_response)
+        next(gen)  # consume one chunk, then abandon
+        gen.close()
+        mock_response.close.assert_called_once()
+
+    def test_chat_streaming_closes_response_on_non_200(self, mock_client):
+        client, mock_session = mock_client
+        err = _make_mock_response(404, text="not found")
+        mock_session.post.return_value = err
+
+        with patch("time.sleep"):
+            list(client.chat_streaming([{"role": "user", "content": "hi"}]))
+
+        err.close.assert_called()
+
+    def test_chat_streaming_does_not_retry_after_partial_output(self, mock_client):
+        """Fix: C2. A mid-stream connection error after chunks were yielded must
+        NOT restart the stream (which would re-emit cumulative text)."""
+        import requests as req
+
+        client, mock_session = mock_client
+
+        def exploding_lines(*_a, **_k):
+            yield 'data: {"content": [{"type": "text", "text": "partial"}]}'
+            raise req.exceptions.ConnectionError("dropped mid-stream")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {}
+        mock_response.iter_lines = MagicMock(side_effect=exploding_lines)
+        mock_session.post.return_value = mock_response
+
+        with patch("time.sleep"):
+            chunks = list(client.chat_streaming([{"role": "user", "content": "hi"}]))
+
+        # Only one POST: no retry was attempted after partial output.
+        assert mock_session.post.call_count == 1
+        # The consumer received the partial chunk then an error sentinel.
+        from tools.muscle.m27_client import STREAM_ERROR_PREFIX
+
+        assert any(text == "partial" for text, _ in chunks)
+        assert chunks[-1][0].startswith(STREAM_ERROR_PREFIX)
+
+    def test_chat_streaming_provider_error_records_failure(self, mock_client):
+        """Fix: H3. Provider mid-stream error event yields a sentinel and is
+        reported as a failed call, not a clean finish."""
+        client, mock_session = mock_client
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {}
+        mock_response.iter_lines = MagicMock(
+            return_value=iter(
+                [
+                    'data: {"content": [{"type": "text", "text": "Hi"}]}',
+                    'data: {"error": {"message": "boom"}}',
+                ]
+            )
+        )
+        mock_session.post.return_value = mock_response
+
+        from tools.muscle.m27_client import STREAM_ERROR_PREFIX
+
+        chunks = list(client.chat_streaming([{"role": "user", "content": "hi"}]))
+        assert chunks[-1][0].startswith(STREAM_ERROR_PREFIX)
+        # No retry storm: a single POST.
+        assert mock_session.post.call_count == 1
+
+
+class TestChatUsageFallback:
+    """Fix: M9. Zero-usage fallback must estimate input from prompt size."""
+
+    def test_zero_usage_estimates_input_from_prompt(self, mock_client):
+        client, mock_session = mock_client
+        long_prompt = "x" * 400  # ~100 input tokens
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {}
+        resp.json = MagicMock(
+            return_value={
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+            }
+        )
+        mock_session.post.return_value = resp
+
+        _, usage = client.chat([{"role": "user", "content": long_prompt}])
+        # Input is derived from the prompt (~100), output from the 2-char reply (1),
+        # NOT both set to len(text)//4.
+        assert usage.input_tokens >= 90
+        assert usage.output_tokens < usage.input_tokens
+
+    def test_bare_total_split_between_input_and_output(self, mock_client):
+        client, mock_session = mock_client
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {}
+        resp.json = MagicMock(
+            return_value={
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"total_tokens": 1000},
+            }
+        )
+        mock_session.post.return_value = resp
+
+        _, usage = client.chat([{"role": "user", "content": "short prompt"}])
+        assert usage.input_tokens + usage.output_tokens == 1000
+        assert usage.output_tokens > 0  # not all dumped into input
+
+
+class TestChatStructuredTruncationAndKey:
+    """Fix: H4 (truncation not cached) and L12 (full-history cache key)."""
+
+    def _schema(self):
+        from pydantic import BaseModel
+
+        class Out(BaseModel):
+            value: int
+
+        return Out
+
+    def _make_chat_stub(self, text, *, truncated):
+        def _stub(*args, _metadata_sink=None, **kwargs):
+            if _metadata_sink is not None:
+                _metadata_sink["truncated"] = truncated
+                _metadata_sink["stop_reason"] = "max_tokens" if truncated else "end_turn"
+            return text, TokenUsage(input_tokens=5, output_tokens=5)
+
+        return _stub
+
+    def test_truncated_response_not_cached(self, mock_client, tmp_path):
+        client, _ = mock_client
+        client._cache_db_path = tmp_path / "c.db"
+        schema_cls = self._schema()
+
+        with patch.object(
+            client, "chat", side_effect=self._make_chat_stub('{"value": 1}', truncated=True)
+        ):
+            result, meta = client.chat_structured(
+                schema_cls, [{"role": "user", "content": "go"}], include_metadata=True
+            )
+        assert result.value == 1
+        assert meta.truncated is True
+
+        from tools.muscle.response_cache import ResponseCache
+
+        cache = ResponseCache(tmp_path / "c.db")
+        assert meta.cache_key is not None
+        assert cache.get(meta.cache_key) is None  # truncated result was NOT stored
+
+    def test_complete_response_is_cached(self, mock_client, tmp_path):
+        client, _ = mock_client
+        client._cache_db_path = tmp_path / "c.db"
+        schema_cls = self._schema()
+
+        with patch.object(
+            client, "chat", side_effect=self._make_chat_stub('{"value": 7}', truncated=False)
+        ):
+            result, meta = client.chat_structured(
+                schema_cls, [{"role": "user", "content": "go"}], include_metadata=True
+            )
+        assert meta.truncated is False
+
+        from tools.muscle.response_cache import ResponseCache
+
+        cache = ResponseCache(tmp_path / "c.db")
+        assert cache.get(meta.cache_key) == {"value": 7}
+
+    def test_cache_key_distinguishes_history(self, mock_client, tmp_path):
+        """Fix: L12. Same user turn + different assistant history -> different key."""
+        client, _ = mock_client
+        client._cache_db_path = tmp_path / "c.db"
+        schema_cls = self._schema()
+
+        def _stub(*args, _metadata_sink=None, **kwargs):
+            if _metadata_sink is not None:
+                _metadata_sink["truncated"] = False
+            return '{"value": 1}', TokenUsage(input_tokens=1, output_tokens=1)
+
+        msgs_a = [{"role": "user", "content": "same"}]
+        msgs_b = [
+            {"role": "user", "content": "same"},
+            {"role": "assistant", "content": "different history"},
+            {"role": "user", "content": "same"},
+        ]
+
+        with patch.object(client, "chat", side_effect=_stub):
+            _, meta_a = client.chat_structured(schema_cls, msgs_a, include_metadata=True)
+            _, meta_b = client.chat_structured(schema_cls, msgs_b, include_metadata=True)
+
+        assert meta_a.cache_key != meta_b.cache_key, "history must influence cache key (L12)"

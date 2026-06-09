@@ -11,6 +11,7 @@ Architecture Decision Record (ADR):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -153,6 +154,10 @@ class StructuredCallMetadata:
     cache_hit: bool = False
     cache_key: str | None = None
     tokens_saved_estimate: int = 0
+    # Fix: H4. True when the underlying generation was cut off by the output
+    # token ceiling (stop_reason/finish_reason in {max_tokens, length}). A
+    # truncated result is never cached and callers can detect incompleteness.
+    truncated: bool = False
 
 
 class RateLimiter:
@@ -163,12 +168,17 @@ class RateLimiter:
         self.lock = threading.Lock()
 
     def wait(self) -> None:
+        # Compute the sleep duration and reserve the next slot under the lock, then
+        # sleep OUTSIDE the lock so concurrent callers space out in parallel rather
+        # than serializing behind a single held lock.
         with self.lock:
             now = time.time()
             elapsed = now - self.last_call
-            if elapsed < self.min_interval:
-                time.sleep(self.min_interval - elapsed)
-            self.last_call = time.time()
+            sleep_for = self.min_interval - elapsed if elapsed < self.min_interval else 0.0
+            # Advance the slot to account for the sleep we are about to perform.
+            self.last_call = now + sleep_for
+        if sleep_for > 0:
+            time.sleep(sleep_for)
 
 
 class ConcurrencyLimiter:
@@ -586,7 +596,6 @@ class M27Client:
             "503",
             "504",
             "connection",
-            "timeout",
         ]
 
         return any(r.lower() in error.lower() for r in retryable)
@@ -601,6 +610,7 @@ class M27Client:
         telemetry_context: TelemetryContext | None = None,
         thinking: str | None = None,
         response_format: dict[str, Any] | None = None,
+        _metadata_sink: dict[str, Any] | None = None,
     ) -> tuple[str, TokenUsage]:
         if not messages:
             logger.error("Empty messages list provided to chat()")
@@ -650,6 +660,14 @@ class M27Client:
         if response_format is not None:
             payload["response_format"] = response_format
 
+        # Fix: M27/M9. Estimate input tokens from the actual prompt size (all
+        # message contents + system prompt, ~4 chars/token) for use as a fallback
+        # when the provider omits usage. Using output length for input badly
+        # under-counts input and corrupts cost accounting.
+        prompt_chars = sum(len(str(m.get("content", ""))) for m in payload_messages)
+        prompt_chars += len(effective_system)
+        estimated_input_tokens = max(1, prompt_chars // 4)
+
         last_error = None
         backoff = 1.0
         thinking_only_count = 0
@@ -691,6 +709,20 @@ class M27Client:
 
                     self._maybe_refresh_model_identity_from_response(data, telemetry_context)
 
+                    # Fix: H4. Surface a truncation signal so callers (chat_structured)
+                    # can avoid caching/treating a length-truncated reply as complete.
+                    if _metadata_sink is not None:
+                        stop_reason = data.get("stop_reason")
+                        choices_for_finish = data.get("choices")
+                        if not stop_reason and isinstance(choices_for_finish, list):
+                            if choices_for_finish and isinstance(choices_for_finish[0], dict):
+                                stop_reason = choices_for_finish[0].get("finish_reason")
+                        _metadata_sink["stop_reason"] = stop_reason
+                        _metadata_sink["truncated"] = str(stop_reason or "").lower() in {
+                            "max_tokens",
+                            "length",
+                        }
+
                     usage_payload = data.get("usage") or {}
                     if not isinstance(usage_payload, dict):
                         usage_payload = {}
@@ -705,7 +737,11 @@ class M27Client:
                     if input_tokens == 0 and output_tokens == 0:
                         total_tokens = int(usage_payload.get("total_tokens") or 0)
                         if total_tokens > 0:
-                            input_tokens = total_tokens
+                            # Fix: M27/M9. Split a bare total into input/output using
+                            # the estimated prompt size rather than attributing the
+                            # entire total to input, which under-counts output.
+                            input_tokens = min(estimated_input_tokens, total_tokens)
+                            output_tokens = total_tokens - input_tokens
                     # MiniMax-M3 reports reasoning/thinking tokens either as a flat
                     # field (Anthropic-shape) or nested under completion_tokens_details
                     # (OpenAI-shape). Capture either for thinking-mode telemetry.
@@ -791,10 +827,12 @@ class M27Client:
                                 break
 
                     if usage.input_tokens == 0 and usage.output_tokens == 0 and text_content:
-                        estimated_output = max(1, len(text_content) // 4)
+                        # Fix: M27/M9. Estimate input from the actual prompt size and
+                        # output from the response length, rather than using the
+                        # response length for both (which under-counts input).
                         usage = TokenUsage(
-                            input_tokens=estimated_output,
-                            output_tokens=estimated_output,
+                            input_tokens=estimated_input_tokens,
+                            output_tokens=max(1, len(text_content) // 4),
                         )
 
                     if has_text and text_content.strip():
@@ -933,6 +971,10 @@ class M27Client:
         last_error = None
         backoff = 1.0
         started_at = time.perf_counter()
+        # Fix: C2. Once any chunk has been yielded to the consumer, a mid-stream
+        # failure must NOT trigger a fresh retry — restarting the stream re-emits
+        # already-delivered cumulative text and corrupts the consumer's view.
+        streamed_any = False
 
         for attempt in range(self.max_retries):
             try:
@@ -953,22 +995,32 @@ class M27Client:
                 if response.status_code == 200:
                     self._rate_limit_errors = 0
                     final_usage: TokenUsage | None = None
+                    stream_failed = False
                     for accumulated_text, usage in self._parse_sse_stream(
                         response,
                         telemetry_context=telemetry_context,
                     ):
+                        # Fix: H3. A sentinel-prefixed payload signals a provider
+                        # mid-stream error; record failure and stop, do not retry.
+                        if accumulated_text.startswith(STREAM_ERROR_PREFIX):
+                            stream_failed = True
+                            last_error = accumulated_text[len(STREAM_ERROR_PREFIX) :]
+                            yield accumulated_text, usage
+                            break
                         if usage is not None:
                             final_usage = usage
+                        streamed_any = True
                         yield accumulated_text, usage
                     self._record_telemetry(
                         telemetry_context,
                         final_usage or TokenUsage(),
                         int((time.perf_counter() - started_at) * 1000),
-                        True,
+                        not stream_failed,
                     )
                     return
 
                 elif response.status_code == 429:
+                    response.close()
                     self._rate_limit_errors += 1
                     last_error = "Rate limited (429)"
                     wait_time = _parse_retry_after(response.headers.get("Retry-After"), backoff)
@@ -980,6 +1032,7 @@ class M27Client:
 
                 elif response.status_code >= 500:
                     last_error = f"Server error ({response.status_code})"
+                    response.close()
                     logger.warning(f"Server error: {response.status_code}, retrying...")
                     time.sleep(backoff)
                     backoff *= 2
@@ -987,11 +1040,15 @@ class M27Client:
 
                 else:
                     last_error = f"API error: {response.status_code} - {response.text[:200]}"
+                    response.close()
                     logger.error(f"API error: {last_error}")
                     break
 
             except requests.exceptions.Timeout as e:
                 last_error = f"Timeout: {e}"
+                if streamed_any:
+                    logger.error(f"Mid-stream timeout after partial output: {last_error}")
+                    break
                 logger.warning(f"Request timeout (attempt {attempt + 1}/{self.max_retries})")
                 time.sleep(backoff)
                 backoff *= 2
@@ -999,6 +1056,9 @@ class M27Client:
 
             except requests.exceptions.ConnectionError as e:
                 last_error = f"Connection error: {e}"
+                if streamed_any:
+                    logger.error(f"Mid-stream connection error after partial output: {last_error}")
+                    break
                 logger.warning(f"Connection error (attempt {attempt + 1}/{self.max_retries})")
                 time.sleep(backoff)
                 backoff *= 2
@@ -1013,6 +1073,10 @@ class M27Client:
             except (requests.RequestException, json.JSONDecodeError) as e:
                 # Fix: M27-05. Transient errors in streaming path — retry.
                 last_error = f"Transient error: {type(e).__name__}: {e}"
+                if streamed_any:
+                    # Fix: C2. Already delivered partial output; do not restart.
+                    logger.error(f"Mid-stream transient error after partial output: {last_error}")
+                    break
                 logger.warning(
                     f"Transient streaming error (attempt {attempt + 1}/{self.max_retries}):"
                     f" {last_error}"
@@ -1041,50 +1105,61 @@ class M27Client:
         accumulated_text = ""
         usage = None
 
-        for line in response.iter_lines(decode_unicode=True):
-            if not line:
-                continue
-
-            if line.startswith("data: "):
-                data = line[6:]
-
-                if data.strip() == "[DONE]":
-                    break
-
-                try:
-                    event_data = json.loads(data)
-                except json.JSONDecodeError:
+        # Fix: C1. Always close the streaming response so the underlying socket
+        # is released back to the pool, even if the consumer abandons iteration.
+        try:
+            for line in response.iter_lines(decode_unicode=True):
+                if not line:
                     continue
 
-                if isinstance(event_data, dict):
-                    self._maybe_refresh_model_identity_from_response(event_data, telemetry_context)
+                if line.startswith("data: "):
+                    data = line[6:]
 
-                if "content" in event_data:
-                    for block in event_data.get("content", []):
-                        if block.get("type") == "text":
-                            delta = block.get("text", "")
-                            if delta:
-                                accumulated_text += delta
-                                yield accumulated_text, None
+                    if data.strip() == "[DONE]":
+                        break
 
-                if "usage" in event_data:
-                    stream_usage = event_data["usage"]
-                    stream_input = int(stream_usage.get("input_tokens", 0) or 0)
-                    # Anthropic-shape streaming reports cache_read_input_tokens
-                    # disjoint from input_tokens; fold it in so input_tokens is the
-                    # full prompt and cached_input_tokens is a subset (matches chat()).
-                    stream_cache_read = int(stream_usage.get("cache_read_input_tokens", 0) or 0)
-                    usage = TokenUsage(
-                        input_tokens=stream_input + stream_cache_read,
-                        output_tokens=int(stream_usage.get("output_tokens", 0) or 0),
-                        cached_input_tokens=stream_cache_read,
-                    )
-                    yield accumulated_text, usage
+                    try:
+                        event_data = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
 
-                if "error" in event_data:
-                    error_msg = event_data.get("error", {}).get("message", "Unknown error")
-                    logger.error(f"Streaming error: {error_msg}")
-                    break
+                    if isinstance(event_data, dict):
+                        self._maybe_refresh_model_identity_from_response(
+                            event_data, telemetry_context
+                        )
+
+                    if "content" in event_data:
+                        for block in event_data.get("content", []):
+                            if block.get("type") == "text":
+                                delta = block.get("text", "")
+                                if delta:
+                                    accumulated_text += delta
+                                    yield accumulated_text, None
+
+                    if "usage" in event_data:
+                        stream_usage = event_data["usage"]
+                        stream_input = int(stream_usage.get("input_tokens", 0) or 0)
+                        # Anthropic-shape streaming reports cache_read_input_tokens
+                        # disjoint from input_tokens; fold it in so input_tokens is the
+                        # full prompt and cached_input_tokens is a subset (matches chat()).
+                        stream_cache_read = int(stream_usage.get("cache_read_input_tokens", 0) or 0)
+                        usage = TokenUsage(
+                            input_tokens=stream_input + stream_cache_read,
+                            output_tokens=int(stream_usage.get("output_tokens", 0) or 0),
+                            cached_input_tokens=stream_cache_read,
+                        )
+                        yield accumulated_text, usage
+
+                    if "error" in event_data:
+                        error_msg = event_data.get("error", {}).get("message", "Unknown error")
+                        logger.error(f"Streaming error: {error_msg}")
+                        # Fix: H3. Surface a provider mid-stream error as a sentinel
+                        # so chat_streaming records success=False instead of falling
+                        # through to a clean end-of-stream that looks successful.
+                        yield f"{STREAM_ERROR_PREFIX}{error_msg}", None
+                        return
+        finally:
+            response.close()
 
         yield "", usage
 
@@ -1168,7 +1243,16 @@ class M27Client:
         system_with_schema = f"{system}\n\n{schema_hint}" if system else schema_hint
 
         # --- Cache lookup ---
-        user_content = "||".join(m.get("content", "") for m in messages if m.get("role") == "user")
+        # Fix: L12. Derive the cache key from a hash of the FULL serialized message
+        # list (roles + content, in order), not just concatenated user turns. The
+        # previous key ignored assistant/history turns, so two multi-turn calls that
+        # shared user messages but differed in history collided into a stale hit.
+        user_content = hashlib.sha256(
+            json.dumps(
+                [(m.get("role", ""), m.get("content", "")) for m in messages],
+                ensure_ascii=False,
+            ).encode()
+        ).hexdigest()
         cache: ResponseCache | None = None
         cache_key: str | None = None
         if self._cache_db_path is not None:
@@ -1205,6 +1289,7 @@ class M27Client:
         working_messages = list(messages)
 
         for attempt in range(retries + 1):
+            call_meta: dict[str, Any] = {}
             response_text, usage = self.chat(
                 messages=working_messages,
                 system=system_with_schema,
@@ -1212,7 +1297,9 @@ class M27Client:
                 temperature=0.1,
                 telemetry_context=telemetry_context,
                 thinking=thinking,
+                _metadata_sink=call_meta,
             )
+            truncated = bool(call_meta.get("truncated"))
             parsed_text = _strip_json_fences(_strip_thinking_tags(response_text))
             try:
                 data = json.loads(parsed_text)
@@ -1224,7 +1311,10 @@ class M27Client:
                         validation_success=True,
                     )
                 # --- Cache store on success ---
-                if cache is not None and cache_key is not None:
+                # Fix: H4. Never cache a length-truncated response: it parsed and
+                # validated by luck but is not the complete intended output, and a
+                # 14-day TTL would serve the partial answer to every future caller.
+                if cache is not None and cache_key is not None and not truncated:
                     cache.put(
                         key=cache_key,
                         model_id=self.model,
@@ -1235,6 +1325,7 @@ class M27Client:
                     usage=usage,
                     cache_hit=False,
                     cache_key=cache_key,
+                    truncated=truncated,
                 )
                 if include_metadata:
                     return validated, metadata

@@ -401,6 +401,10 @@ class StaticAnalyzer:
                     error_output="Target excluded by review scope",
                     parser_tier=ParserTier.FULL.value,
                 )
+            # Insert an end-of-options separator so a file named like ``-rf`` or
+            # ``--config=evil`` is treated as a path, not a flag (ruff/eslint/bandit/tsc
+            # all honor ``--``).
+            cmd.append("--")
             cmd.append(str(self.target_path.name))
             working_dir = str(self.target_path.parent)
         else:
@@ -418,6 +422,9 @@ class StaticAnalyzer:
             relative_files = [str(path.relative_to(self.target_path)) for path in files_to_analyze]
             if cmd and cmd[-1] == ".":
                 cmd = cmd[:-1]
+            # End-of-options separator so file names beginning with ``-`` are not
+            # parsed as flags by the underlying tool.
+            cmd.append("--")
             cmd.extend(relative_files)
 
         start_time = time.time()

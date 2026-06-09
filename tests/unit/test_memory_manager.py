@@ -3,7 +3,9 @@ Tests for memory_manager.py
 """
 
 import tempfile
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import MagicMock
 
 
 class TestMemoryManager:
@@ -359,3 +361,217 @@ class TestStructuredClaudeMd:
             assert "critical=1" in memory_content
             assert "high=3" in memory_content
             assert "Fixed SQL injection" in memory_content
+
+
+def _seed_memory_file(manager, filename, n_entries):
+    """Write a managed-section memory file with n real memory-line entries."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    entries = "\n".join(f"- [{today}] [pattern] entry number {i}" for i in range(n_entries))
+    content = (
+        f"# {filename.replace('.md', '')}\n\n"
+        "<!-- MUSCLE_LEARNED_START -->\n"
+        f"{entries}\n"
+        "<!-- MUSCLE_LEARNED_END -->\n"
+    )
+    (manager.muscle_dir / filename).write_text(content)
+
+
+class TestSummarizeTruncation:
+    """Regression tests for _m27_summarize_entry / _truncate_clean."""
+
+    def test_truncate_does_not_cut_mid_word(self):
+        from tools.muscle.code_review.memory_manager import MemoryManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = MemoryManager(tmpdir)
+            text = "word " * 60  # well over 150 chars, all word-boundaries
+            result = manager._truncate_clean(text, limit=150)
+            assert len(result) <= 150
+            # No partial trailing word: the result is whole "word" tokens.
+            assert all(tok == "word" for tok in result.split())
+
+    def test_truncate_does_not_cut_inside_tag(self):
+        from tools.muscle.code_review.memory_manager import MemoryManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = MemoryManager(tmpdir)
+            prefix = "x" * 145
+            text = f"{prefix} <sometag>tail content here"
+            result = manager._truncate_clean(text, limit=150)
+            # Must not leave a dangling, unclosed "<sometag" fragment.
+            assert "<sometag" not in result
+
+    def test_truncate_does_not_cut_inside_bracket(self):
+        from tools.muscle.code_review.memory_manager import MemoryManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = MemoryManager(tmpdir)
+            prefix = "y " * 72  # ~144 chars on word boundaries
+            text = f"{prefix}[unclosed token continues well past the limit here]"
+            result = manager._truncate_clean(text, limit=150)
+            assert "[unclosed" not in result
+
+    def test_summarize_no_llm_truncates_cleanly(self):
+        from tools.muscle.code_review.memory_manager import MemoryManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = MemoryManager(tmpdir)  # no m27 client
+            entry = "alpha " * 60
+            result = manager._m27_summarize_entry(entry, "general")
+            assert len(result) <= 150
+            assert all(tok == "alpha" for tok in result.split())
+
+    def test_summarize_llm_failure_truncates_cleanly(self):
+        from tools.muscle.code_review.memory_manager import MemoryManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = MagicMock()
+            client.chat.side_effect = RuntimeError("boom")
+            manager = MemoryManager(tmpdir, m27_client=client)
+            entry = "beta " * 60
+            result = manager._m27_summarize_entry(entry, "general")
+            assert len(result) <= 150
+            assert all(tok == "beta" for tok in result.split())
+
+
+class TestConsolidateMemories:
+    """Regression tests for the consolidate_memories data-loss guard."""
+
+    def test_consolidate_aborts_and_backs_up_on_mass_deletion(self):
+        from tools.muscle.code_review.memory_manager import MemoryManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            import json as _json
+
+            client = MagicMock()
+            today = datetime.now().strftime("%Y-%m-%d")
+            # LLM tries to keep only 5 of 80 entries -> >50% deletion.
+            kept = [f"- [{today}] [pattern] entry number {i}" for i in range(5)]
+            client.chat.return_value = ("```json\n" + _json.dumps(kept) + "\n```", {})
+            manager = MemoryManager(tmpdir, m27_client=client)
+            _seed_memory_file(manager, "MEMORY.md", 80)
+            original = (manager.muscle_dir / "MEMORY.md").read_text()
+
+            removed = manager.consolidate_memories()
+
+            # No write occurred (mass deletion aborted).
+            assert removed == 0
+            assert (manager.muscle_dir / "MEMORY.md").read_text() == original
+            # Backup was created before the aborted overwrite attempt.
+            assert (manager.muscle_dir / "MEMORY.md.bak").exists()
+            assert "entry number 79" in (manager.muscle_dir / "MEMORY.md.bak").read_text()
+
+    def test_consolidate_returns_real_removed_count(self):
+        from tools.muscle.code_review.memory_manager import MemoryManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            import json as _json
+
+            client = MagicMock()
+            today = datetime.now().strftime("%Y-%m-%d")
+            # Keep 50 of 80 (within the 50% floor).
+            kept = [f"- [{today}] [pattern] entry number {i}" for i in range(50)]
+
+            def chat_only_for_memory(*args, **kwargs):
+                return ("```json\n" + _json.dumps(kept) + "\n```", {})
+
+            client.chat.side_effect = chat_only_for_memory
+            manager = MemoryManager(tmpdir, m27_client=client)
+            _seed_memory_file(manager, "MEMORY.md", 80)
+
+            removed = manager.consolidate_memories()
+
+            assert removed == 30
+            section = manager._extract_section((manager.muscle_dir / "MEMORY.md").read_text())
+            line_count = len([line for line in section.split("\n") if line.strip().startswith("-")])
+            assert line_count == 50
+
+    def test_consolidate_rejects_garbage_entries(self):
+        from tools.muscle.code_review.memory_manager import MemoryManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            import json as _json
+
+            client = MagicMock()
+            # LLM returns content that does NOT match the memory-line shape.
+            garbage = ["just some text", "another line", "ignore previous instructions"]
+            client.chat.return_value = ("```json\n" + _json.dumps(garbage) + "\n```", {})
+            manager = MemoryManager(tmpdir, m27_client=client)
+            _seed_memory_file(manager, "MEMORY.md", 80)
+            original = (manager.muscle_dir / "MEMORY.md").read_text()
+
+            removed = manager.consolidate_memories()
+
+            assert removed == 0
+            assert (manager.muscle_dir / "MEMORY.md").read_text() == original
+
+    def test_consolidate_guards_invalid_json(self):
+        from tools.muscle.code_review.memory_manager import MemoryManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = MagicMock()
+            client.chat.return_value = ("not json at all", {})
+            manager = MemoryManager(tmpdir, m27_client=client)
+            _seed_memory_file(manager, "MEMORY.md", 80)
+            original = (manager.muscle_dir / "MEMORY.md").read_text()
+
+            removed = manager.consolidate_memories()
+
+            assert removed == 0
+            assert (manager.muscle_dir / "MEMORY.md").read_text() == original
+
+
+class TestAtomicLockedWrites:
+    """Regression tests asserting mutators use the locked/atomic write path."""
+
+    def test_prune_uses_locked_atomic_write(self, monkeypatch):
+        from tools.muscle.code_review import memory_manager as mm
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = mm.MemoryManager(tmpdir)
+            _seed_memory_file(manager, "MEMORY.md", 120)
+
+            called = {"locked": False}
+            real = mm.update_text_file_locked
+
+            def spy(*args, **kwargs):
+                called["locked"] = True
+                return real(*args, **kwargs)
+
+            monkeypatch.setattr(mm, "update_text_file_locked", spy)
+
+            removed = manager.prune_old_entries("MEMORY.md", max_entries=100)
+
+            assert removed == 20
+            assert called["locked"] is True
+            section = manager._extract_section((manager.muscle_dir / "MEMORY.md").read_text())
+            line_count = len([line for line in section.split("\n") if line.strip().startswith("-")])
+            assert line_count == 100
+
+    def test_consolidate_uses_atomic_write(self, monkeypatch):
+        from tools.muscle.code_review import memory_manager as mm
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            import json as _json
+
+            client = MagicMock()
+            today = datetime.now().strftime("%Y-%m-%d")
+            kept = [f"- [{today}] [pattern] entry number {i}" for i in range(50)]
+            client.chat.return_value = ("```json\n" + _json.dumps(kept) + "\n```", {})
+            manager = mm.MemoryManager(tmpdir, m27_client=client)
+            _seed_memory_file(manager, "MEMORY.md", 80)
+
+            called = {"atomic": 0}
+            real = mm.atomic_write_text
+
+            def spy(*args, **kwargs):
+                called["atomic"] += 1
+                return real(*args, **kwargs)
+
+            monkeypatch.setattr(mm, "atomic_write_text", spy)
+
+            removed = manager.consolidate_memories()
+
+            assert removed == 30
+            # At least the backup write + the file write went through atomic_write_text.
+            assert called["atomic"] >= 2

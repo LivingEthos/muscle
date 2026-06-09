@@ -16,6 +16,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .io_safety import atomic_write_json
+
+# Bump when the on-disk cache record shape changes. Records with a different
+# (or missing) version are rejected on load and treated as a cache miss.
+CACHE_FORMAT_VERSION = 1
+
 
 @dataclass
 class CachedReview:
@@ -78,6 +84,9 @@ class ReviewCache:
             try:
                 with open(cache_file, encoding="utf-8") as f:
                     data = json.load(f)
+                # Reject records written by an incompatible cache format.
+                if data.get("version") != CACHE_FORMAT_VERSION:
+                    return None
                 cached = CachedReview(
                     file_hash=data["file_hash"],
                     file_path=data["file_path"],
@@ -131,21 +140,21 @@ class ReviewCache:
             self._memory_cache.popitem(last=False)
             self._eviction_count += 1
 
-        # Store on disk
+        # Store on disk atomically (temp + fsync + os.replace) so a crash or a
+        # concurrent reader never observes a truncated/half-written JSON file.
         cache_file = self._cache_path(file_path, file_hash)
         cache_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_file, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "file_hash": cached.file_hash,
-                    "file_path": cached.file_path,
-                    "suggestions": cached.suggestions,
-                    "timestamp": cached.timestamp.isoformat(),
-                    "review_id": cached.review_id,
-                },
-                f,
-                indent=2,
-            )
+        atomic_write_json(
+            cache_file,
+            {
+                "version": CACHE_FORMAT_VERSION,
+                "file_hash": cached.file_hash,
+                "file_path": cached.file_path,
+                "suggestions": cached.suggestions,
+                "timestamp": cached.timestamp.isoformat(),
+                "review_id": cached.review_id,
+            },
+        )
 
     def invalidate(self, file_path: Path | None = None) -> int:
         """Invalidate cache entries. Returns count removed."""

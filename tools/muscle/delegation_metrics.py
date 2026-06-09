@@ -9,9 +9,41 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .cost_optimizer import HOST_MODEL_PRICING, estimate_host_request_cost
+from .cost_optimizer import (
+    DEFAULT_PRICING_MODEL,
+    HOST_MODEL_PRICING,
+    estimate_host_request_cost,
+    estimate_request_cost,
+)
 
 logger = logging.getLogger(__name__)
+
+# Assumed share of MUSCLE's *own* M3 spend that was output tokens. The runtime
+# token accounting that reaches the delegation-event call sites only exposes a
+# single combined total (input + output) — the per-call in/out split from
+# TokenUsage is collapsed before it gets here — so we split the recorded total
+# with this documented assumption rather than reporting output as 0. Output bills
+# ~4x input on M3, so making it visible is what keeps the net-savings figure
+# honest. This is an estimate, not a measurement.
+M27_OUTPUT_SHARE = 0.25
+
+
+def split_m27_tokens(total_tokens: int) -> tuple[int, int]:
+    """Split a combined M3 token total into (input, output) using M27_OUTPUT_SHARE.
+
+    Used at delegation-event call sites where only a combined token count is
+    available. See ``M27_OUTPUT_SHARE`` for why the split is assumption-based.
+    """
+    total = max(0, total_tokens)
+    out = int(total * M27_OUTPUT_SHARE)
+    return total - out, out
+
+
+def estimate_m27_cents(model: str | None, tokens_in: int, tokens_out: int) -> int:
+    """Estimate MUSCLE's M3 spend for a delegation event, in whole USD cents."""
+    cost = estimate_request_cost(model or DEFAULT_PRICING_MODEL, tokens_in, tokens_out)
+    return round(cost * 100)
+
 
 # Average tokens per equivalent task on the host model.  Clearly labeled as
 # "estimated" in every report surface — these are NOT measured.
@@ -182,7 +214,12 @@ class DelegationMetrics:
             ) + (_as_float(metadata.get("route_confidence", 0.0)))
 
         total = rpt.total_events
-        rpt.cache_hit_rate = sum(r[4] for r in rows) / total if total else 0.0
+        # cache_hit_rate is the *fraction of events that saw at least one cache
+        # hit* — a true rate in [0, 1]. r[4] (cache_hits) is an unbounded per-event
+        # count, so summing it and dividing by event count could exceed 1.0 (e.g.
+        # render as "1200%"). Count events with hits>0 instead.
+        events_with_cache_hit = sum(1 for r in rows if r[4] > 0)
+        rpt.cache_hit_rate = events_with_cache_hit / total if total else 0.0
         total_escalations = sum(1 for r in rows if r[6] > 0)
         rpt.escalation_rate = total_escalations / total if total else 0.0
         for route_bucket in rpt.route_breakdown.values():

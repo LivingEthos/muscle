@@ -9,9 +9,13 @@ from pathlib import Path
 
 import pytest
 
+from tools.muscle.cost_optimizer import estimate_request_cost
 from tools.muscle.delegation_metrics import (
+    M27_OUTPUT_SHARE,
     DelegationEvent,
     DelegationMetrics,
+    estimate_m27_cents,
+    split_m27_tokens,
 )
 from tools.muscle.migrations._0013_delegation_events import MIGRATION_SQL
 from tools.muscle.migrations._0017_delegation_event_metadata import (
@@ -242,6 +246,83 @@ class TestCacheAndEscalationRates:
         metrics = DelegationMetrics(project_db)
         rpt = metrics.report(since=timedelta(days=1))
         assert abs(rpt.escalation_rate - (1 / 3)) < 0.01
+
+
+class TestSavingsMath:
+    def test_net_savings_subtracts_real_m27_cost(self, project_db: Path) -> None:
+        """Net savings must subtract MUSCLE's own M3 spend, not equal gross avoided.
+
+        Regression for COST#1: m27_usd_cents used to default to 0 at every call
+        site, so net savings collapsed onto gross host-avoided and implied MUSCLE
+        ran for free.
+        """
+        _insert_event(project_db, session_id="s1", m27_usd_cents=250)
+
+        metrics = DelegationMetrics(project_db)
+        rpt = metrics.report(since=timedelta(days=1))
+
+        assert rpt.m27_usd_cents == 250
+        assert rpt.estimated_net_savings_usd == pytest.approx(rpt.estimated_host_usd_avoided - 2.50)
+        # Net must be strictly less than gross once M3 spend is non-zero.
+        assert rpt.estimated_net_savings_usd < rpt.estimated_host_usd_avoided
+
+    def test_output_tokens_counted_in_tier_volume(self, project_db: Path) -> None:
+        """Tier sums must include output tokens (COST#2)."""
+        _insert_event(
+            project_db,
+            session_id="s1",
+            task_tier="tierA",
+            m27_tokens_in=1000,
+            m27_tokens_out=400,
+        )
+
+        metrics = DelegationMetrics(project_db)
+        rpt = metrics.report(since=timedelta(days=1))
+
+        assert rpt.m27_tokens_by_tier["tierA"] == 1400
+
+
+class TestSplitAndCostHelpers:
+    def test_split_partitions_total(self) -> None:
+        tokens_in, tokens_out = split_m27_tokens(1000)
+        assert tokens_in + tokens_out == 1000
+        assert tokens_out == int(1000 * M27_OUTPUT_SHARE)
+
+    def test_split_clamps_negative(self) -> None:
+        assert split_m27_tokens(-5) == (0, 0)
+
+    def test_estimate_cents_matches_cost_optimizer(self) -> None:
+        cents = estimate_m27_cents("MiniMax-M3", 6000, 2000)
+        expected = round(estimate_request_cost("MiniMax-M3", 6000, 2000) * 100)
+        assert cents == expected
+
+    def test_estimate_cents_defaults_model_when_none(self) -> None:
+        assert estimate_m27_cents(None, 100, 50) == estimate_m27_cents("MiniMax-M3", 100, 50)
+
+
+class TestCacheHitRateBounded:
+    def test_cache_hit_rate_never_exceeds_one(self, project_db: Path) -> None:
+        """Regression for COST#3: a large per-event hit COUNT must not inflate the
+        rate above 1.0 (previously summed counts / events → e.g. 1200%)."""
+        _insert_event(project_db, session_id="s1", cache_hits=12)
+        _insert_event(project_db, session_id="s2", cache_hits=8)
+
+        metrics = DelegationMetrics(project_db)
+        rpt = metrics.report(since=timedelta(days=1))
+
+        assert rpt.cache_hit_rate == pytest.approx(1.0)
+        assert 0.0 <= rpt.cache_hit_rate <= 1.0
+
+    def test_cache_hit_rate_is_event_fraction(self, project_db: Path) -> None:
+        _insert_event(project_db, session_id="s1", cache_hits=5)
+        _insert_event(project_db, session_id="s2", cache_hits=0)
+        _insert_event(project_db, session_id="s3", cache_hits=0)
+        _insert_event(project_db, session_id="s4", cache_hits=3)
+
+        metrics = DelegationMetrics(project_db)
+        rpt = metrics.report(since=timedelta(days=1))
+
+        assert rpt.cache_hit_rate == pytest.approx(0.5)
 
 
 class TestMissingDb:

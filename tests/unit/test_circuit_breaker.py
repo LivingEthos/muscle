@@ -72,3 +72,14 @@ def test_circuit_breaker_get_state():
     assert state["state"] == "closed"
     assert state["failure_count"] == 0
     assert state["failure_threshold"] == 3
+
+
+async def test_open_with_missing_failure_time_fails_safe():
+    """Fix: M8. If state is open but the failure timestamp is missing, fail safe
+    (stay open) rather than relying on an assert stripped under `python -O`."""
+    breaker = MemoryCircuitBreaker(failure_threshold=1)
+    breaker._state = "open"
+    breaker._last_failure_time = None
+
+    with pytest.raises(CircuitBreakerOpenError):
+        await breaker.call(lambda: asyncio.sleep(0))

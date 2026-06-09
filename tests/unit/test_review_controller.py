@@ -93,6 +93,20 @@ class TestReviewControllerInitialization:
         assert len(callback_called) == 1
         assert callback_called[0][0] == ReviewEvent.REVIEW_START
 
+    def test_emit_swallows_callback_exceptions(self):
+        """A throwing observer must not abort the review (FAILOPEN#6)."""
+        config = ReviewConfig(target_path="/tmp/test")
+        mock_client = MockM27Client()
+
+        def boom(event: ReviewEvent, data: dict):
+            raise RuntimeError("observer blew up")
+
+        controller = ReviewController(
+            config=config, m27_client=mock_client, event_callback=boom, use_kb=False
+        )
+        # Must not raise.
+        controller._emit(ReviewEvent.REVIEW_START, {"test": "data"})
+
 
 class TestReviewModes:
     def test_worktree_mode_fails_closed_outside_git_repo(self, tmp_path):
@@ -922,3 +936,49 @@ class TestRC03FixLockReleasedOnException:
         acquired = fix_lock.acquire(blocking=False)
         assert acquired, "Lock was not released; deadlock would occur"
         fix_lock.release()
+
+
+class TestFixLockMapDoesNotLeak:
+    """CONCURRENCY: _fix_locks is a WeakValueDictionary so idle entries evict."""
+
+    def test_fix_lock_entry_evicted_when_no_holder(self):
+        import gc
+
+        config = ReviewConfig(target_path="/tmp/test")
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+
+        # Returned lock with no retained reference must drop from the map.
+        controller._get_fix_lock("/tmp/test/a.py")
+        gc.collect()
+        assert len(controller._fix_locks) == 0
+
+    def test_fix_lock_entry_retained_while_held(self):
+        config = ReviewConfig(target_path="/tmp/test")
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+
+        lock = controller._get_fix_lock("/tmp/test/a.py")
+        # Same path returns the same lock while a strong ref is alive.
+        assert controller._get_fix_lock("/tmp/test/a.py") is lock
+
+
+class TestUnknownReviewModeRaises:
+    """FAILOPEN#7: an unrecognized mode must fail loudly, not run as hybrid."""
+
+    def test_run_raises_value_error_for_unknown_mode(self, tmp_path):
+        config = ReviewConfig(target_path=str(tmp_path), mode=ReviewMode.REVIEW)
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+
+        class _FakeMode:
+            value = "bogus"
+
+        # ReviewConfig is a frozen dataclass; bypass __setattr__ to inject an
+        # out-of-band mode that matches no dispatch branch.
+        object.__setattr__(controller.config, "mode", _FakeMode())
+
+        with (
+            patch.object(controller, "_assert_path_within_project"),
+            patch.object(controller, "_should_use_isolated_worktree", return_value=False),
+            patch.object(controller, "_resolve_workflow_name", return_value=""),
+        ):
+            with pytest.raises(ValueError, match="Unknown review mode"):
+                controller.run()

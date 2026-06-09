@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from ..backup_manager import BackupManager
+from ..io_safety import advisory_file_lock, atomic_write_text
 from ..m27_client import M27Client
 from ..project_memory import ProjectMemory
 from .thinking_policy import thinking_for
@@ -32,6 +34,9 @@ MAX_ACTIVE_AGENTS = 10
 MAX_AGENT_REVISIONS = 5
 MIN_EVIDENCE_COUNT = 3
 DECISION_TYPE_AGENT_CANDIDATE = "agent_candidate"
+
+# Allowlist for derived agent names (defense-in-depth against path traversal)
+_AGENT_NAME_RE = re.compile(r"[a-z0-9_-]+")
 
 AGENT_TEMPLATE = """---
 name: {name}
@@ -102,8 +107,10 @@ class AgentGenerator:
     def _check_evidence_threshold(self, trigger_pattern: str) -> bool:
         """Check if there are enough memory_decisions to justify agent creation."""
         if self._pm is None:
-            logger.warning("ProjectMemory not available, skipping evidence check")
-            return True
+            # Fail closed: the evidence gate is a safety boundary. Without the DB
+            # we cannot verify evidence, so we refuse rather than create blindly.
+            logger.warning("ProjectMemory not available, refusing evidence check (fail closed)")
+            return False
         count = self._pm.count_decisions_for_pattern(
             str(self.project_path),
             trigger_pattern,
@@ -127,7 +134,7 @@ class AgentGenerator:
             return None
 
         agent_name = self._pattern_to_agent_name(pattern_info.pattern)
-        agent_path = self.agents_dir / f"{agent_name}.md"
+        agent_path = self._safe_agent_path(agent_name)
 
         if agent_path.exists():
             logger.info(f"Agent already exists: {agent_path}")
@@ -152,7 +159,13 @@ class AgentGenerator:
         if response_text:
             content = self._parse_agent_content(response_text, pattern_info)
             if content:
-                agent_path.write_text(content)
+                # Guard the exists-check + write against a concurrent writer (TOCTOU)
+                # and commit atomically so a crash mid-write cannot truncate the file.
+                with advisory_file_lock(agent_path):
+                    if agent_path.exists():
+                        logger.info(f"Agent already exists: {agent_path}")
+                        return None
+                    atomic_write_text(agent_path, content)
                 self._generated_agents.append(agent_name)
                 self._register_agent_in_db(agent_name, pattern_info)
                 logger.info(f"Generated agent: {agent_path}")
@@ -223,7 +236,9 @@ class AgentGenerator:
         Returns (True, reason) if can create, (False, reason) if cannot.
         """
         if self._pm is None:
-            return True, "ProjectMemory not available, proceeding without DB check"
+            # Fail closed: capacity and evidence gates depend on the DB. Without it
+            # we cannot enforce the safety boundary, so refuse creation.
+            return False, "safety subsystem unavailable"
 
         active_count = self._pm.get_active_agents_count(str(self.project_path))
         if active_count >= self.max_agents:
@@ -257,17 +272,21 @@ class AgentGenerator:
             logger.warning(f"Agent {agent_id} not found")
             return False
 
-        # Create backup before archiving
+        # Create backup before archiving. Backup is a precondition for this
+        # destructive operation: if it fails we abort rather than degrade silently.
         backup_mgr = self._get_backup_manager()
         if backup_mgr is not None and agent.get("file_path"):
             agent_file = Path(agent["file_path"])
             if agent_file.exists():
                 try:
                     backup_info = backup_mgr.create_backup("memory")
-                    if backup_info:
-                        logger.info(f"Backed up agent {agent['name']} before archiving")
                 except Exception as e:
-                    logger.warning(f"Failed to backup agent before archiving: {e}")
+                    logger.error(f"Aborting archive: failed to backup agent: {e}")
+                    return False
+                if not backup_info:
+                    logger.error("Aborting archive: backup returned no record")
+                    return False
+                logger.info(f"Backed up agent {agent['name']} before archiving")
 
         # Archive in DB
         success = self._pm.archive_agent(agent_id)
@@ -342,16 +361,20 @@ class AgentGenerator:
             logger.warning(f"Agent file not found: {agent_path}")
             return None
 
-        # Backup before revision
+        # Backup before revision. Backup is a precondition for this destructive
+        # overwrite: if it fails we abort rather than lose the prior agent content.
         backup_mgr = self._get_backup_manager()
         if backup_mgr is not None:
             try:
                 # Create a targeted backup of just this agent file
                 backup_info = self._backup_agent_file(agent_path)
-                if backup_info:
-                    logger.info(f"Backed up agent '{agent['name']}' before revision")
             except Exception as e:
-                logger.warning(f"Failed to backup agent before revision: {e}")
+                logger.error(f"Aborting revision: failed to backup agent: {e}")
+                return None
+            if not backup_info:
+                logger.error("Aborting revision: backup returned no record")
+                return None
+            logger.info(f"Backed up agent '{agent['name']}' before revision")
 
         # Build new content from evidence
         trigger_pattern = agent.get("trigger_pattern", "")
@@ -378,8 +401,10 @@ class AgentGenerator:
         if not content:
             return None
 
-        # Write revised content
-        agent_path.write_text(content)
+        # Write revised content atomically so a crash mid-write cannot truncate
+        # the existing agent file (the backup above is the rollback source).
+        with advisory_file_lock(agent_path):
+            atomic_write_text(agent_path, content)
 
         # Update revision history in DB
         revision_entry = {
@@ -535,6 +560,20 @@ The agent should be invoked when the user asks about topics related to {pattern_
         name = "".join(c if c.isalnum() else "_" for c in name)
         name = "_".join(w for w in name.split("_") if w)
         return name or "specialist"
+
+    def _safe_agent_path(self, agent_name: str) -> Path:
+        """Resolve an agent file path, rejecting names that could escape agents_dir.
+
+        Defense-in-depth: the name is derived from an untrusted pattern, so we
+        enforce a strict allowlist and a resolved-containment check before any
+        filesystem write.
+        """
+        if not _AGENT_NAME_RE.fullmatch(agent_name):
+            raise ValueError(f"Unsafe agent name rejected: {agent_name!r}")
+        agent_path = self.agents_dir / f"{agent_name}.md"
+        if not agent_path.resolve().is_relative_to(self.agents_dir.resolve()):
+            raise ValueError(f"Agent path escapes agents directory: {agent_path}")
+        return agent_path
 
     def _build_agent_prompt(self, pattern_info: Any, reviewed_issues: list[dict[str, Any]]) -> str:
         issues_text = json.dumps(reviewed_issues[:10], indent=2)

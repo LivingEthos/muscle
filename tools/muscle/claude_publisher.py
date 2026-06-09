@@ -41,6 +41,7 @@ from .code_review.host_memory_templates import (
     SECTION_EFFORT,
     SECTION_METHODOLOGY,
 )
+from .io_safety import atomic_write_text
 from .optimization.prompt_compactor import compact_prompt_text
 
 logger = logging.getLogger(__name__)
@@ -428,17 +429,31 @@ Return ONLY the JSON array, nothing else."""
                     skill_calls=skill_calls or [],
                     tooling_notes=tooling_notes or [],
                 )
-                target_path.write_text(updated_content)
+                # Atomic swap (temp + fsync + os.replace) so a crash mid-write
+                # never leaves the user's authoritative file truncated.
+                atomic_write_text(target_path, updated_content)
                 logger.info(f"Successfully published to {filename}")
                 any_written = True
 
-                self._backup_manager._pm.insert_action_log(
-                    project_path=str(self.project_path),
-                    action_type="publish",
-                    entity_type=filename,
-                    entity_id=None,
-                    details_json='{"sections": ["critical_rules", "mistake_corrections", "agent_calls", "skill_calls", "tooling_notes"]}',
-                )
+                try:
+                    self._backup_manager._pm.insert_action_log(
+                        project_path=str(self.project_path),
+                        action_type="publish",
+                        entity_type=filename,
+                        entity_id=None,
+                        details_json='{"sections": ["critical_rules", "mistake_corrections", "agent_calls", "skill_calls", "tooling_notes"]}',
+                    )
+                except Exception as log_exc:
+                    # The file is already written but the audit-log insert failed.
+                    # Restore the pre-write content so the file and the DB stay
+                    # consistent (no published change without an audit record).
+                    logger.error(
+                        f"Failed to record publish action for {filename}; "
+                        f"rolling back file write: {log_exc}"
+                    )
+                    atomic_write_text(target_path, content)
+                    any_written = False
+                    continue
             except Exception as e:
                 logger.error(f"Failed to publish to {filename}: {e}")
                 continue
@@ -840,7 +855,7 @@ Return ONLY the JSON array, nothing else."""
                 f"{SECTION_TOOLING_NOTES}\n"
             )
             updated_content = self._insert_markers(content, empty_content)
-            self.claude_md_path.write_text(updated_content)
+            atomic_write_text(self.claude_md_path, updated_content)
             return True
         except Exception as e:
             logger.error(f"Failed to insert markers: {e}")

@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..io_safety import update_text_file_locked
+from ..io_safety import advisory_file_lock, atomic_write_text, update_text_file_locked
 from .host_memory_templates import INTERNAL_SEED
 from .thinking_policy import thinking_for
 
@@ -93,10 +93,42 @@ class MemoryManager:
             entry = self._m27_summarize_entry(entry, category)
         return self._update_memory_file("MEMORY.md", entry, category)
 
+    @staticmethod
+    def _truncate_clean(text: str, limit: int = 150) -> str:
+        """Truncate to at most ``limit`` chars on a clean boundary.
+
+        Never cut mid-word, and never cut inside a markup tag like ``<...>`` or
+        a bracketed token like ``[...]``/``(...)`` — back up to the last safe
+        whitespace boundary before any open-but-unclosed delimiter.
+        """
+        text = text.strip()
+        if len(text) <= limit:
+            return text
+
+        head = text[:limit]
+        # If the cut point lands inside an open (unclosed) delimiter, back up to
+        # before that delimiter so we never leave a dangling tag/token.
+        for open_ch, close_ch in (("<", ">"), ("[", "]"), ("(", ")")):
+            last_open = head.rfind(open_ch)
+            if last_open != -1 and head.find(close_ch, last_open) == -1:
+                head = head[:last_open]
+
+        # Break on the last whitespace boundary so we don't cut mid-word.
+        cut = head.rstrip()
+        last_space = cut.rfind(" ")
+        if last_space > 0:
+            cut = cut[:last_space]
+        return cut.rstrip()
+
     def _m27_summarize_entry(self, entry: str, category: str) -> str:
-        """Use M2.7 to summarize a long entry into a concise form."""
+        """Use M2.7 to summarize a long entry into a concise form.
+
+        Distinguishes three paths so callers/operators can tell them apart:
+        no LLM configured (debug log), LLM failure (warning + clean-truncated
+        original), and LLM success (clean-truncated summary)."""
         if not self.m27:
-            return entry
+            logger.debug("No M2.7 client configured; truncating entry without summarization")
+            return self._truncate_clean(entry)
 
         prompt = f"""Summarize this memory entry to be concise but preserve key information.
 
@@ -119,10 +151,10 @@ Return ONLY the summarized text, no quotes or explanation."""
                 temperature=0.5,
                 thinking=thinking_for("memory_consolidation"),
             )
-            return response_text.strip()[:150]  # type: ignore[no-any-return]
+            return self._truncate_clean(response_text)
         except Exception as e:
             logger.warning(f"M2.7 summarization failed: {e}")
-            return entry[:150]
+            return self._truncate_clean(entry)
 
     def _update_memory_file(self, filename: str, entry: str, category: str) -> bool:
         filepath = self.muscle_dir / filename
@@ -385,39 +417,73 @@ Return ONLY the summary, no quotes or explanation."""
         if not filepath.exists():
             return 0
 
-        content = filepath.read_text()
-        section = self._extract_section(content)
-        lines = [line for line in section.split("\n") if line.strip()]
+        removed = 0
 
-        if len(lines) <= max_entries:
-            return 0
+        def updater(content: str) -> str:
+            nonlocal removed
+            section = self._extract_section(content)
+            lines = [line for line in section.split("\n") if line.strip()]
 
-        lines_to_keep = lines[-max_entries:]
-        new_section = "\n".join(lines_to_keep)
+            if len(lines) <= max_entries:
+                return content
 
-        pattern = rf"({re.escape(self.LEARNED_START)}\n)(.*?)({re.escape(self.LEARNED_END)})"
-        new_content = re.sub(
-            pattern,
-            lambda m: f"{m.group(1)}{new_section}\n{m.group(3)}",
-            content,
-            flags=re.DOTALL,
-        )
+            lines_to_keep = lines[-max_entries:]
+            new_section = "\n".join(lines_to_keep)
 
-        filepath.write_text(new_content)
-        removed = len(lines) - len(lines_to_keep)
-        logger.info(f"Pruned {removed} old entries from {filename}")
+            pattern = rf"({re.escape(self.LEARNED_START)}\n)(.*?)({re.escape(self.LEARNED_END)})"
+            new_content = re.sub(
+                pattern,
+                lambda m: f"{m.group(1)}{new_section}\n{m.group(3)}",
+                content,
+                flags=re.DOTALL,
+            )
+            removed = len(lines) - len(lines_to_keep)
+            return new_content
+
+        update_text_file_locked(filepath, updater, default_content="")
+        if removed:
+            logger.info(f"Pruned {removed} old entries from {filename}")
         return removed
 
+    @staticmethod
+    def _is_memory_line(entry: str) -> bool:
+        """Validate that a consolidated entry matches the real memory-line shape.
+
+        Memory entries are written as ``- [YYYY-MM-DD] [category] ...``. The LLM
+        may return bullets without the leading ``- ``; we accept those (we add
+        the bullet back), but require the ``[date] [category]`` prefix so an LLM
+        cannot smuggle in arbitrary text that doesn't match the file format.
+        """
+        candidate = entry.strip()
+        candidate = candidate[2:].strip() if candidate.startswith("- ") else candidate
+        return bool(re.match(r"^\[\d{4}-\d{2}-\d{2}\]\s*\[[^\]]+\]", candidate))
+
     def consolidate_memories(self) -> int:
-        """Use M2.7 to consolidate and deduplicate memories, keeping only the most relevant."""
+        """Use M2.7 to consolidate and deduplicate memories, keeping only the most relevant.
+
+        Returns the total number of entries removed across all files. Aborts a
+        file (without writing) if the LLM would delete more than half the
+        entries, and backs up the original before any overwrite."""
         if not self.m27:
             return 0
+
+        total_removed = 0
 
         for filename in ["CLAUDE.md", "AGENT.md", "MEMORY.md"]:
             filepath = self.muscle_dir / filename
             if not filepath.exists():
                 continue
 
+            removed = self._consolidate_file(filepath, filename)
+            total_removed += removed
+
+        return total_removed
+
+    def _consolidate_file(self, filepath: Path, filename: str) -> int:
+        """Consolidate a single memory file under an advisory lock. Returns removed count."""
+        with advisory_file_lock(filepath):
+            if not filepath.exists():
+                return 0
             content = filepath.read_text()
             section = self._extract_section(content)
             lines = [
@@ -426,12 +492,13 @@ Return ONLY the summary, no quotes or explanation."""
                 if line.strip() and line.strip().startswith("-")
             ]
 
-            if len(lines) <= 50:
-                continue
+            old_count = len(lines)
+            if old_count <= 50:
+                return 0
 
             prompt = f"""Analyze these memory entries and consolidate them.
 Remove obvious duplicates and entries that are superseded by others.
-Return the {min(50, len(lines))} most important unique entries.
+Return the {min(50, old_count)} most important unique entries.
 
 Entries:
 {chr(10).join(lines)}
@@ -442,6 +509,7 @@ Return a JSON array of the consolidated entries:
 ```"""
 
             try:
+                assert self.m27 is not None
                 response_text, _ = self.m27.chat(
                     messages=[{"role": "user", "content": prompt}],
                     system="You are a memory consolidation expert. Return valid JSON array only.",
@@ -456,49 +524,86 @@ Return a JSON array of the consolidated entries:
                     if end > start:
                         response_text = response_text[start:end].strip()
 
-                consolidated = json.loads(response_text)
-                if isinstance(consolidated, list) and consolidated:
-                    new_section = "\n".join(f"- {entry}" for entry in consolidated)
-                    pattern = (
-                        rf"({re.escape(self.LEARNED_START)}\n)(.*?)({re.escape(self.LEARNED_END)})"
-                    )
+                try:
+                    consolidated = json.loads(response_text)
+                except (json.JSONDecodeError, TypeError) as exc:
+                    logger.warning(f"Consolidation for {filename}: invalid JSON from LLM: {exc}")
+                    return 0
 
-                    def make_replacement(section: str) -> Any:
-                        return lambda m: f"{m.group(1)}{section}\n{m.group(3)}"
+                if not (isinstance(consolidated, list) and consolidated):
+                    logger.warning(f"Consolidation for {filename}: empty/invalid result, aborting")
+                    return 0
 
-                    new_content = re.sub(
-                        pattern,
-                        make_replacement(new_section),
-                        content,
-                        flags=re.DOTALL,
+                # Reject entries that don't match the real memory-line shape so
+                # the LLM cannot replace the file with arbitrary content.
+                valid_entries = [
+                    str(entry) for entry in consolidated if self._is_memory_line(str(entry))
+                ]
+                if not valid_entries:
+                    logger.warning(
+                        f"Consolidation for {filename}: no entries matched memory-line "
+                        f"format, aborting (no write)"
                     )
-                    filepath.write_text(new_content)
-                    logger.info(
-                        f"Consolidated {filename}: {len(lines)} -> {len(consolidated)} entries"
+                    return 0
+
+                # Back up the original before deciding to overwrite or abort, so
+                # the pre-consolidation state is always recoverable.
+                backup_path = filepath.with_suffix(filepath.suffix + ".bak")
+                try:
+                    atomic_write_text(backup_path, content)
+                except Exception as exc:  # pragma: no cover - backup is best-effort precondition
+                    logger.warning(
+                        f"Consolidation for {filename}: backup failed ({exc}); aborting (no write)"
                     )
+                    return 0
+
+                new_count = len(valid_entries)
+                if new_count < old_count * 0.5:
+                    logger.warning(
+                        f"Consolidation for {filename} would delete >50% of entries "
+                        f"({old_count} -> {new_count}); aborting (no write, original backed up)"
+                    )
+                    return 0
+
+                def _entry_line(entry: str) -> str:
+                    stripped = entry.strip()
+                    return stripped if stripped.startswith("- ") else f"- {stripped}"
+
+                new_section = "\n".join(_entry_line(entry) for entry in valid_entries)
+                pattern = (
+                    rf"({re.escape(self.LEARNED_START)}\n)(.*?)({re.escape(self.LEARNED_END)})"
+                )
+
+                def make_replacement(section: str) -> Any:
+                    return lambda m: f"{m.group(1)}{section}\n{m.group(3)}"
+
+                new_content = re.sub(
+                    pattern,
+                    make_replacement(new_section),
+                    content,
+                    flags=re.DOTALL,
+                )
+                atomic_write_text(filepath, new_content)
+                removed = old_count - new_count
+                logger.info(f"Consolidated {filename}: {old_count} -> {new_count} entries")
+                return removed
 
             except Exception as e:
                 logger.warning(f"Memory consolidation failed for {filename}: {e}")
-
-        return 0
+                return 0
 
     # ---- Structured CLAUDE.md / MEMORY.md methods ----
 
-    def _ensure_claude_md_structure(self) -> Path:
-        """Create/ensure CLAUDE.md has structured rules section with Do/Don't/Project Skills."""
-        filepath = self.muscle_dir / "CLAUDE.md"
+    def _ensure_claude_md_content(self, content: str) -> str:
+        """Pure transform: ensure CLAUDE.md content has the structured rules section.
 
-        if filepath.exists():
-            content = filepath.read_text()
-            if RULES_START in content:
-                return filepath
-            # File exists but lacks rules markers -- append the section
-            content = content.rstrip("\n") + "\n\n" + self._rules_section_template() + "\n"
-            filepath.write_text(content)
-        else:
-            filepath.write_text(f"# CLAUDE\n\n{self._rules_section_template()}\n")
-
-        return filepath
+        Folded into locked updaters so ensure+read+insert is one atomic operation."""
+        if not content:
+            return f"# CLAUDE\n\n{self._rules_section_template()}\n"
+        if RULES_START in content:
+            return content
+        # File exists but lacks rules markers -- append the section
+        return content.rstrip("\n") + "\n\n" + self._rules_section_template() + "\n"
 
     @staticmethod
     def _rules_section_template() -> str:
@@ -511,20 +616,15 @@ Return a JSON array of the consolidated entries:
             f"{RULES_END}"
         )
 
-    def _ensure_memory_md_structure(self) -> Path:
-        """Create/ensure MEMORY.md has structured sections between MEMORY_SECTION markers."""
-        filepath = self.muscle_dir / "MEMORY.md"
+    def _ensure_memory_md_content(self, content: str) -> str:
+        """Pure transform: ensure MEMORY.md content has the structured sections.
 
-        if filepath.exists():
-            content = filepath.read_text()
-            if MEMORY_SECTION_START in content:
-                return filepath
-            content = content.rstrip("\n") + "\n\n" + self._memory_section_template() + "\n"
-            filepath.write_text(content)
-        else:
-            filepath.write_text(f"# MEMORY\n\n{self._memory_section_template()}\n")
-
-        return filepath
+        Folded into locked updaters so ensure+read+insert is one atomic operation."""
+        if not content:
+            return f"# MEMORY\n\n{self._memory_section_template()}\n"
+        if MEMORY_SECTION_START in content:
+            return content
+        return content.rstrip("\n") + "\n\n" + self._memory_section_template() + "\n"
 
     @staticmethod
     def _memory_section_template() -> str:
@@ -557,25 +657,25 @@ Return a JSON array of the consolidated entries:
         """INTERNAL TRACKING: Write a rule to .muscle/CLAUDE.md under ### Do or ### Don't.
 
         This is internal tracking only. DB is the authoritative source for rules."""
-        filepath = self._ensure_claude_md_structure()
-        content = filepath.read_text()
-        rules_section = self._extract_rules_section(content)
-
-        # Dedup check (case-insensitive)
-        if rule_text.lower() in rules_section.lower():
-            return False
+        filepath = self.muscle_dir / "CLAUDE.md"
+        written = False
 
         entry = f"- {rule_text} (confidence: {confidence}, validated: {validated_count}x)"
+        header = "### Do" if rule_type == "do" else "### Don't"
 
-        if rule_type == "do":
-            header = "### Do"
-        else:
-            header = "### Don't"
+        def updater(current: str) -> str:
+            nonlocal written
+            content = self._ensure_claude_md_content(current)
+            rules_section = self._extract_rules_section(content)
+            # Dedup check (case-insensitive)
+            if rule_text.lower() in rules_section.lower():
+                return content
+            written = True
+            # Insert entry after the target header, before the next ### header
+            return self._insert_under_header(content, header, entry)
 
-        # Insert entry after the target header, before the next ### header
-        new_content = self._insert_under_header(content, header, entry)
-        filepath.write_text(new_content)
-        return True
+        update_text_file_locked(filepath, updater, default_content="")
+        return written
 
     def _insert_under_header(self, content: str, header: str, entry: str) -> str:
         """Insert an entry line under a specific ### header, before the next ### or end marker."""
@@ -606,17 +706,21 @@ Return a JSON array of the consolidated entries:
 
     def write_skill_ref(self, skill_name: str, skill_path: str) -> bool:
         """Add a skill reference under ### Project Skills. Deduplicates."""
-        filepath = self._ensure_claude_md_structure()
-        content = filepath.read_text()
-        rules_section = self._extract_rules_section(content)
-
-        if skill_path.lower() in rules_section.lower():
-            return False
-
+        filepath = self.muscle_dir / "CLAUDE.md"
         entry = f"- `{skill_path}` \u2014 {skill_name}"
-        new_content = self._insert_under_header(content, "### Project Skills", entry)
-        filepath.write_text(new_content)
-        return True
+        written = False
+
+        def updater(current: str) -> str:
+            nonlocal written
+            content = self._ensure_claude_md_content(current)
+            rules_section = self._extract_rules_section(content)
+            if skill_path.lower() in rules_section.lower():
+                return content
+            written = True
+            return self._insert_under_header(content, "### Project Skills", entry)
+
+        update_text_file_locked(filepath, updater, default_content="")
+        return written
 
     def read_rules(self) -> list[dict]:
         """INTERNAL TRACKING: Parse rules from .muscle/CLAUDE.md into list of dicts.
@@ -676,24 +780,25 @@ Return a JSON array of the consolidated entries:
         if not filepath.exists():
             return False
 
-        content = filepath.read_text()
-        lines = content.split("\n")
         updated = False
 
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith("- ") and rule_text.lower() in stripped.lower():
-                parsed_text, _, _ = self._parse_rule_line(stripped)
-                if parsed_text.lower() == rule_text.lower():
-                    lines[i] = (
-                        f"- {parsed_text} (confidence: {confidence}, validated: {validated_count}x)"
-                    )
-                    updated = True
-                    break
+        def updater(content: str) -> str:
+            nonlocal updated
+            lines = content.split("\n")
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.startswith("- ") and rule_text.lower() in stripped.lower():
+                    parsed_text, _, _ = self._parse_rule_line(stripped)
+                    if parsed_text.lower() == rule_text.lower():
+                        lines[i] = (
+                            f"- {parsed_text} (confidence: {confidence}, "
+                            f"validated: {validated_count}x)"
+                        )
+                        updated = True
+                        break
+            return "\n".join(lines) if updated else content
 
-        if updated:
-            filepath.write_text("\n".join(lines))
-
+        update_text_file_locked(filepath, updater, default_content="")
         return updated
 
     def archive_rule(self, rule_text: str, reason: str) -> bool:
@@ -704,33 +809,36 @@ Return a JSON array of the consolidated entries:
         if not filepath.exists():
             return False
 
-        content = filepath.read_text()
-        lines = content.split("\n")
         removed_line: str | None = None
 
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith("- ") and rule_text.lower() in stripped.lower():
-                parsed_text, _, _ = self._parse_rule_line(stripped)
-                if parsed_text.lower() == rule_text.lower():
-                    removed_line = stripped
-                    lines.pop(i)
-                    break
+        def remove_updater(content: str) -> str:
+            nonlocal removed_line
+            lines = content.split("\n")
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.startswith("- ") and rule_text.lower() in stripped.lower():
+                    parsed_text, _, _ = self._parse_rule_line(stripped)
+                    if parsed_text.lower() == rule_text.lower():
+                        removed_line = stripped
+                        lines.pop(i)
+                        return "\n".join(lines)
+            return content
+
+        update_text_file_locked(filepath, remove_updater, default_content="")
 
         if not removed_line:
             return False
 
-        filepath.write_text("\n".join(lines))
-
         # Add to MEMORY.md under ## Archived Rules
-        memory_path = self._ensure_memory_md_structure()
-        memory_content = memory_path.read_text()
+        memory_path = self.muscle_dir / "MEMORY.md"
         timestamp = datetime.now().strftime("%Y-%m-%d")
         archive_entry = f"- [{timestamp}] {removed_line} — Reason: {reason}"
-        memory_content = self._insert_under_header(
-            memory_content, "## Archived Rules", archive_entry
-        )
-        memory_path.write_text(memory_content)
+
+        def archive_updater(content: str) -> str:
+            content = self._ensure_memory_md_content(content)
+            return self._insert_under_header(content, "## Archived Rules", archive_entry)
+
+        update_text_file_locked(memory_path, archive_updater, default_content="")
         return True
 
     def log_review_session(
@@ -744,16 +852,19 @@ Return a JSON array of the consolidated entries:
         """INTERNAL TRACKING: Add a session summary under ## Review Sessions in .muscle/MEMORY.md.
 
         This is internal tracking only. DB is the authoritative source."""
-        memory_path = self._ensure_memory_md_structure()
-        memory_content = memory_path.read_text()
+        memory_path = self.muscle_dir / "MEMORY.md"
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         actions_str = "; ".join(actions) if actions else "none"
         entry = (
             f"- [{timestamp}] critical={critical} high={high} medium={medium} low={low} "
             f"| actions: {actions_str}"
         )
-        memory_content = self._insert_under_header(memory_content, "## Review Sessions", entry)
-        memory_path.write_text(memory_content)
+
+        def updater(content: str) -> str:
+            content = self._ensure_memory_md_content(content)
+            return self._insert_under_header(content, "## Review Sessions", entry)
+
+        update_text_file_locked(memory_path, updater, default_content="")
         return True
 
     def sync_to_root_claude_md(self) -> bool:

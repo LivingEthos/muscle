@@ -204,29 +204,31 @@ class BudgetEnforcingLLMClient(LLMClientWrapper):
             async with self._lock:
                 rid = self._budget.reserve_tokens(estimated)
 
-            chunk_count = 0
+            # `committed` guards the finally block so the reservation is always
+            # resolved exactly once, even if the consumer breaks early (GeneratorExit)
+            # or the inner stream raises mid-flight. Completion tokens are estimated
+            # from accumulated content length (~4 chars/token), not chunk count, which
+            # has no relationship to token volume.
+            content_chars = 0
+            committed = False
             try:
                 async for chunk in self._inner.stream(request):
-                    chunk_count += 1
+                    content_chars += len(chunk.content)
                     yield chunk
-            except Exception:
-                async with self._lock:
-                    self._budget.release_reservation(rid)
-                raise
-
-            if chunk_count > 0:
                 async with self._lock:
                     self._budget.commit_reservation(
                         rid=rid,
                         prompt_tokens=estimated,
-                        completion_tokens=max(1, chunk_count),
+                        completion_tokens=max(1, content_chars // 4),
                         provider=self.provider_name,
                         model=model,
                         operation="stream",
                     )
-            else:
-                async with self._lock:
-                    self._budget.release_reservation(rid)
+                committed = True
+            finally:
+                if not committed:
+                    async with self._lock:
+                        self._budget.release_reservation(rid)
 
         return _guarded_stream()
 

@@ -20,13 +20,53 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ..io_safety import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 AGENT_KB_CACHE_DIR = ".muscle/agent_kb"
+# TODO(hardening): pin these to specific commit SHAs and verify a content hash
+# of each fetched README before parsing. The "/main" ref below is a MUTABLE
+# upstream branch, so fetched content is UNTRUSTED — see _sanitize_field.
 AGENT_REPOS = [
     "https://github.com/VoltAgent/awesome-claude-code-subagents",
     "https://github.com/travisvn/awesome-claude-skills",
 ]
+
+# Cap on embedded free-text fields sourced from upstream READMEs.
+_MAX_FIELD_LEN = 300
+# Lines that look like injected instructions are dropped before embedding.
+_INJECTION_LINE_RE = re.compile(
+    r"(?i)\b(ignore (the |all )?(previous|above)|disregard|system prompt|"
+    r"you are now|act as|<\|?(system|im_start|im_end)\|?>)\b"
+)
+
+
+def _sanitize_field(value: str) -> str:
+    """Sanitize an UNTRUSTED upstream string before it is embedded in a
+    template that feeds the LLM.
+
+    Upstream README content comes from a mutable branch and must be treated as
+    attacker-controlled. We strip control/non-printable characters, neutralize
+    markdown control sequences, drop obvious prompt-injection lines, and cap
+    the length so a single entry cannot dominate a prompt.
+    """
+    if not value:
+        return ""
+    # Drop control / non-printable characters (keep ordinary whitespace).
+    cleaned = "".join(ch for ch in value if ch == " " or (ch.isprintable() and ch != "\t"))
+    # Remove lines that look like injected instructions.
+    kept_lines = [line for line in cleaned.splitlines() if not _INJECTION_LINE_RE.search(line)]
+    cleaned = " ".join(part.strip() for part in kept_lines if part.strip())
+    # Neutralize markdown/HTML control sequences that could break out of the
+    # template or inject formatting.
+    cleaned = cleaned.replace("`", "'").replace("\\", "/")
+    cleaned = re.sub(r"[<>]", "", cleaned)
+    cleaned = re.sub(r"[*_#\[\]{}|]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) > _MAX_FIELD_LEN:
+        cleaned = cleaned[:_MAX_FIELD_LEN].rstrip() + "…"
+    return cleaned
 
 
 class AgentKBFetcher:
@@ -104,11 +144,12 @@ class AgentKBFetcher:
 
         for name, url, description in matches:
             if url.endswith(".md") or "agent" in name.lower():
+                # Upstream README content is UNTRUSTED — sanitize before storing.
                 agents.append(
                     {
-                        "name": name.strip(),
+                        "name": _sanitize_field(name.strip()),
                         "url": url.strip(),
-                        "description": description.strip(),
+                        "description": _sanitize_field(description.strip()),
                         "source": "awesome-claude-code-subagents",
                         "fetched_at": datetime.now().isoformat(),
                     }
@@ -125,11 +166,12 @@ class AgentKBFetcher:
 
         for name, url, description in matches:
             if url.endswith(".md") or "skill" in name.lower():
+                # Upstream README content is UNTRUSTED — sanitize before storing.
                 skills.append(
                     {
-                        "name": name.strip(),
+                        "name": _sanitize_field(name.strip()),
                         "url": url.strip(),
-                        "description": description.strip(),
+                        "description": _sanitize_field(description.strip()),
                         "source": "awesome-claude-skills",
                         "fetched_at": datetime.now().isoformat(),
                     }
@@ -138,18 +180,48 @@ class AgentKBFetcher:
         return skills
 
     def _save_cache(self) -> None:
-        """Save fetched data to local cache."""
+        """Save fetched data to local cache.
+
+        Written atomically with restrictive (0o600) permissions. The cache
+        holds parsed UNTRUSTED upstream content, so it is treated as a
+        sensitive file and re-validated on load (see _validate_cache_data).
+        """
         cache_file = self.cache_dir / "agent_kb_cache.json"
         cache_data = {
             "agents": self._agents,
             "skills": self._skills,
             "cached_at": datetime.now().isoformat(),
         }
-        cache_file.write_text(json.dumps(cache_data, indent=2))
+        atomic_write_text(cache_file, json.dumps(cache_data, indent=2))
+        try:
+            cache_file.chmod(0o600)
+        except OSError as exc:
+            logger.warning(f"Could not set restrictive perms on {cache_file}: {exc}")
         logger.debug(f"Saved agent KB cache to {cache_file}")
 
+    @staticmethod
+    def _validate_cache_data(cache_data: Any) -> bool:
+        """Schema-check the loaded cache before trusting it.
+
+        The cache file can be tampered with on disk (cache poisoning), so its
+        structure is validated: a dict with a ``cached_at`` string and
+        ``agents``/``skills`` lists of dicts. Anything else is rejected and the
+        caller treats it as a cache miss.
+        """
+        if not isinstance(cache_data, dict):
+            return False
+        if not isinstance(cache_data.get("cached_at"), str):
+            return False
+        for key in ("agents", "skills"):
+            value = cache_data.get(key, [])
+            if not isinstance(value, list):
+                return False
+            if not all(isinstance(item, dict) for item in value):
+                return False
+        return True
+
     def _load_from_cache(self) -> None:
-        """Load data from local cache if available and fresh."""
+        """Load data from local cache if available, fresh, and well-formed."""
         cache_file = self.cache_dir / "agent_kb_cache.json"
 
         if not cache_file.exists():
@@ -157,6 +229,9 @@ class AgentKBFetcher:
 
         try:
             cache_data = json.loads(cache_file.read_text())
+            if not self._validate_cache_data(cache_data):
+                logger.warning("Agent KB cache failed schema validation; ignoring")
+                return
             cached_at = datetime.fromisoformat(cache_data["cached_at"])
 
             if datetime.now() - cached_at < self.cache_ttl:

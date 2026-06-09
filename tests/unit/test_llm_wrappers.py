@@ -147,6 +147,81 @@ async def test_budget_wrapper_release_on_exception(request_fixture: LLMRequest) 
     assert len(budget._reservations) == 0
 
 
+async def test_budget_stream_early_break_releases_reservation(
+    request_fixture: LLMRequest,
+) -> None:
+    """Fix: H5. Consumer breaking early must not leak the reservation.
+
+    Aborting an async generator triggers its finally via aclose() (what
+    `contextlib.aclosing` / GC do for real consumers)."""
+    inner = FakeClient()
+    budget = TokenBudget()
+    wrapper = BudgetEnforcingLLMClient(inner, budget)
+
+    gen = wrapper.stream(request_fixture)
+    await gen.__anext__()  # receive first chunk
+    assert len(budget._reservations) == 1  # reserved, not yet resolved
+    await gen.aclose()  # consumer abandons the stream
+
+    # finally block must have released the un-committed reservation.
+    assert len(budget._reservations) == 0
+    # Early break never commits usage.
+    assert len(budget.usage_history) == 0
+
+
+async def test_budget_stream_completion_tokens_from_content_length(
+    request_fixture: LLMRequest,
+) -> None:
+    """Fix: H5. Completion tokens estimate from content length, not chunk count."""
+
+    class LongChunkClient(FakeClient):
+        def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamChunk]:
+            async def _stream() -> AsyncIterator[LLMStreamChunk]:
+                # Two chunks, but ~200 chars of content => ~50 completion tokens.
+                yield LLMStreamChunk(content="a" * 100)
+                yield LLMStreamChunk(content="b" * 100)
+
+            return _stream()
+
+    inner = LongChunkClient()
+    budget = TokenBudget()
+    wrapper = BudgetEnforcingLLMClient(inner, budget)
+
+    async for _chunk in wrapper.stream(request_fixture):
+        pass
+
+    assert len(budget.usage_history) == 1
+    usage = budget.usage_history[0]
+    # 200 chars // 4 == 50, decisively more than the old chunk_count of 2.
+    assert usage.completion_tokens == 50
+    assert len(budget._reservations) == 0
+
+
+async def test_budget_stream_release_on_midstream_error(
+    request_fixture: LLMRequest,
+) -> None:
+    """Fix: H5. A mid-stream error still releases the reservation via finally."""
+
+    class FailMidStream(FakeClient):
+        def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamChunk]:
+            async def _stream() -> AsyncIterator[LLMStreamChunk]:
+                yield LLMStreamChunk(content="partial")
+                raise RuntimeError("dropped")
+
+            return _stream()
+
+    inner = FailMidStream()
+    budget = TokenBudget()
+    wrapper = BudgetEnforcingLLMClient(inner, budget)
+
+    with pytest.raises(RuntimeError):
+        async for _chunk in wrapper.stream(request_fixture):
+            pass
+
+    assert len(budget._reservations) == 0
+    assert len(budget.usage_history) == 0
+
+
 async def test_fallback_primary_succeeds(request_fixture: LLMRequest) -> None:
     primary = FakeClient(name="primary")
     fallback = FakeClient(name="fallback")
@@ -182,7 +257,9 @@ async def test_fallback_all_fail_raises(request_fixture: LLMRequest) -> None:
 async def test_retryable_half_open_max_calls(request_fixture: LLMRequest) -> None:
     """Test that half-open circuit breaker allows max calls before deciding."""
     inner = FakeClient(fail_with=RuntimeError("boom"))
-    breaker = MemoryCircuitBreaker(failure_threshold=1, recovery_timeout=0.01, half_open_max_calls=1)
+    breaker = MemoryCircuitBreaker(
+        failure_threshold=1, recovery_timeout=0.01, half_open_max_calls=1
+    )
     wrapper = CircuitBreakerLLMWrapper(inner, breaker)
 
     # Trip the breaker
@@ -192,6 +269,7 @@ async def test_retryable_half_open_max_calls(request_fixture: LLMRequest) -> Non
 
     # Wait for recovery timeout
     import asyncio
+
     await asyncio.sleep(0.02)
 
     # In half-open with max_calls=1, one call should be allowed then fail

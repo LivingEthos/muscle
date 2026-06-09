@@ -800,3 +800,92 @@ class TestReviewBenchmarkRunner:
         markdown = Path(paths["markdown"]).read_text(encoding="utf-8")
         assert "project_only_no_regression" in markdown
         assert "normal_paths_offline_safe" in markdown
+
+
+def _write_manifest(fixture_root: Path, manifest: dict) -> None:
+    fixture_root.mkdir(parents=True, exist_ok=True)
+    (fixture_root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
+class TestBenchmarkSecurity:
+    def test_path_traversal_target_is_rejected(self, tmp_path: Path):
+        fixture_root = tmp_path / "fixtures"
+        _write_manifest(
+            fixture_root,
+            {
+                "manifest_version": 2,
+                "scenarios": [
+                    {"name": "evil", "target_path": "../../etc/passwd"},
+                ],
+            },
+        )
+        runner = benchmark_module.ReviewBenchmarkRunner(
+            str(tmp_path / "proj"),
+            m27_client=object(),
+            fixture_root=fixture_root,  # type: ignore[arg-type]
+        )
+        import pytest
+
+        with pytest.raises(ValueError, match="escapes fixture root"):
+            runner._load_scenarios()
+
+    def test_zero_scenarios_hard_fails_for_all(self, tmp_path: Path):
+        fixture_root = tmp_path / "fixtures"
+        _write_manifest(fixture_root, {"manifest_version": 2, "scenarios": []})
+        runner = benchmark_module.ReviewBenchmarkRunner(
+            str(tmp_path / "proj"),
+            m27_client=object(),
+            fixture_root=fixture_root,  # type: ignore[arg-type]
+        )
+        import pytest
+
+        with pytest.raises(ValueError, match="No benchmark scenarios"):
+            runner._load_scenarios(suite="all")
+
+    def test_manifest_missing_required_field_rejected(self, tmp_path: Path):
+        fixture_root = tmp_path / "fixtures"
+        _write_manifest(
+            fixture_root,
+            {"manifest_version": 2, "scenarios": [{"name": "no-target"}]},
+        )
+        runner = benchmark_module.ReviewBenchmarkRunner(
+            str(tmp_path / "proj"),
+            m27_client=object(),
+            fixture_root=fixture_root,  # type: ignore[arg-type]
+        )
+        import pytest
+
+        with pytest.raises(ValueError, match="missing string 'target_path'"):
+            runner._load_scenarios()
+
+    def test_manifest_not_object_rejected(self, tmp_path: Path):
+        fixture_root = tmp_path / "fixtures"
+        fixture_root.mkdir(parents=True, exist_ok=True)
+        (fixture_root / "manifest.json").write_text("[]", encoding="utf-8")
+        runner = benchmark_module.ReviewBenchmarkRunner(
+            str(tmp_path / "proj"),
+            m27_client=object(),
+            fixture_root=fixture_root,  # type: ignore[arg-type]
+        )
+        import pytest
+
+        with pytest.raises(ValueError, match="must be a JSON object"):
+            runner._load_scenarios()
+
+    def test_symlink_in_fixture_source_rejected(self, tmp_path: Path):
+        fixture_root = tmp_path / "fixtures"
+        proj = fixture_root / "proj"
+        proj.mkdir(parents=True, exist_ok=True)
+        (proj / "real.py").write_text("x = 1\n")
+        outside = tmp_path / "secret.txt"
+        outside.write_text("secret")
+        (proj / "link.txt").symlink_to(outside)
+        runner = benchmark_module.ReviewBenchmarkRunner(
+            str(tmp_path / "out"),
+            m27_client=object(),
+            fixture_root=fixture_root,  # type: ignore[arg-type]
+        )
+        import pytest
+
+        with pytest.raises(ValueError, match="symlink"):
+            runner._assert_no_symlinks(proj)
