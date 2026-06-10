@@ -18,6 +18,7 @@ import os
 import re
 import threading
 import time
+import urllib.parse
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -199,10 +200,40 @@ class ConcurrencyLimiter:
         self.semaphore.release()
 
 
+def _host_is_minimax(url: str) -> bool:
+    """True only when the URL's HOSTNAME identifies a MiniMax endpoint.
+
+    Substring-matching the whole URL is spoofable (e.g.
+    ``https://evil.com/minimax/path`` puts "minimax" only in the path), so we
+    parse out the hostname with ``urlsplit`` and check that alone. Covers
+    ``api.minimax.io``, ``api.minimaxi.com``, and regional variants by looking
+    for "minimax" anywhere in the hostname labels.
+    """
+    host = urllib.parse.urlsplit(url).hostname
+    if not host:
+        return False
+    return "minimax" in host.lower()
+
+
 def _detect_api_base() -> str:
     explicit = os.environ.get("ANTHROPIC_BASE_URL")
     if explicit:
-        return explicit
+        # Security (credential-leak guard): MUSCLE only ever talks to MiniMax,
+        # and MINIMAX_API_KEY / its ANTHROPIC_API_KEY alias are MiniMax
+        # credentials. Hosts like Claude Code export
+        # ANTHROPIC_BASE_URL=https://api.anthropic.com into every shell; honoring
+        # it would silently POST the MiniMax key to a third party. Only honor an
+        # explicit base URL that points at a MiniMax host, unless the operator
+        # opts in via MUSCLE_ALLOW_CUSTOM_BASE_URL=1 (proxies/gateways).
+        if _host_is_minimax(explicit) or os.environ.get("MUSCLE_ALLOW_CUSTOM_BASE_URL") == "1":
+            return explicit
+        logger.warning(
+            "Ignoring ANTHROPIC_BASE_URL=%r: it points at a non-MiniMax host and "
+            "MUSCLE only authenticates to MiniMax (sending the MiniMax credential "
+            "elsewhere would leak it). Falling back to the MiniMax default. Set "
+            "MUSCLE_ALLOW_CUSTOM_BASE_URL=1 to allow a custom proxy/gateway URL.",
+            explicit,
+        )
     explicit_io = os.environ.get("MINIMAX_API_BASE")
     if explicit_io == "io":
         return ANTHROPIC_BASE_URL_IO
@@ -596,24 +627,25 @@ class M27Client:
         response_format: dict[str, Any] | None = None,
         _metadata_sink: dict[str, Any] | None = None,
     ) -> tuple[str, TokenUsage]:
+        # Type errors are programming bugs, not recoverable conditions: a plain
+        # string passed where a list is expected used to log and return an empty
+        # ("", TokenUsage()) success, silently masking the caller's mistake. Raise
+        # so the bug surfaces at the call site. (Check type before truthiness so a
+        # non-list — e.g. "" — raises rather than being treated as "empty".)
+        if not isinstance(messages, list):
+            raise TypeError(f"messages must be a list, got {type(messages).__name__}")
+
         if not messages:
             logger.error("Empty messages list provided to chat()")
             return "", TokenUsage()
 
-        if not isinstance(messages, list):
-            logger.error(f"Messages must be a list, got {type(messages).__name__}")
-            return "", TokenUsage()
-
         for i, msg in enumerate(messages):
             if not isinstance(msg, dict):
-                logger.error(f"Message at index {i} is not a dict: {type(msg).__name__}")
-                return "", TokenUsage()
+                raise TypeError(f"messages[{i}] must be a dict, got {type(msg).__name__}")
             if "role" not in msg or "content" not in msg:
-                logger.error(f"Message at index {i} missing 'role' or 'content'")
-                return "", TokenUsage()
+                raise ValueError(f"messages[{i}] missing 'role' or 'content'")
             if not isinstance(msg.get("content", ""), str):
-                logger.error(f"Message content at index {i} is not a string")
-                return "", TokenUsage()
+                raise TypeError(f"messages[{i}]['content'] must be a string")
 
         has_system_in_messages = any(msg.get("role") == "system" for msg in messages)
         effective_system = (
@@ -938,6 +970,10 @@ class M27Client:
         telemetry_context: TelemetryContext | None = None,
         thinking: str | None = None,
     ) -> Iterator[tuple[str, TokenUsage | None]]:
+        # Same contract as chat(): a non-list messages argument is a caller bug,
+        # not a recoverable condition. Raise rather than streaming garbage.
+        if not isinstance(messages, list):
+            raise TypeError(f"messages must be a list, got {type(messages).__name__}")
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -1255,10 +1291,14 @@ class M27Client:
                     self._structured_cache_hits += 1
                     self._structured_cache_tokens_saved += max_tokens
                 validated = schema.model_validate(cached)
-                cached_usage = TokenUsage(
-                    input_tokens=max_tokens // 2,
-                    output_tokens=max_tokens // 2,
-                )
+                # A cache hit costs ZERO new tokens, so report zero usage.
+                # Synthesizing max_tokens//2 / max_tokens//2 here fabricated spend
+                # that flowed into ReviewStats and delegation cost accounting as if
+                # real. tokens_saved_estimate keeps the heuristic (max_tokens): the
+                # ResponseCache only persists the validated response dict plus a
+                # tokens_saved column it never returns from get(), so the original
+                # call's real input/output split is not recoverable on a hit.
+                cached_usage = TokenUsage()
                 metadata = StructuredCallMetadata(
                     usage=cached_usage,
                     cache_hit=True,

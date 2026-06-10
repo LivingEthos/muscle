@@ -195,14 +195,73 @@ class TestDetectApiBase:
                 result = _detect_api_base()
         assert result == ANTHROPIC_BASE_URL_IO
 
-    def test_respects_anthropic_base_url_env(self):
+    def test_minimax_io_base_url_honored(self):
         with patch.dict(
             "os.environ",
-            {"ANTHROPIC_BASE_URL": "https://custom.example.com/anthropic"},
+            {"ANTHROPIC_BASE_URL": "https://api.minimax.io/anthropic"},
             clear=True,
         ):
             result = _detect_api_base()
-        assert result == "https://custom.example.com/anthropic"
+        assert result == "https://api.minimax.io/anthropic"
+
+    def test_minimaxi_com_base_url_honored(self):
+        with patch.dict(
+            "os.environ",
+            {"ANTHROPIC_BASE_URL": "https://api.minimaxi.com/anthropic"},
+            clear=True,
+        ):
+            result = _detect_api_base()
+        assert result == "https://api.minimaxi.com/anthropic"
+
+    def test_custom_minimax_host_honored(self):
+        # Any host containing "minimax" (e.g. regional variants) is honored.
+        with patch.dict(
+            "os.environ",
+            {"ANTHROPIC_BASE_URL": "https://minimax-proxy.internal.corp/anthropic"},
+            clear=True,
+        ):
+            result = _detect_api_base()
+        assert result == "https://minimax-proxy.internal.corp/anthropic"
+
+    def test_hijacked_anthropic_base_url_ignored_with_warning(self, caplog):
+        # Claude Code exports ANTHROPIC_BASE_URL=https://api.anthropic.com; MUSCLE
+        # must NOT honor it (would leak the MiniMax credential) and must fall back.
+        import logging
+
+        with patch.dict(
+            "os.environ",
+            {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"},
+            clear=True,
+        ):
+            with caplog.at_level(logging.WARNING):
+                result = _detect_api_base()
+        assert result == ANTHROPIC_BASE_URL_IO
+        assert any(
+            "ANTHROPIC_BASE_URL" in r.message and "MUSCLE_ALLOW_CUSTOM_BASE_URL" in r.message
+            for r in caplog.records
+        )
+
+    def test_minimax_only_in_path_is_rejected(self):
+        # Spoofing defense: "minimax" appears only in the URL path, not the host.
+        with patch.dict(
+            "os.environ",
+            {"ANTHROPIC_BASE_URL": "https://evil.com/minimax/path"},
+            clear=True,
+        ):
+            result = _detect_api_base()
+        assert result == ANTHROPIC_BASE_URL_IO
+
+    def test_escape_hatch_honors_arbitrary_url(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "ANTHROPIC_BASE_URL": "https://gateway.example.com/anthropic",
+                "MUSCLE_ALLOW_CUSTOM_BASE_URL": "1",
+            },
+            clear=True,
+        ):
+            result = _detect_api_base()
+        assert result == "https://gateway.example.com/anthropic"
 
     def test_explicit_io_env(self):
         with patch.dict(
@@ -275,35 +334,37 @@ class TestChatValidation:
         assert result == ""
         assert usage.total == 0
 
-    def test_messages_not_a_list(self, mock_client):
+    def test_messages_not_a_list_raises(self, mock_client):
+        # A plain string used to return a silent empty success; it must raise.
         client, _ = mock_client
-        result, usage = client.chat("not a list")
-        assert result == ""
-        assert usage.total == 0
+        with pytest.raises(TypeError, match="messages must be a list"):
+            client.chat("not a list")
 
-    def test_message_not_a_dict(self, mock_client):
+    def test_message_not_a_dict_raises(self, mock_client):
         client, _ = mock_client
-        result, usage = client.chat(["string instead of dict"])
-        assert result == ""
-        assert usage.total == 0
+        with pytest.raises(TypeError, match="must be a dict"):
+            client.chat(["string instead of dict"])
 
-    def test_message_missing_role(self, mock_client):
+    def test_message_missing_role_raises(self, mock_client):
         client, _ = mock_client
-        result, usage = client.chat([{"content": "hello"}])
-        assert result == ""
-        assert usage.total == 0
+        with pytest.raises(ValueError, match="missing 'role' or 'content'"):
+            client.chat([{"content": "hello"}])
 
-    def test_message_missing_content(self, mock_client):
+    def test_message_missing_content_raises(self, mock_client):
         client, _ = mock_client
-        result, usage = client.chat([{"role": "user"}])
-        assert result == ""
-        assert usage.total == 0
+        with pytest.raises(ValueError, match="missing 'role' or 'content'"):
+            client.chat([{"role": "user"}])
 
-    def test_message_content_not_string(self, mock_client):
+    def test_message_content_not_string_raises(self, mock_client):
         client, _ = mock_client
-        result, usage = client.chat([{"role": "user", "content": 123}])
-        assert result == ""
-        assert usage.total == 0
+        with pytest.raises(TypeError, match="must be a string"):
+            client.chat([{"role": "user", "content": 123}])
+
+    def test_chat_streaming_not_a_list_raises(self, mock_client):
+        client, _ = mock_client
+        with pytest.raises(TypeError, match="messages must be a list"):
+            # Generator: consume to trigger the eager guard.
+            next(client.chat_streaming("not a list"))
 
 
 class TestChatSuccess:
@@ -1420,3 +1481,31 @@ class TestChatStructuredTruncationAndKey:
             _, meta_b = client.chat_structured(schema_cls, msgs_b, include_metadata=True)
 
         assert meta_a.cache_key != meta_b.cache_key, "history must influence cache key (L12)"
+
+    def test_cache_hit_reports_zero_usage(self, mock_client, tmp_path):
+        """A2: a cache hit costs ZERO new tokens; usage must not be fabricated."""
+        client, _ = mock_client
+        client._cache_db_path = tmp_path / "c.db"
+        schema_cls = self._schema()
+        msgs = [{"role": "user", "content": "go"}]
+
+        # First call populates the cache (real spend recorded).
+        with patch.object(
+            client, "chat", side_effect=self._make_chat_stub('{"value": 9}', truncated=False)
+        ):
+            _, meta_first = client.chat_structured(schema_cls, msgs, include_metadata=True)
+        assert meta_first.cache_hit is False
+        assert meta_first.usage.total > 0  # real spend on the miss
+
+        # Second call hits the cache. chat() must NOT be invoked, and usage is zero.
+        with patch.object(client, "chat", side_effect=AssertionError("chat() called on hit")):
+            result, meta = client.chat_structured(schema_cls, msgs, include_metadata=True)
+
+        assert result.value == 9
+        assert meta.cache_hit is True
+        assert meta.usage.total == 0
+        assert meta.usage.input_tokens == 0
+        assert meta.usage.output_tokens == 0
+        # Savings estimate is preserved (heuristic, since the cache does not persist
+        # the original call's input/output split — only the response dict).
+        assert meta.tokens_saved_estimate > 0
