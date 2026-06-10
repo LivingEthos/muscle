@@ -52,8 +52,8 @@ def test_lifeline_attaches_history_forensics(tmp_path: Path) -> None:
             assert "Git history forensics" in messages[1]["content"]
             return "ok", MagicMock(total=42)
 
-    with patch("muscle.m27_client.M27Client", _FakeClient):
-        with patch("muscle.cli._resolve_project_context", return_value=(tmp_path, None)):
+    with patch("muscle.cli.cost.M27Client", _FakeClient):
+        with patch("muscle.cli.cost._resolve_project_context", return_value=(tmp_path, None)):
             with patch("muscle.git_history_forensics.GitHistoryForensics") as mock_cls:
                 mock_forensics = MagicMock()
                 mock_forensics.analyze.return_value = {

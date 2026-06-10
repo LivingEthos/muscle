@@ -194,8 +194,8 @@ class TestReviewCommand:
         env["MINIMAX_API_KEY"] = "test-key"
 
         with (
-            patch("muscle.cli.ProjectMemory") as mock_project_memory,
-            patch("muscle.cli.LearningPipeline") as mock_learning_pipeline,
+            patch("muscle.cli.review.ProjectMemory") as mock_project_memory,
+            patch("muscle.cli.review.LearningPipeline") as mock_learning_pipeline,
         ):
             result = runner.invoke(
                 cli,
@@ -217,7 +217,7 @@ class TestReviewCommand:
         env["MINIMAX_API_KEY"] = "test-key"
 
         with patch(
-            "muscle.cli.ModelPackManager",
+            "muscle.cli._shared.ModelPackManager",
             side_effect=AssertionError("review should not instantiate remote model-pack flows"),
         ):
             result = runner.invoke(
@@ -491,7 +491,7 @@ class TestReviewLearningIntegration:
                 return_value=mock_controller,
             ),
             patch(
-                "muscle.cli.LearningPipeline",
+                "muscle.cli.review.LearningPipeline",
                 return_value=mock_pipeline,
             ) as mock_pipeline_class,
         ):
@@ -538,7 +538,7 @@ class TestReviewLearningIntegration:
                 return_value=mock_controller,
             ),
             patch(
-                "muscle.cli.LearningPipeline",
+                "muscle.cli.review.LearningPipeline",
                 return_value=mock_pipeline,
             ),
         ):

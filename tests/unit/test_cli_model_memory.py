@@ -304,7 +304,7 @@ def test_model_pack_install_from_repo_command(
                 pack_path=str(tmp_path / ".muscle" / "cache-pack"),
             )
 
-    monkeypatch.setattr("muscle.cli.ModelPackManager", StubManager)
+    monkeypatch.setattr("muscle.cli.model.ModelPackManager", StubManager)
 
     with pytest.MonkeyPatch.context() as chdir_patch:
         chdir_patch.chdir(tmp_path)
@@ -369,7 +369,7 @@ def test_model_pack_update_command(
                 pack_path=str(tmp_path / ".muscle" / "cache-pack"),
             )
 
-    monkeypatch.setattr("muscle.cli.ModelPackManager", StubManager)
+    monkeypatch.setattr("muscle.cli.model.ModelPackManager", StubManager)
 
     with pytest.MonkeyPatch.context() as chdir_patch:
         chdir_patch.chdir(tmp_path)
@@ -435,7 +435,7 @@ def test_model_pack_submit_reuses_existing_submission_output(
                 "duplicate_of_export_id": "abc123",
             }
 
-    monkeypatch.setattr("muscle.cli.ModelPackManager", StubManager)
+    monkeypatch.setattr("muscle.cli.model.ModelPackManager", StubManager)
 
     with pytest.MonkeyPatch.context() as chdir_patch:
         chdir_patch.chdir(tmp_path)

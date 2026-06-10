@@ -209,7 +209,7 @@ class TestKBCLI:
 
     def test_kb_knowledge_add(self, runner: CliRunner):
         """kb knowledge-add should add a strategy."""
-        with patch("muscle.cli.GlobalKnowledgeBase") as mock_kb_cls:
+        with patch("muscle.cli.memory.GlobalKnowledgeBase") as mock_kb_cls:
             mock_kb = MagicMock()
             mock_kb.add_solution.return_value = 42
             mock_kb_cls.return_value = mock_kb
@@ -428,7 +428,7 @@ class TestLongEvalCLI:
             mock_cls.return_value = mock_runner
 
             with patch(
-                "muscle.cli._run_benchmark_release_invariants",
+                "muscle.cli.cost._run_benchmark_release_invariants",
                 return_value={"checked": True, "passed": True, "summary": "ok", "details": {}},
             ):
                 result = runner.invoke(cli, ["long-eval", "benchmark", "--enforce-gates"])

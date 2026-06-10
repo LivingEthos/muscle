@@ -466,9 +466,9 @@ class TestInitCommand:
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.setattr("muscle.cli._requested_model_label", lambda: "opaque-gateway")
+        monkeypatch.setattr("muscle.cli.lifecycle._requested_model_label", lambda: "opaque-gateway")
         monkeypatch.setattr(
-            "muscle.cli._provider_endpoint",
+            "muscle.cli.lifecycle._provider_endpoint",
             lambda: "https://gateway.example/anthropic",
         )
 
@@ -715,7 +715,7 @@ class TestResumeCommand:
             "status": SessionStatus.SUCCESS.value,
         }
 
-        with patch("muscle.cli.SessionManager", return_value=mock_manager):
+        with patch("muscle.cli.loop.SessionManager", return_value=mock_manager):
             result = runner.invoke(resume, ["done-123"], catch_exceptions=False)
 
         assert result.exit_code == 1
@@ -729,9 +729,9 @@ class TestResumeCommand:
             "status": SessionStatus.RUNNING.value,
         }
 
-        with patch("muscle.cli.SessionManager", return_value=mock_manager):
-            with patch("muscle.cli._read_session_pid", return_value=4242):
-                with patch("muscle.cli._is_process_alive", return_value=True):
+        with patch("muscle.cli.loop.SessionManager", return_value=mock_manager):
+            with patch("muscle.cli.loop._read_session_pid", return_value=4242):
+                with patch("muscle.cli.loop._is_process_alive", return_value=True):
                     result = runner.invoke(resume, ["running-123"], catch_exceptions=False)
 
         assert result.exit_code == 1
@@ -778,20 +778,20 @@ class TestResumeCommand:
         )
         mock_controller.run.return_value = resumed_ctx
 
-        with patch("muscle.cli.SessionManager", return_value=mock_manager):
-            with patch("muscle.cli._create_m27_client") as mock_create_client:
+        with patch("muscle.cli.loop.SessionManager", return_value=mock_manager):
+            with patch("muscle.cli.loop._create_m27_client") as mock_create_client:
                 mock_create_client.return_value.api_key = "test-key"
-                with patch("muscle.cli.CodeGenerator"):
-                    with patch("muscle.cli.Evolver"):
-                        with patch("muscle.cli.BudgetManager"):
+                with patch("muscle.cli.loop.CodeGenerator"):
+                    with patch("muscle.cli.loop.Evolver"):
+                        with patch("muscle.cli.loop.BudgetManager"):
                             with patch(
-                                "muscle.cli.LoopController", return_value=mock_controller
+                                "muscle.cli.loop.LoopController", return_value=mock_controller
                             ):
-                                with patch("muscle.cli.Progress") as mock_progress:
+                                with patch("muscle.cli.loop.Progress") as mock_progress:
                                     mock_progress.return_value.__enter__.return_value.add_task = (
                                         MagicMock()
                                     )
-                                    with patch("muscle.cli.Live") as mock_live:
+                                    with patch("muscle.cli.loop.Live") as mock_live:
                                         mock_live.return_value.start = MagicMock()
                                         mock_live.return_value.stop = MagicMock()
                                         result = runner.invoke(
@@ -1109,7 +1109,7 @@ class TestLongEvalGroup:
             mock_runner.write_release_evidence.return_value = {"json": "/tmp/release.json"}
             mock_cls.return_value = mock_runner
             with patch(
-                "muscle.cli._run_benchmark_release_invariants",
+                "muscle.cli.cost._run_benchmark_release_invariants",
                 return_value={"checked": True, "passed": True, "summary": "ok", "details": {}},
             ) as mock_invariants:
                 result = runner.invoke(
@@ -1342,8 +1342,8 @@ class TestLifelineCommand:
                 assert "Git history forensics" in messages[1]["content"]
                 return "ok", MagicMock(total=42)
 
-        with patch("muscle.m27_client.M27Client", _FakeClient):
-            with patch("muscle.cli._resolve_project_context", return_value=(tmp_path, None)):
+        with patch("muscle.cli.cost.M27Client", _FakeClient):
+            with patch("muscle.cli.cost._resolve_project_context", return_value=(tmp_path, None)):
                 with patch("muscle.git_history_forensics.GitHistoryForensics") as mock_cls:
                     mock_forensics = MagicMock()
                     mock_forensics.analyze.return_value = {
@@ -1428,17 +1428,17 @@ class TestRunCommand:
         mock_live_instance.start = MagicMock()
         mock_live_instance.stop = MagicMock()
 
-        with patch("muscle.cli._create_m27_client") as mock_create_client:
+        with patch("muscle.cli.loop._create_m27_client") as mock_create_client:
             mock_client = MagicMock()
             mock_client.api_key = "test-key"
             mock_client.chat.return_value = ("code", MagicMock(total=100))
             mock_create_client.return_value = mock_client
 
-            with patch("muscle.cli.CodeGenerator"):
-                with patch("muscle.cli.Evolver"):
-                    with patch("muscle.cli.BudgetManager"):
-                        with patch("muscle.cli.LoopController") as mock_lc:
-                            with patch("muscle.cli.Live", return_value=mock_live_instance):
+            with patch("muscle.cli.loop.CodeGenerator"):
+                with patch("muscle.cli.loop.Evolver"):
+                    with patch("muscle.cli.loop.BudgetManager"):
+                        with patch("muscle.cli.loop.LoopController") as mock_lc:
+                            with patch("muscle.cli.loop.Live", return_value=mock_live_instance):
                                 mock_lc.return_value.run.side_effect = KeyboardInterrupt
                                 mock_lc.return_value.get_session_report.return_value = None
                                 mock_lc.return_value.request_abort = MagicMock()
@@ -1475,17 +1475,17 @@ class TestRunCommand:
         mock_live_instance.start = MagicMock()
         mock_live_instance.stop = MagicMock()
 
-        with patch("muscle.cli._create_m27_client") as mock_create_client:
+        with patch("muscle.cli.loop._create_m27_client") as mock_create_client:
             mock_client = MagicMock()
             mock_client.api_key = "test-key"
             mock_client.chat.return_value = ("code", MagicMock(total=100))
             mock_create_client.return_value = mock_client
 
-            with patch("muscle.cli.CodeGenerator"):
-                with patch("muscle.cli.Evolver"):
-                    with patch("muscle.cli.BudgetManager"):
-                        with patch("muscle.cli.LoopController") as mock_lc:
-                            with patch("muscle.cli.Live", return_value=mock_live_instance):
+            with patch("muscle.cli.loop.CodeGenerator"):
+                with patch("muscle.cli.loop.Evolver"):
+                    with patch("muscle.cli.loop.BudgetManager"):
+                        with patch("muscle.cli.loop.LoopController") as mock_lc:
+                            with patch("muscle.cli.loop.Live", return_value=mock_live_instance):
                                 mock_ctx = MagicMock()
                                 mock_ctx.session_id = "test-session"
                                 mock_ctx.stats.status = SessionStatus.SUCCESS
@@ -1551,7 +1551,7 @@ class TestMemoryGroup:
         # TEST-07: isolate CWD so the command never falls back to the caller's
         # .muscle/project_memory.db.
         monkeypatch.chdir(tmp_path)
-        with patch("muscle.cli.ProjectMemory", return_value=mock_project_memory):
+        with patch("muscle.cli.memory.ProjectMemory", return_value=mock_project_memory):
             result = runner.invoke(memory_status, [], catch_exceptions=False)
         assert result.exit_code == 0
         assert "Memory Status" in result.output
@@ -1559,7 +1559,7 @@ class TestMemoryGroup:
     def test_memory_status_shows_db_path(self, runner, mock_project_memory, tmp_path, monkeypatch):
         """memory status shows database path."""
         monkeypatch.chdir(tmp_path)
-        with patch("muscle.cli.ProjectMemory", return_value=mock_project_memory):
+        with patch("muscle.cli.memory.ProjectMemory", return_value=mock_project_memory):
             result = runner.invoke(memory_status, [], catch_exceptions=False)
         assert result.exit_code == 0
         # Verify the table header and at least the "Database" row label appears
@@ -1569,14 +1569,14 @@ class TestMemoryGroup:
     def test_memory_history_empty(self, runner, mock_project_memory, tmp_path, monkeypatch):
         """memory history should succeed even with no data."""
         monkeypatch.chdir(tmp_path)
-        with patch("muscle.cli.ProjectMemory", return_value=mock_project_memory):
+        with patch("muscle.cli.memory.ProjectMemory", return_value=mock_project_memory):
             result = runner.invoke(memory_history, [], catch_exceptions=False)
         assert result.exit_code == 0
 
     def test_memory_history_with_limit(self, runner, mock_project_memory, tmp_path, monkeypatch):
         """memory history accepts --limit flag."""
         monkeypatch.chdir(tmp_path)
-        with patch("muscle.cli.ProjectMemory", return_value=mock_project_memory):
+        with patch("muscle.cli.memory.ProjectMemory", return_value=mock_project_memory):
             result = runner.invoke(memory_history, ["--limit", "5"], catch_exceptions=False)
         assert result.exit_code == 0
 
