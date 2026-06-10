@@ -1260,6 +1260,12 @@ class M27Client:
         schema_hint = (
             f"Reply ONLY with valid JSON matching this schema:\n{schema.model_json_schema()}"
         )
+        # Schemas may opt into an extra, schema-specific instruction line via a
+        # ``schema_hint_suffix`` class attribute (e.g. ReviewFindings steers M3
+        # toward a flat, non-nested array). Generic for all other schemas.
+        schema_hint_suffix = getattr(schema, "schema_hint_suffix", None)
+        if isinstance(schema_hint_suffix, str) and schema_hint_suffix:
+            schema_hint = f"{schema_hint}\n\n{schema_hint_suffix}"
         system_with_schema = f"{system}\n\n{schema_hint}" if system else schema_hint
 
         # --- Cache lookup ---
