@@ -59,17 +59,42 @@ class TestReviewFinding:
                 reasoning="r",
             )
 
-    def test_line_number_must_be_positive(self) -> None:
+    def test_negative_line_number_rejected(self) -> None:
         with pytest.raises(ValidationError):
             ReviewFinding(
                 file_path="a.py",
-                line_number=0,
+                line_number=-1,
                 severity="high",
                 category="correctness",
                 title="t",
                 description="d",
                 reasoning="r",
             )
+
+    def test_line_number_omitted_defaults_to_none(self) -> None:
+        # A line-less finding is represented as None (not fabricated line 1) so
+        # downstream emitters can render JSON null.
+        f = ReviewFinding(
+            file_path="a.py",
+            severity="high",
+            category="correctness",
+            title="t",
+            description="d",
+            reasoning="r",
+        )
+        assert f.line_number is None
+
+    def test_line_number_zero_allowed_as_unknown(self) -> None:
+        f = ReviewFinding(
+            file_path="a.py",
+            line_number=0,
+            severity="high",
+            category="correctness",
+            title="t",
+            description="d",
+            reasoning="r",
+        )
+        assert f.line_number == 0
 
     def test_optional_fields_default(self) -> None:
         f = ReviewFinding(
@@ -179,6 +204,7 @@ class TestRouteDecisionSchema:
                 confidence=0.8,
                 rationale="bad",
             )
+
 
 class TestStripJsonFences:
     def test_no_fences(self) -> None:

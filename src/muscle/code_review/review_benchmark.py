@@ -647,6 +647,16 @@ class ReviewBenchmarkRunner:
         expected: BenchmarkExpectedFinding,
         scenario_target_path: str,
     ) -> bool:
+        # Note on the live "legacy 0% recall" finding: this matcher is mechanically
+        # correct for legacy-shaped findings. Legacy (M3) findings are ReviewIssue
+        # objects, so attribute access (issue.title / issue.description / issue.
+        # severity.value) is right; _relative_issue_path collapses both absolute
+        # scan paths and model-echoed basenames to the same relative form; and
+        # severity is compared numerically via the Severity enum value (case-
+        # insensitive). The observed 0% recall therefore reflected the legacy M3
+        # run genuinely surfacing differently-worded findings that did not contain
+        # the manifest's substring matchers — NOT a field/shape/case mismatch. The
+        # fix is to keep matchers honest, not to loosen them to fit legacy output.
         relative_path = self._relative_issue_path(issue.file_path, scenario_target_path)
         if relative_path != expected.file_path:
             return False
@@ -868,6 +878,10 @@ class ReviewBenchmarkRunner:
                 candidate_prompt_tokens,
             )
             bucket["prompt_overhead_basis"] = prompt_basis
+            # The ratio is measurable only when both sides carry a real token
+            # basis. A None ratio with a positive baseline means the candidate
+            # spent nothing — surfaced as not-measurable rather than a pass.
+            bucket["prompt_overhead_measurable"] = bucket["prompt_overhead_ratio"] is not None
             bucket["token_overhead_ratio"] = self._token_overhead_ratio(
                 bucket["baseline"]["tokens_used"],
                 bucket["candidate"]["tokens_used"],
@@ -877,7 +891,11 @@ class ReviewBenchmarkRunner:
 
     @staticmethod
     def _token_overhead_ratio(baseline_tokens: int, candidate_tokens: int) -> float | None:
-        if baseline_tokens <= 0:
+        # Not measurable when either side has no basis: a zero baseline has no
+        # ratio at all, and a zero candidate would yield ratio 0.0 that passes any
+        # budget vacuously. In both cases return None so the gate treats it as
+        # not-measurable rather than a within-limit pass.
+        if baseline_tokens <= 0 or candidate_tokens <= 0:
             return None
         return candidate_tokens / baseline_tokens
 
@@ -978,12 +996,18 @@ class ReviewBenchmarkRunner:
             suite for suite in PROMPT_OVERHEAD_LIMITS if suite not in suite_aggregates
         ]
         prompt_failures: list[dict[str, Any]] = []
+        prompt_not_measurable: list[str] = []
         for suite, limit in PROMPT_OVERHEAD_LIMITS.items():
             metrics = suite_aggregates.get(suite)
             if metrics is None:
                 continue
             ratio = metrics.get("prompt_overhead_ratio")
-            if ratio is not None and float(ratio) > float(limit):
+            if ratio is None:
+                # Candidate basis telemetry is 0: the ratio is not measurable, so
+                # it must not be read as a within-budget pass.
+                prompt_not_measurable.append(suite)
+                continue
+            if float(ratio) > float(limit):
                 prompt_failures.append(
                     {
                         "suite": suite,
@@ -996,6 +1020,7 @@ class ReviewBenchmarkRunner:
             "summary": "Candidate prompt-side overhead must stay within per-suite budget ratios.",
             "missing_suites": prompt_missing,
             "failing_suites": prompt_failures,
+            "not_measurable_suites": prompt_not_measurable,
             "limits": PROMPT_OVERHEAD_LIMITS,
         }
 
@@ -1123,17 +1148,33 @@ class ReviewBenchmarkRunner:
         recall_delta = candidate["high_critical_recall"] - baseline["high_critical_recall"]
         false_positive_delta = candidate["false_positive_rate"] - baseline["false_positive_rate"]
 
+        # A candidate that made zero LLM calls (or spent zero tokens) carries the
+        # fixtures purely on deterministic detectors. The token-reduction ratio is
+        # then 1.0 against any nonzero baseline, which would PASS the 30%-down gate
+        # vacuously. Mirror the "empty benchmark must not silently pass" rule: when
+        # the candidate basis is empty, report the gate as insufficient_data /
+        # not-applicable rather than a pass.
+        candidate_llm_calls = int(candidate.get("llm_call_count", 0) or 0)
+        candidate_tokens = int(candidate.get("tokens_used", 0) or 0)
+        candidate_measurable = candidate_llm_calls > 0 and candidate_tokens > 0
+
         token_reduction: float | None = None
-        if baseline["tokens_used"] > 0:
+        if candidate_measurable and baseline["tokens_used"] > 0:
             token_reduction = 1 - (candidate["tokens_used"] / baseline["tokens_used"])
+
+        if not candidate_measurable:
+            token_cost_gate: bool | str = "insufficient_data"
+        else:
+            token_cost_gate = token_reduction is not None and token_reduction >= 0.3
 
         return {
             "high_critical_recall_up_20pct": recall_delta >= 0.2,
             "false_positive_rate_not_worse": false_positive_delta <= 0,
-            "token_cost_down_30pct": token_reduction is not None and token_reduction >= 0.3,
+            "token_cost_down_30pct": token_cost_gate,
             "high_critical_recall_delta": recall_delta,
             "false_positive_rate_delta": false_positive_delta,
             "token_cost_reduction": token_reduction,
+            "candidate_token_basis_measurable": candidate_measurable,
         }
 
     def _history_summary(self) -> dict[str, Any]:

@@ -26,10 +26,15 @@ class ReviewFinding(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     file_path: str = ""
-    line_number: int = Field(default=1, ge=1)
+    # ``None`` means the model did not report a line. We deliberately do NOT
+    # default to 1: fabricating line 1 makes a line-less finding indistinguishable
+    # from one genuinely on line 1. Downstream emitters surface this as JSON null.
+    line_number: int | None = Field(default=None, ge=0)
     severity: str
     category: str = "best_practice"
-    title: str = "Code issue"
+    # Empty by default so the finding parser can derive a real title from the
+    # description instead of stamping a constant "Code issue" placeholder.
+    title: str = ""
     description: str = ""
     valid: bool = True
     cwe_id: str | None = None

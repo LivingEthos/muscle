@@ -936,3 +936,86 @@ class TestSecretRedaction:
         assert issues
         assert all(secret not in i.description for i in issues)
         assert all(secret not in i.title for i in issues)
+
+
+class TestFindingNormalization:
+    """Regression tests for B2: title/line/description degradation."""
+
+    @staticmethod
+    def _findings(**overrides):
+        item = {
+            "file_path": "a.py",
+            "severity": "high",
+            "category": "correctness",
+            "valid": True,
+        }
+        item.update(overrides)
+        return ReviewFindings.model_validate({"reviews": [item], "summary": {}})
+
+    def test_missing_title_derived_from_description(self):
+        findings = self._findings(
+            description="Unvalidated path traversal lets an attacker escape the root. Fix it.",
+        )
+        issues = CodeReviewer._reviews_from_structured(findings, "a.py")
+        assert len(issues) == 1
+        # First sentence of the description, not the constant placeholder.
+        assert issues[0].title == "Unvalidated path traversal lets an attacker escape the root"
+        assert issues[0].title != "Code issue"
+
+    def test_placeholder_title_with_description_is_derived(self):
+        findings = self._findings(
+            title="Code issue",
+            description="Race condition on the shared cache dict under concurrent writes.",
+        )
+        issues = CodeReviewer._reviews_from_structured(findings, "a.py")
+        assert len(issues) == 1
+        assert issues[0].title.startswith("Race condition on the shared cache")
+        assert issues[0].title != "Code issue"
+
+    def test_real_title_empty_description_keeps_title(self):
+        findings = self._findings(title="Null dereference", description="")
+        issues = CodeReviewer._reviews_from_structured(findings, "a.py")
+        assert len(issues) == 1
+        assert issues[0].title == "Null dereference"
+        assert issues[0].description == "Null dereference"
+
+    def test_empty_everything_finding_dropped(self):
+        findings = self._findings(title="", description="")
+        issues = CodeReviewer._reviews_from_structured(findings, "a.py")
+        assert issues == []
+
+    def test_placeholder_title_empty_description_dropped(self):
+        findings = self._findings(title="Code issue", description="")
+        issues = CodeReviewer._reviews_from_structured(findings, "a.py")
+        assert issues == []
+
+    def test_missing_line_number_passes_through_as_zero(self):
+        # The model omitted line_number -> None on the schema -> 0 on the issue
+        # (== unknown). The CLI emitter renders this as JSON null.
+        findings = self._findings(description="A bug with no line.")
+        issues = CodeReviewer._reviews_from_structured(findings, "a.py")
+        assert len(issues) == 1
+        assert issues[0].line_number == 0
+
+    def test_payload_path_drops_empty_finding(self):
+        payload = {
+            "reviews": [
+                {"valid": True, "severity": "HIGH", "title": "", "description": ""},
+            ]
+        }
+        issues = CodeReviewer._reviews_from_payload(payload, "a.py")
+        assert issues == []
+
+    def test_payload_path_derives_title(self):
+        payload = {
+            "reviews": [
+                {
+                    "valid": True,
+                    "severity": "HIGH",
+                    "description": "Missing auth check on the admin route. Add a guard.",
+                },
+            ]
+        }
+        issues = CodeReviewer._reviews_from_payload(payload, "a.py")
+        assert len(issues) == 1
+        assert issues[0].title == "Missing auth check on the admin route"

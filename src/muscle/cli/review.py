@@ -35,6 +35,68 @@ from ._shared import (
     logger,
 )
 
+_ZERO_ACTIVITY_WARNING = "semantic review pass recorded no LLM activity; results may be incomplete"
+
+
+def _relative_finding_path(file_path: str, target_path: str) -> str:
+    """Normalize a finding's file path to be relative to the review target root.
+
+    Live output mixed basenames and absolute paths in a single run because
+    findings can carry either the model-echoed path or the absolute scan path.
+    We normalize at the emitter so every issue's ``file`` is consistently
+    relative to the target root (its parent dir when the target is a file).
+    """
+    try:
+        target = Path(target_path).resolve()
+        base = target.parent if (target.is_file() or target.suffix) else target
+        resolved = Path(file_path)
+        if not resolved.is_absolute():
+            resolved = (base / resolved).resolve()
+        else:
+            resolved = resolved.resolve()
+        try:
+            return str(resolved.relative_to(base))
+        except ValueError:
+            return resolved.name
+    except Exception:
+        return Path(file_path).name
+
+
+def _detect_review_warnings(review_result: Any, stats: Any) -> list[str]:
+    """Detect degenerate review outcomes that should not read as a clean pass.
+
+    A review is degenerate when the scope contained at least one reviewable file
+    and an LLM client was configured, yet the semantic pass recorded zero LLM
+    token spend AND produced zero findings. Zero LLM tokens WITH findings is
+    legitimate (deterministic detectors), so only zero-tokens + zero-findings +
+    nonempty-scope is flagged.
+
+    Note on cache hits: ``ReviewStats`` carries no cache-hit counter (cache
+    metrics are consumed separately by the delegation recorder and never reach
+    this struct). The cache term is therefore omitted: MiniMax still bills
+    cached input tokens, so a genuine LLM call always yields nonzero
+    ``input_tokens`` — zero input+output tokens unambiguously means no semantic
+    call ran. The review command always configures an M27Client, so the
+    "client configured" precondition holds whenever this runs.
+    """
+    warnings: list[str] = []
+    try:
+        files_in_scope = int(getattr(review_result, "files_reviewed", 0) or 0)
+        finding_count = len(getattr(review_result, "issues", []) or [])
+        token_spend = int(getattr(stats, "input_tokens", 0) or 0) + int(
+            getattr(stats, "output_tokens", 0) or 0
+        )
+        if token_spend == 0:
+            # Fall back to the combined counter for resumed/legacy sessions whose
+            # split fields are still 0 but tokens_used is populated.
+            token_spend = int(getattr(stats, "tokens_used", 0) or 0)
+    except (TypeError, ValueError):
+        return warnings
+
+    if files_in_scope >= 1 and finding_count == 0 and token_spend == 0:
+        warnings.append(_ZERO_ACTIVITY_WARNING)
+    return warnings
+
 
 @cli.command(name="review")
 @click.option(
@@ -539,17 +601,30 @@ def review(
                     except Exception as e:
                         logger.warning(f"ChangeCapture failed: {e}")
 
+        review_warnings = (
+            _detect_review_warnings(review_result, result.stats)
+            if review_result is not None
+            else []
+        )
+        for warning_text in review_warnings:
+            logger.warning("Review warning: %s", warning_text)
+
         if json_output and review_result:
             output_data = {
                 "session_id": review_result.session_id,
                 "target_path": review_result.target_path,
                 "issues": [
                     {
-                        "file": i.file_path,
-                        "line": i.line_number,
+                        "file": _relative_finding_path(i.file_path, review_result.target_path),
+                        # 0 == "model reported no line"; emit JSON null rather than
+                        # fabricating a real line number.
+                        "line": i.line_number or None,
                         "severity": i.severity.name,
                         "category": i.category.value,
                         "title": i.title,
+                        "description": i.description,
+                        "suggested_fix": i.suggested_fix,
+                        "cwe_id": i.cwe_id,
                         "auto_fixable": i.auto_fixable,
                     }
                     for i in review_result.issues
@@ -565,6 +640,7 @@ def review(
                 "execution_mode": review_result.execution_mode,
                 "duration_seconds": result.stats.duration_seconds,
                 "tokens_used": result.stats.tokens_used,
+                "warnings": review_warnings,
             }
             _emit_json(output_data)
         else:
@@ -583,6 +659,8 @@ def review(
                     console.print(f"Low: {review_result.low_count}")
                 if review_result.info_count:
                     console.print(f"Info: {review_result.info_count}")
+                for warning_text in review_warnings:
+                    console.print(f"[yellow]Warning: {warning_text}[/yellow]")
                 if savings_estimate and savings_estimate.baseline_tokens is not None:
                     delta_label = "saved" if savings_estimate.delta_tokens >= 0 else "overspend"
                     console.print(

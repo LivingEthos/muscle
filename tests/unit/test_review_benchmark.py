@@ -276,6 +276,80 @@ class TestReviewBenchmarkRunner:
         assert metrics["high_critical_recall"] == 1.0
         assert metrics["false_positive_count"] == 1
 
+    def test_token_gate_insufficient_data_when_candidate_zero_tokens(self):
+        """A candidate that made zero LLM calls must not pass the 30%-down gate
+        vacuously — it reports insufficient_data instead."""
+        aggregate = {
+            "baseline": {
+                "high_critical_recall": 0.0,
+                "false_positive_rate": 1.0,
+                "tokens_used": 22107,
+            },
+            "candidate": {
+                "high_critical_recall": 0.0,
+                "false_positive_rate": 0.0,
+                "tokens_used": 0,
+                "llm_call_count": 0,
+            },
+        }
+        thresholds = benchmark_module.ReviewBenchmarkRunner._evaluate_thresholds(aggregate)
+        assert thresholds["token_cost_down_30pct"] == "insufficient_data"
+        assert thresholds["candidate_token_basis_measurable"] is False
+        assert thresholds["token_cost_reduction"] is None
+
+    def test_token_gate_measures_real_reduction(self):
+        aggregate = {
+            "baseline": {
+                "high_critical_recall": 0.5,
+                "false_positive_rate": 0.2,
+                "tokens_used": 1000,
+            },
+            "candidate": {
+                "high_critical_recall": 0.8,
+                "false_positive_rate": 0.1,
+                "tokens_used": 500,
+                "llm_call_count": 3,
+            },
+        }
+        thresholds = benchmark_module.ReviewBenchmarkRunner._evaluate_thresholds(aggregate)
+        assert thresholds["candidate_token_basis_measurable"] is True
+        assert thresholds["token_cost_down_30pct"] is True
+        assert thresholds["token_cost_reduction"] == 0.5
+
+    def test_prompt_overhead_ratio_not_measurable_with_zero_candidate(self):
+        # Zero candidate basis -> ratio None (not a vacuous within-budget pass).
+        assert benchmark_module.ReviewBenchmarkRunner._token_overhead_ratio(1000, 0) is None
+        assert benchmark_module.ReviewBenchmarkRunner._token_overhead_ratio(0, 500) is None
+        assert benchmark_module.ReviewBenchmarkRunner._token_overhead_ratio(1000, 500) == 0.5
+
+    def test_matcher_handles_legacy_shaped_finding(self, tmp_path: Path):
+        """Legacy (M3) findings are ReviewIssue objects with title-cased severity
+        names and a relative basename path; the matcher resolves both correctly."""
+        runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
+        scenario = benchmark_module.BenchmarkScenario(
+            name="sample",
+            suite="core-review",
+            target_path=str(tmp_path / "python" / "bad_code.py"),
+            false_positive_severity="medium",
+            expected_findings=[
+                benchmark_module.BenchmarkExpectedFinding(
+                    file_path="bad_code.py",
+                    minimum_severity="critical",
+                    matchers=["eval", "unsafe"],
+                )
+            ],
+        )
+        # Legacy-shaped finding: model echoed only the basename as file_path.
+        legacy_issue = _issue(
+            "bad_code.py",
+            Severity.CRITICAL,
+            "Unsafe eval of user input",
+            "Calling eval on attacker-controlled input.",
+        )
+        assert runner._issue_matches_expected(
+            legacy_issue, scenario.expected_findings[0], scenario.target_path
+        )
+
     def test_run_benchmark_writes_reports(self, tmp_path: Path):
         runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
         scenarios = [

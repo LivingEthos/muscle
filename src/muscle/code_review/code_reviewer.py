@@ -148,6 +148,60 @@ def _redact_issue(issue: ReviewIssue) -> ReviewIssue:
     )
 
 
+# Constant placeholder we refuse to ship: a finding titled this carries no signal
+# beyond its description, so we either derive a real title or drop the finding.
+_PLACEHOLDER_TITLE = "Code issue"
+
+
+def _derive_title_from_description(description: str) -> str:
+    """Build a human-usable title from the first sentence/clause of a description.
+
+    Used when the model omitted a title. Returns the first sentence (split on
+    ``.``) capped at 80 chars, or the first 80 chars if there is no sentence
+    break. Returns an empty string when the description is itself empty.
+    """
+    text = (description or "").strip()
+    if not text:
+        return ""
+    first_sentence = text.split(".", 1)[0].strip()
+    candidate = first_sentence or text
+    return candidate[:80].strip()
+
+
+def _normalize_finding_fields(
+    *,
+    title: str | None,
+    description: str | None,
+    line_number: int | None,
+) -> tuple[str, str, int] | None:
+    """Normalize a raw finding's title/description/line before construction.
+
+    Returns ``(title, description, line_number)`` or ``None`` when the finding
+    carries no information and must be dropped (empty description AND only the
+    placeholder/empty title). Rules:
+
+    - Missing/placeholder title + real description -> derive title from description.
+    - Real title + empty description -> keep title, set description = title.
+    - Empty/placeholder title + empty description -> drop (return None).
+    - Line ``None`` is preserved as ``0`` (== "unknown"; emitters render null).
+    """
+    raw_title = (title or "").strip()
+    raw_description = (description or "").strip()
+    is_placeholder = (not raw_title) or raw_title == _PLACEHOLDER_TITLE
+
+    if is_placeholder and not raw_description:
+        return None
+
+    if is_placeholder:
+        final_title = _derive_title_from_description(raw_description) or _PLACEHOLDER_TITLE
+    else:
+        final_title = raw_title
+
+    final_description = raw_description or final_title
+    final_line = int(line_number) if line_number is not None else 0
+    return final_title, final_description, final_line
+
+
 @lru_cache(maxsize=FILE_CONTENT_CACHE_SIZE)
 def _read_file_cached(file_path: str) -> str | None:
     try:
@@ -1174,17 +1228,25 @@ description, and line number. Format as a simple list."""
         )
         for match in pattern.finditer(text):
             title_desc = match.group(4).strip()
-            title = title_desc.split(".")[0].strip()[:100] or "Code issue"
+            raw_line = int(match.group(1)) if match.group(1) else None
+            normalized = _normalize_finding_fields(
+                title=None,
+                description=title_desc,
+                line_number=raw_line,
+            )
+            if normalized is None:
+                continue
+            title, description, line_number = normalized
             issues.append(
                 _redact_issue(
                     ReviewIssue(
                         file_path=default_file_path,
-                        line_number=int(match.group(1)) if match.group(1) else 0,
+                        line_number=line_number,
                         severity=cls._parse_severity(match.group(2) or "MEDIUM"),
                         category=cls._parse_category(match.group(3) or "best_practice"),
                         cwe_id=None,
                         title=title,
-                        description=title_desc,
+                        description=description,
                         code_snippet="",
                         suggested_fix=None,
                         auto_fixable=False,
@@ -1204,6 +1266,19 @@ description, and line number. Format as a simple list."""
             if not item.valid:
                 continue
 
+            normalized = _normalize_finding_fields(
+                title=item.title,
+                description=item.description,
+                line_number=item.line_number,
+            )
+            if normalized is None:
+                logger.warning(
+                    "Dropping empty-everything finding in %s (no title and no description)",
+                    item.file_path or default_file_path,
+                )
+                continue
+            title, description, line_number = normalized
+
             suggested_fix = item.suggested_fix
             auto_fixable = item.auto_fixable
             if suggested_fix and not auto_fixable:
@@ -1212,12 +1287,12 @@ description, and line number. Format as a simple list."""
                 _redact_issue(
                     ReviewIssue(
                         file_path=item.file_path or default_file_path,
-                        line_number=item.line_number,
+                        line_number=line_number,
                         severity=cls._parse_severity(item.severity),
                         category=cls._parse_category(item.category),
                         cwe_id=item.cwe_id,
-                        title=item.title or "Code issue",
-                        description=item.description,
+                        title=title,
+                        description=description,
                         code_snippet=item.code_snippet,
                         suggested_fix=suggested_fix,
                         auto_fixable=auto_fixable,
@@ -1279,6 +1354,20 @@ description, and line number. Format as a simple list."""
             if not item.get("valid", False):
                 continue
 
+            raw_line = item.get("line_number")
+            normalized = _normalize_finding_fields(
+                title=item.get("title"),
+                description=item.get("description"),
+                line_number=raw_line if isinstance(raw_line, int) else None,
+            )
+            if normalized is None:
+                logger.warning(
+                    "Dropping empty-everything finding in %s (no title and no description)",
+                    item.get("file_path", default_file_path),
+                )
+                continue
+            title, description, line_number = normalized
+
             suggested_fix = item.get("suggested_fix")
             auto_fixable = item.get("auto_fixable", False)
             if suggested_fix and not auto_fixable:
@@ -1287,12 +1376,12 @@ description, and line number. Format as a simple list."""
                 _redact_issue(
                     ReviewIssue(
                         file_path=item.get("file_path", default_file_path),
-                        line_number=item.get("line_number", 0),
+                        line_number=line_number,
                         severity=cls._parse_severity(item.get("severity", "MEDIUM")),
                         category=cls._parse_category(item.get("category", "best_practice")),
                         cwe_id=item.get("cwe_id"),
-                        title=item.get("title", "Code issue"),
-                        description=item.get("description", ""),
+                        title=title,
+                        description=description,
                         code_snippet=item.get("code_snippet", ""),
                         suggested_fix=suggested_fix,
                         auto_fixable=auto_fixable,
