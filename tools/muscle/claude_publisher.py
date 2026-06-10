@@ -120,6 +120,14 @@ def reconcile_pending_published_revisions(pm: Any, project_path: str) -> None:
                 "marked aborted (swap never completed; superseded by next publish)."
             )
 
+    # Retention: each revision stores the full rendered content, so resolved
+    # rows are pruned here (check-on-next-use, same cadence as reconcile) to
+    # keep the table bounded. Pending rows are never pruned.
+    try:
+        pm.prune_published_revisions(project_path)
+    except Exception as exc:  # pragma: no cover - defensive, DB unavailable
+        logger.debug(f"Could not prune published revisions: {exc}")
+
 
 class ClaudePublisher:
     """Publishes compact learned content to root CLAUDE.md."""
@@ -543,7 +551,16 @@ Return ONLY the JSON array, nothing else."""
 
                 #   Phase 3: mark the staged revision committed now that the file
                 #            and the audit log are both in place.
-                self._pm.commit_published_revision(revision_id)
+                if not self._pm.commit_published_revision(revision_id):
+                    # A concurrent reconcile resolved this revision while the swap
+                    # was in flight. The file write succeeded, so this is only an
+                    # audit mis-label — surface it rather than stay silent.
+                    logger.warning(
+                        f"Publish revision {revision_id} for {filename} was no longer "
+                        "pending at commit time (resolved by a concurrent reconcile); "
+                        "file content is live but the revision audit row may be "
+                        "marked aborted."
+                    )
             except Exception as e:
                 logger.error(f"Failed to publish to {filename}: {e}")
                 continue

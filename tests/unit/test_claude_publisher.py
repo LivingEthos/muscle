@@ -686,3 +686,79 @@ class TestClaudePublisherTwoPhase:
             # Pre-existing data survived the migration.
             rules = pm.list_learned_rules(project_path=tmpdir)
             assert any(r["rule_text"] == "Existing rule" for r in rules)
+
+    def test_prune_keeps_newest_resolved_and_all_pending(self):
+        """Retention bounds resolved rows per target but never deletes pending."""
+        from tools.muscle.project_memory import ProjectMemory
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pm = ProjectMemory(tmpdir)
+            # 5 resolved revisions for CLAUDE.md, 1 for AGENTS.md, 1 pending.
+            resolved_ids = []
+            for i in range(5):
+                rid = pm.stage_published_revision(tmpdir, "CLAUDE.md", f"content {i}")
+                pm.commit_published_revision(rid)
+                resolved_ids.append(rid)
+            other_rid = pm.stage_published_revision(tmpdir, "AGENTS.md", "agents content")
+            pm.abort_published_revision(other_rid)
+            pending_rid = pm.stage_published_revision(tmpdir, "CLAUDE.md", "in flight")
+
+            deleted = pm.prune_published_revisions(tmpdir, keep_per_target=2)
+            assert deleted == 3  # oldest 3 of the 5 resolved CLAUDE.md rows
+
+            with pm.connection() as conn:
+                rows = conn.execute(
+                    "SELECT id, target_path, status FROM published_revisions ORDER BY id"
+                ).fetchall()
+            remaining_ids = {row["id"] for row in rows}
+            # Newest 2 resolved CLAUDE.md rows survive; oldest 3 are gone.
+            assert set(resolved_ids[-2:]) <= remaining_ids
+            assert not (set(resolved_ids[:3]) & remaining_ids)
+            # The other target's single resolved row is within its own bound.
+            assert other_rid in remaining_ids
+            # Pending rows are never pruned (they are the crash-recovery signal).
+            assert pending_rid in remaining_ids
+
+    def test_reconcile_prunes_resolved_revisions(self):
+        """Publisher init (reconcile) applies retention so the table stays bounded."""
+        from tools.muscle.claude_publisher import ClaudePublisher
+        from tools.muscle.project_memory import ProjectMemory
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            (project / "CLAUDE.md").write_text("# CLAUDE.md\n")
+
+            pm = ProjectMemory(tmpdir)
+            for i in range(25):
+                rid = pm.stage_published_revision(tmpdir, "CLAUDE.md", f"content {i}")
+                pm.commit_published_revision(rid)
+
+            ClaudePublisher(tmpdir, target_files=["CLAUDE.md"])
+
+            with pm.connection() as conn:
+                count = conn.execute(
+                    "SELECT COUNT(*) AS n FROM published_revisions WHERE status != 'pending'"
+                ).fetchone()["n"]
+            assert count == 20  # default keep_per_target
+
+    def test_lost_commit_mark_logs_warning(self, caplog):
+        """A concurrent reconcile stealing the commit-mark is surfaced, not silent."""
+        import logging
+        from unittest.mock import patch
+
+        from tools.muscle.claude_publisher import ClaudePublisher
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            (project / "CLAUDE.md").write_text("# CLAUDE.md\n")
+
+            publisher = ClaudePublisher(tmpdir, target_files=["CLAUDE.md"])
+            with patch.object(publisher._pm, "commit_published_revision", return_value=False):
+                with caplog.at_level(logging.WARNING, logger="tools.muscle.claude_publisher"):
+                    result = publisher.publish(
+                        critical_rules=[
+                            {"text": "Use type hints", "score": 0.8, "validated_count": 3}
+                        ],
+                    )
+            assert result is True
+            assert any("no longer pending at commit time" in r.message for r in caplog.records)

@@ -133,7 +133,13 @@ class HostMemoryOptimizer:
             # untouched (atomic_write_text replaces only on success).
             self._pm.abort_published_revision(revision_id)
             raise
-        self._pm.commit_published_revision(revision_id)
+        if not self._pm.commit_published_revision(revision_id):
+            # A concurrent reconcile resolved this revision while the swap was in
+            # flight; the file content is live, only the audit row is mis-labeled.
+            logger.warning(
+                f"Publish revision {revision_id} for {filename} was no longer "
+                "pending at commit time (resolved by a concurrent reconcile)."
+            )
         logger.info(f"Optimized {filename}")
         return result
 

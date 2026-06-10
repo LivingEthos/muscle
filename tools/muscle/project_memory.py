@@ -884,6 +884,44 @@ class ProjectMemory:
             if conn:
                 conn.close()
 
+    def prune_published_revisions(
+        self,
+        project_path: str,
+        keep_per_target: int = 20,
+    ) -> int:
+        """Bound `published_revisions` growth: keep the newest N resolved rows.
+
+        Each publish stages the FULL rendered content, so without retention the
+        table grows without bound. Pending rows are never deleted (they are the
+        crash-recovery signal); only resolved rows (committed/aborted) beyond the
+        newest ``keep_per_target`` per (project_path, target_path) are removed.
+        Returns the number of rows deleted.
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                DELETE FROM published_revisions
+                WHERE project_path = ? AND status != 'pending'
+                  AND id NOT IN (
+                      SELECT id FROM published_revisions AS pr
+                      WHERE pr.project_path = ?
+                        AND pr.target_path = published_revisions.target_path
+                        AND pr.status != 'pending'
+                      ORDER BY pr.id DESC
+                      LIMIT ?
+                  )
+                """,
+                (project_path, project_path, keep_per_target),
+            )
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            if conn:
+                conn.close()
+
     def list_pending_published_revisions(
         self,
         project_path: str,
