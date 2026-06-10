@@ -20,7 +20,9 @@ def test_budget_config_defaults():
 
 def test_budget_record_usage():
     budget = TokenBudget()
-    usage = budget.record_usage(prompt_tokens=10, completion_tokens=5, provider="openai", model="gpt-4o")
+    usage = budget.record_usage(
+        prompt_tokens=10, completion_tokens=5, provider="openai", model="gpt-4o"
+    )
     assert isinstance(usage, TokenUsage)
     assert usage.prompt_tokens == 10
     assert usage.completion_tokens == 5
@@ -50,7 +52,9 @@ def test_budget_reserve_and_commit():
     assert rid in budget._reservations
     assert budget._reservations[rid] == 100
 
-    usage = budget.commit_reservation(rid, prompt_tokens=50, completion_tokens=30, provider="openai")
+    usage = budget.commit_reservation(
+        rid, prompt_tokens=50, completion_tokens=30, provider="openai"
+    )
     assert rid not in budget._reservations
     assert usage.prompt_tokens == 50
     assert usage.completion_tokens == 30
@@ -109,7 +113,7 @@ def test_budget_cleanup_old_history():
         timestamp=datetime.now(UTC) - timedelta(days=31),
     )
     budget.usage_history.append(old_usage)
-    budget._cleanup_old_history()
+    budget.prune_history()  # public self-locking entry point
     assert len(budget.usage_history) == 0
 
 
@@ -120,3 +124,35 @@ def test_budget_estimate_cost():
     # gpt-4 rates: (0.03, 0.06)
     expected = (1000 / 1000) * 0.03 + (500 / 1000) * 0.06
     assert cost == pytest.approx(expected)
+
+
+def test_budget_record_usage_concurrent_no_lost_updates():
+    """CONCURRENCY: record_usage is self-locking, so N threads hammering it
+    without ANY external lock must not lose appends to usage_history."""
+    import threading
+
+    # Generous limits + large history cap so nothing is pruned mid-run.
+    config = BudgetConfig(
+        max_tokens_per_minute=10**12,
+        max_tokens_per_hour=10**12,
+        max_tokens_per_day=10**12,
+        max_cost_per_day=10**12,
+    )
+    budget = TokenBudget(config=config, max_history_entries=10**9)
+
+    threads_count = 16
+    per_thread = 200
+    start = threading.Barrier(threads_count)
+
+    def worker() -> None:
+        start.wait()
+        for _ in range(per_thread):
+            budget.record_usage(prompt_tokens=1, completion_tokens=1)
+
+    threads = [threading.Thread(target=worker) for _ in range(threads_count)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(budget.usage_history) == threads_count * per_thread

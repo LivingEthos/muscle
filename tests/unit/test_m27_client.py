@@ -142,18 +142,6 @@ class TestM27Client:
                     client = M27Client(api_key="test-key")
         assert client.model == "MiniMax-M3"
 
-    def test_should_retry_429(self, client):
-        assert client._should_retry("rate limit", attempt=1) is True
-        assert client._should_retry("429", attempt=1) is True
-
-    def test_should_retry_5xx(self, client):
-        assert client._should_retry("502", attempt=1) is True
-        assert client._should_retry("503", attempt=1) is True
-
-    def test_should_not_retry_4xx_except_429(self, client):
-        assert client._should_retry("not_found", attempt=1) is False
-        assert client._should_retry("unauthorized", attempt=1) is False
-
     def test_format_messages_with_history(self, client):
         messages = client.format_messages("Hello", history=[{"role": "user", "content": "Hi"}])
         assert len(messages) >= 1
@@ -1074,24 +1062,6 @@ class TestHelperMethods:
         assert "Authorization" not in headers
         assert headers["X-Api-Key"] == "sk-cp-test"
         assert headers["anthropic-version"] == "2023-06-01"
-
-    def test_should_retry_respects_max_retries(self, mock_client):
-        client, _ = mock_client
-        client.max_retries = 3
-        assert client._should_retry("429", attempt=2) is True
-        assert client._should_retry("429", attempt=3) is False
-
-    def test_should_retry_timeout(self, mock_client):
-        client, _ = mock_client
-        assert client._should_retry("timeout error", attempt=1) is True
-
-    def test_should_retry_connection_error(self, mock_client):
-        client, _ = mock_client
-        assert client._should_retry("connection refused", attempt=1) is True
-
-    def test_should_not_retry_non_retryable(self, mock_client):
-        client, _ = mock_client
-        assert client._should_retry("not found", attempt=1) is False
 
     def test_get_rate_limit_status(self, mock_client):
         client, _ = mock_client

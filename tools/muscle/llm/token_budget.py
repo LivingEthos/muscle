@@ -3,6 +3,10 @@
 Architecture Decision Record (ADR):
 - Reserve/commit pattern: lock only during check+reserve and commit/release,
   NOT during the actual LLM call. This allows parallel requests.
+- Thread-safety is self-contained: a re-entrant threading.RLock guards all
+  mutations and reads of shared state (usage_history, _reservations). Public
+  methods acquire it themselves, so callers do NOT need an external lock; the
+  RLock makes nested public calls (reserve_tokens -> check_budget) safe.
 - _cleanup_old_history() prevents memory bloat by pruning entries >30 days old
   and enforcing a max_history_entries cap.
 - COST_RATES are approximate and should be updated as provider pricing changes.
@@ -10,7 +14,7 @@ Architecture Decision Record (ADR):
 
 from __future__ import annotations
 
-import asyncio
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -91,7 +95,10 @@ class TokenBudget:
         self._current_period_start: dict[BudgetPeriod, datetime] = {
             p: datetime.now(timezone.utc) for p in BudgetPeriod
         }
-        self._lock = asyncio.Lock()
+        # Re-entrant so public methods can self-lock yet still call one another
+        # (e.g. reserve_tokens -> check_budget -> get_usage_for_period) without
+        # self-deadlock. Callers no longer need to hold an external lock.
+        self._lock = threading.RLock()
 
     def estimate_cost(
         self,
@@ -117,7 +124,7 @@ class TokenBudget:
         model: str = "",
         operation: str = "",
     ) -> TokenUsage:
-        """Record token usage and return the record."""
+        """Record token usage and return the record. Self-locking."""
         total = prompt_tokens + completion_tokens
         cost = self.estimate_cost(provider, model, prompt_tokens, completion_tokens)
         usage = TokenUsage(
@@ -129,26 +136,32 @@ class TokenBudget:
             model=model,
             operation=operation,
         )
-        self.usage_history.append(usage)
-        self._cleanup_old_history()
+        with self._lock:
+            self.usage_history.append(usage)
+            self._cleanup_old_history_locked()
         return usage
 
-    def _cleanup_old_history(self) -> None:
-        """Remove history older than 30 days to prevent memory bloat."""
+    def _cleanup_old_history_locked(self) -> None:
+        """Remove history older than 30 days to prevent memory bloat.
+
+        Private: mutates shared state and MUST be called with self._lock held.
+        """
         cutoff = datetime.now(timezone.utc) - timedelta(days=30)
         self.usage_history = [u for u in self.usage_history if u.timestamp > cutoff]
         if len(self.usage_history) > self.max_history_entries:
             self.usage_history = self.usage_history[-self.max_history_entries :]
 
     def prune_history(self) -> None:
-        """Public method for explicit history cleanup."""
-        self._cleanup_old_history()
+        """Public method for explicit history cleanup. Self-locking."""
+        with self._lock:
+            self._cleanup_old_history_locked()
 
     def get_usage_for_period(self, period: BudgetPeriod) -> tuple[int, float]:
-        """Get total tokens and cost for the current period."""
+        """Get total tokens and cost for the current period. Self-locking."""
         now = datetime.now(timezone.utc)
         period_start = self._get_period_start(now, period)
-        relevant = [u for u in self.usage_history if u.timestamp >= period_start]
+        with self._lock:
+            relevant = [u for u in self.usage_history if u.timestamp >= period_start]
         total_tokens = sum(u.total_tokens for u in relevant)
         total_cost = sum(u.cost_usd for u in relevant)
         return total_tokens, total_cost
@@ -166,27 +179,32 @@ class TokenBudget:
         return now
 
     def check_budget(self, estimated_tokens: int = 0) -> dict[str, Any]:
-        """Check current budget status and return warnings if near limits."""
+        """Check current budget status and return warnings if near limits.
+
+        Self-locking: snapshots reservations and period usage atomically.
+        """
         status: dict[str, Any] = {
             "can_proceed": True,
             "warnings": [],
             "limits_hit": [],
         }
 
-        minute_tokens, _ = self.get_usage_for_period(BudgetPeriod.MINUTE)
-        reserved_total = sum(self._reservations.values())
+        with self._lock:
+            minute_tokens, _ = self.get_usage_for_period(BudgetPeriod.MINUTE)
+            reserved_total = sum(self._reservations.values())
+            hour_tokens, _ = self.get_usage_for_period(BudgetPeriod.HOUR)
+            day_tokens, day_cost = self.get_usage_for_period(BudgetPeriod.DAY)
+
         if minute_tokens + reserved_total + estimated_tokens > self.config.max_tokens_per_minute:
             status["limits_hit"].append("minute_tokens")
             if self.config.hard_limit:
                 status["can_proceed"] = False
 
-        hour_tokens, _ = self.get_usage_for_period(BudgetPeriod.HOUR)
         if hour_tokens + estimated_tokens > self.config.max_tokens_per_hour:
             status["limits_hit"].append("hour_tokens")
             if self.config.hard_limit:
                 status["can_proceed"] = False
 
-        day_tokens, day_cost = self.get_usage_for_period(BudgetPeriod.DAY)
         if day_tokens + estimated_tokens > self.config.max_tokens_per_day:
             status["limits_hit"].append("day_tokens")
             if self.config.hard_limit:
@@ -235,17 +253,19 @@ class TokenBudget:
     def reserve_tokens(self, estimated_tokens: int) -> str:
         """Reserve tokens from the budget. Returns reservation ID.
 
-        Raises BudgetExceededError if insufficient budget.
-        Must be called within a lock for thread-safety.
+        Raises BudgetExceededError if insufficient budget. Self-locking: the
+        check + reserve is atomic so concurrent reservers cannot both pass the
+        same budget gate. The RLock makes the nested check_budget call safe.
         """
         from tools.muscle.exceptions import BudgetExceededError
 
-        status = self.check_budget(estimated_tokens)
-        if not status["can_proceed"]:
-            raise BudgetExceededError(f"Budget exceeded: limits hit = {status['limits_hit']}")
-        rid = uuid.uuid4().hex[:12]
-        self._reservations[rid] = estimated_tokens
-        return rid
+        with self._lock:
+            status = self.check_budget(estimated_tokens)
+            if not status["can_proceed"]:
+                raise BudgetExceededError(f"Budget exceeded: limits hit = {status['limits_hit']}")
+            rid = uuid.uuid4().hex[:12]
+            self._reservations[rid] = estimated_tokens
+            return rid
 
     def commit_reservation(
         self,
@@ -258,20 +278,25 @@ class TokenBudget:
     ) -> TokenUsage:
         """Commit a reservation with actual token counts.
 
-        Removes the reservation and records actual usage.
+        Removes the reservation and records actual usage. Self-locking.
         """
-        self._reservations.pop(rid, None)
-        return self.record_usage(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            provider=provider,
-            model=model,
-            operation=operation,
-        )
+        with self._lock:
+            self._reservations.pop(rid, None)
+            return self.record_usage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                provider=provider,
+                model=model,
+                operation=operation,
+            )
 
     def release_reservation(self, rid: str) -> None:
-        """Release a reservation without recording usage (e.g., on failure)."""
-        self._reservations.pop(rid, None)
+        """Release a reservation without recording usage (e.g., on failure).
+
+        Self-locking.
+        """
+        with self._lock:
+            self._reservations.pop(rid, None)
 
     def get_summary(self) -> dict[str, Any]:
         """Get comprehensive usage summary."""
@@ -279,12 +304,15 @@ class TokenBudget:
         hour_tokens, hour_cost = self.get_usage_for_period(BudgetPeriod.HOUR)
         day_tokens, day_cost = self.get_usage_for_period(BudgetPeriod.DAY)
 
-        total_calls = len(self.usage_history)
-        total_tokens = sum(u.total_tokens for u in self.usage_history)
-        total_cost = sum(u.cost_usd for u in self.usage_history)
+        with self._lock:
+            history_snapshot = list(self.usage_history)
+
+        total_calls = len(history_snapshot)
+        total_tokens = sum(u.total_tokens for u in history_snapshot)
+        total_cost = sum(u.cost_usd for u in history_snapshot)
 
         by_provider: dict[str, dict[str, Any]] = {}
-        for u in self.usage_history:
+        for u in history_snapshot:
             provider = u.provider or "unknown"
             if provider not in by_provider:
                 by_provider[provider] = {"tokens": 0, "cost": 0.0, "calls": 0}

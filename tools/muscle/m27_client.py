@@ -584,22 +584,6 @@ class M27Client:
         except Exception:
             logger.debug("Telemetry update failed", exc_info=True)
 
-    def _should_retry(self, error: str, attempt: int) -> bool:
-        if attempt >= self.max_retries:
-            return False
-
-        retryable = [
-            "429",
-            "rate limit",
-            "timeout",
-            "502",
-            "503",
-            "504",
-            "connection",
-        ]
-
-        return any(r.lower() in error.lower() for r in retryable)
-
     def chat(
         self,
         messages: list[dict],

@@ -123,16 +123,41 @@ class AgentGenerator:
         )
         return meets_threshold
 
+    def _agents_lock_sentinel(self) -> Path:
+        """Path to the dir-wide advisory-lock sentinel for the agents directory.
+
+        A single sentinel (rather than per-agent locks) lets generate_agent
+        serialize the whole capacity-check -> evict -> create sequence so two
+        concurrent generators cannot both pass the capacity gate, double-evict,
+        or double-create.
+        """
+        return self.agents_dir / ".agents.lock-sentinel"
+
     def generate_agent(
         self,
         pattern_info: Any,
         reviewed_issues: list[dict[str, Any]],
     ) -> str | None:
-        """Generate an agent from pattern information."""
-        if len(self.list_agents()) >= self.max_agents:
-            logger.warning(f"Maximum agents ({self.max_agents}) reached")
-            return None
+        """Generate an agent from pattern information.
 
+        Single entry point for creation: the entire capacity-check + evict +
+        create sequence runs under ONE advisory lock on a dir-wide sentinel.
+        advisory_file_lock is NOT reentrant, so the lock is acquired exactly
+        once here and the inner work runs lock-free in _generate_agent_locked.
+        """
+        with advisory_file_lock(self._agents_lock_sentinel()):
+            return self._generate_agent_locked(pattern_info, reviewed_issues)
+
+    def _generate_agent_locked(
+        self,
+        pattern_info: Any,
+        reviewed_issues: list[dict[str, Any]],
+    ) -> str | None:
+        """Capacity check + evict + create. MUST hold the agents-dir sentinel.
+
+        Does NOT acquire any advisory lock itself (the public wrapper holds the
+        single dir-wide lock); acquiring another here would self-deadlock.
+        """
         agent_name = self._pattern_to_agent_name(pattern_info.pattern)
         agent_path = self._safe_agent_path(agent_name)
 
@@ -140,12 +165,12 @@ class AgentGenerator:
             logger.info(f"Agent already exists: {agent_path}")
             return None
 
-        # Check evidence threshold
-        if not self._check_evidence_threshold(pattern_info.pattern):
-            logger.info(
-                f"Evidence threshold not met for '{pattern_info.pattern}' "
-                f"(need {self.min_evidence_count}+ decisions)"
-            )
+        # Single source of truth for capacity + evidence (also evicts the
+        # least-used agent when at capacity). Running under the sentinel lock
+        # makes the check + eviction atomic against concurrent generators.
+        can_create, reason = self.can_create_agent(pattern_info.pattern)
+        if not can_create:
+            logger.info(f"Cannot create agent for '{pattern_info.pattern}': {reason}")
             return None
 
         prompt = self._build_agent_prompt(pattern_info, reviewed_issues)
@@ -159,13 +184,13 @@ class AgentGenerator:
         if response_text:
             content = self._parse_agent_content(response_text, pattern_info)
             if content:
-                # Guard the exists-check + write against a concurrent writer (TOCTOU)
-                # and commit atomically so a crash mid-write cannot truncate the file.
-                with advisory_file_lock(agent_path):
-                    if agent_path.exists():
-                        logger.info(f"Agent already exists: {agent_path}")
-                        return None
-                    atomic_write_text(agent_path, content)
+                # Commit atomically so a crash mid-write cannot truncate the
+                # file. The exists-check is re-validated here under the held
+                # sentinel lock, so no separate per-file lock is needed.
+                if agent_path.exists():
+                    logger.info(f"Agent already exists: {agent_path}")
+                    return None
+                atomic_write_text(agent_path, content)
                 self._generated_agents.append(agent_name)
                 self._register_agent_in_db(agent_name, pattern_info)
                 logger.info(f"Generated agent: {agent_path}")

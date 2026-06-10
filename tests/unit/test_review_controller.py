@@ -961,6 +961,103 @@ class TestFixLockMapDoesNotLeak:
         assert controller._get_fix_lock("/tmp/test/a.py") is lock
 
 
+class TestFixApplyCrossProcessLock:
+    """CONCURRENCY: fix-apply takes an advisory file lock on a `.muscle/locks/`
+    sentinel so two muscle processes auto-fixing the same file serialize."""
+
+    def test_advisory_lock_taken_on_expected_sentinel(self, tmp_path):
+        from contextlib import contextmanager
+
+        file_path = tmp_path / "src.py"
+        file_path.write_text("x = 1\n")
+
+        controller = ReviewController(
+            config=ReviewConfig(target_path=str(file_path), mode=ReviewMode.AUTO_FIX),
+            m27_client=MockM27Client(),
+            use_kb=False,
+            project_path=str(tmp_path),
+        )
+        issue = ReviewIssue(
+            file_path=str(file_path),
+            line_number=1,
+            severity=Severity.MEDIUM,
+            category=IssueCategory.CORRECTNESS,
+            cwe_id=None,
+            title="Bug",
+            description="Bug description",
+            code_snippet="x = 1",
+            suggested_fix="x = 2",
+            auto_fixable=True,
+        )
+        ctx = ReviewContext(session_id="sess", config=controller.config, stats=ReviewStats())
+        controller._review_context = ctx
+
+        expected_sentinel = controller._fix_file_lock_sentinel(str(file_path))
+        locked_paths: list[Path] = []
+
+        @contextmanager
+        def spy_lock(path):
+            locked_paths.append(Path(path))
+            yield
+
+        with (
+            patch(
+                "tools.muscle.code_review.review_controller.advisory_file_lock",
+                spy_lock,
+            ),
+            patch.object(
+                controller.fix_generator,
+                "generate_fix",
+                return_value=GeneratedFix(ok=True, file_path=str(file_path), code="x = 2\n"),
+            ),
+            patch.object(
+                controller.fix_generator,
+                "apply_fix",
+                return_value=FixResult(
+                    success=True,
+                    file_path=str(file_path),
+                    original_content="x = 1\n",
+                    fixed_content="x = 2\n",
+                    applied=True,
+                    verified=False,
+                ),
+            ),
+            patch.object(
+                controller.verification_loop,
+                "verify_fix",
+                return_value=VerificationResult(
+                    issue=issue,
+                    fix_applied=True,
+                    fix_verified=True,
+                    verification_details="verified",
+                    reverted=False,
+                ),
+            ),
+        ):
+            success, _ = controller._apply_fix_with_verification(ctx, issue)
+
+        assert success is True
+        # The advisory lock was taken on the per-path sentinel under .muscle/locks/.
+        assert expected_sentinel in locked_paths
+        assert expected_sentinel.parent == tmp_path / ".muscle" / "locks"
+
+    def test_sentinel_path_is_stable_and_repo_clean(self, tmp_path):
+        controller = ReviewController(
+            config=ReviewConfig(target_path=str(tmp_path)),
+            m27_client=MockM27Client(),
+            use_kb=False,
+            project_path=str(tmp_path),
+        )
+        src = tmp_path / "deep" / "module.py"
+        s1 = controller._fix_file_lock_sentinel(str(src))
+        s2 = controller._fix_file_lock_sentinel(str(src))
+        # Deterministic for a given resolved path.
+        assert s1 == s2
+        # Lock sentinel lives under .muscle/locks/, never next to user sources.
+        assert s1.parent == tmp_path / ".muscle" / "locks"
+        assert src.parent != s1.parent
+
+
 class TestUnknownReviewModeRaises:
     """FAILOPEN#7: an unrecognized mode must fail loudly, not run as hybrid."""
 

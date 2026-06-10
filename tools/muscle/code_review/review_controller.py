@@ -17,6 +17,7 @@ Architecture Decision Record (ADR):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
@@ -36,6 +37,7 @@ from ..delegation_metrics import (
     resolve_m27_token_split,
 )
 from ..escalation import EscalationPolicy, EscalationRecord, EscalationRecorder
+from ..io_safety import advisory_file_lock
 from ..m27_client import M27Client
 from ..project_memory import ProjectMemory
 from ..routing import Recommendation, TaskRouter, offline_route
@@ -332,6 +334,18 @@ class ReviewController:
     def _get_fix_lock(self, file_path: str) -> Lock:
         with self._fix_locks_guard:
             return self._fix_locks.setdefault(str(Path(file_path).resolve()), Lock())
+
+    def _fix_file_lock_sentinel(self, file_path: str) -> Path:
+        """Sentinel path for the cross-process advisory lock on a fix target.
+
+        Lock files live under `.muscle/locks/`, keyed by a hash of the resolved
+        target path, so two muscle processes auto-fixing the same source file
+        serialize WITHOUT dropping a `<file>.lock` next to the user's sources.
+        """
+        resolved = str(Path(file_path).resolve())
+        digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:16]
+        locks_dir = Path(self.project_path) / ".muscle" / "locks"
+        return locks_dir / f"fix-{digest}.lock-sentinel"
 
     def run(self) -> ReviewContext:
         # Fix: RC-01. Validate target containment up front so downstream fix
@@ -921,7 +935,10 @@ class ReviewController:
         issue: ReviewIssue,
     ) -> tuple[bool, str | None]:
         lock = self._get_fix_lock(issue.file_path)
-        with lock:
+        # In-process lock serializes threads cheaply; the advisory file lock
+        # (taken INSIDE it, exactly once — advisory_file_lock is not reentrant)
+        # serializes separate muscle processes auto-fixing the same target.
+        with lock, advisory_file_lock(self._fix_file_lock_sentinel(issue.file_path)):
             runtime_issue = issue
             generated_fix = self.fix_generator.generate_fix(
                 issue,

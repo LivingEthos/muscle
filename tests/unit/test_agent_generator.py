@@ -94,17 +94,14 @@ class TestAgentGenerator:
         )
         assert generator.validate_agent(test_file) is True
 
-    def test_max_agents_enforced(self, generator, tmp_path, monkeypatch):
-        agents_dir = tmp_path / ".muscle" / "agents"
-        agents_dir.mkdir(parents=True, exist_ok=True)
-        for i in range(10):
-            (agents_dir / f"agent_{i}.md").write_text(
-                "---\nname: a\ndescription: b\ntriggers:\ncapabilities:\n---"
-            )
-        monkeypatch.setattr(
-            AgentGenerator, "list_agents", lambda self: [f"a{i}.md" for i in range(10)]
-        )
-        result = generator.generate_agent(Mock(), [])
+    def test_max_agents_enforced(self, generator, mock_pm):
+        # Capacity is enforced via can_create_agent (DB-backed source of truth):
+        # at max capacity with no agent available to archive, creation refuses.
+        mock_pm.get_active_agents_count.return_value = MAX_ACTIVE_AGENTS
+        mock_pm.get_least_used_active_agent.return_value = None
+        mock_pattern = Mock()
+        mock_pattern.pattern = "some_new_pattern"
+        result = generator.generate_agent(mock_pattern, [])
         assert result is None
 
     def test_generate_agent_already_exists(self, generator, tmp_path, monkeypatch):
@@ -528,6 +525,66 @@ class TestBackupPrecondition:
         assert result is None
         # Destructive overwrite must not have happened.
         assert agent_file.read_text() == original
+        mock_m27.chat.assert_not_called()
+
+
+class TestGenerateAgentLockingContract:
+    """The whole capacity-check + evict + create sequence must run under ONE
+    advisory lock on the agents-dir sentinel (non-reentrant lock, acquired once).
+    """
+
+    def _ok_pattern(self):
+        # Concrete (JSON-serializable) attributes so the DB-registration path
+        # that runs after a successful create does not choke on Mock objects.
+        return _EvidencePattern(
+            pattern="locking_pattern",
+            category="security",
+            occurrences=5,
+            files=["a.py"],
+        )
+
+    def test_lock_acquired_once_on_sentinel_around_whole_sequence(
+        self, generator, mock_m27, mock_pm
+    ):
+        from contextlib import contextmanager
+
+        events: list[str] = []
+
+        @contextmanager
+        def spy_lock(path):
+            events.append(f"lock-enter:{Path(path).name}")
+            try:
+                yield
+            finally:
+                events.append(f"lock-exit:{Path(path).name}")
+
+        def chat_side_effect(*args, **kwargs):
+            events.append("m27-chat")
+            return ("---\nname: x\ndescription: y\ntriggers:\ncapabilities:\n---", Mock())
+
+        mock_m27.chat.side_effect = chat_side_effect
+        mock_pm.get_active_agents_count.return_value = 0
+        mock_pm.count_decisions_for_pattern.return_value = 5
+
+        sentinel = generator._agents_lock_sentinel()
+        with patch("tools.muscle.code_review.agent_generator.advisory_file_lock", spy_lock):
+            result = generator.generate_agent(self._ok_pattern(), [])
+
+        assert result is not None
+        # Exactly one lock acquisition, on the dir-wide sentinel.
+        assert events.count(f"lock-enter:{sentinel.name}") == 1
+        assert [e for e in events if e.startswith("lock-enter")] == [f"lock-enter:{sentinel.name}"]
+        # The LLM call (and the create it gates) happens INSIDE the lock.
+        enter_idx = events.index(f"lock-enter:{sentinel.name}")
+        exit_idx = events.index(f"lock-exit:{sentinel.name}")
+        chat_idx = events.index("m27-chat")
+        assert enter_idx < chat_idx < exit_idx
+
+    def test_at_capacity_refuses_under_lock_without_chat(self, generator, mock_m27, mock_pm):
+        mock_pm.get_active_agents_count.return_value = MAX_ACTIVE_AGENTS
+        mock_pm.get_least_used_active_agent.return_value = None
+        result = generator.generate_agent(self._ok_pattern(), [])
+        assert result is None
         mock_m27.chat.assert_not_called()
 
 
