@@ -28,12 +28,6 @@ logger = logging.getLogger(__name__)
 
 AGENT_KB_CACHE_DIR = ".muscle/agent_kb"
 
-# Placeholder constant used when a real upstream commit hash has not yet been
-# vendored. A source pinned to this sentinel will ALWAYS fail the content-hash
-# check (fail closed) so that fetched content is never parsed or cached until a
-# real hash is recorded via a controlled release process.
-_UNPINNED_SHA256 = "0" * 64
-
 
 @dataclass(frozen=True)
 class PinnedKBSource:
@@ -62,21 +56,23 @@ class PinnedKBSource:
         return f"{raw}/{self.pinned_sha}/README.md"
 
 
-# Pinned upstream sources. The SHA and content hash below are PLACEHOLDERS and
-# must be replaced with the real vendored commit SHA + its README SHA-256 via a
-# controlled release process. Until then they hash-mismatch and fail closed, so
-# no untrusted upstream content is ever parsed or cached.
+# Pinned upstream sources, vendored 2026-06-09. To bump a source: resolve the
+# new commit SHA (`git ls-remote <repo_url> HEAD`), fetch
+# `raw.githubusercontent.com/<org>/<repo>/<sha>/README.md`, review the diff for
+# injected content, then update BOTH pinned_sha and expected_sha256 (SHA-256 of
+# the raw README bytes) together via a controlled release. A source whose hash
+# no longer matches fails closed: nothing is parsed or cached.
 AGENT_REPOS: list[PinnedKBSource] = [
     PinnedKBSource(
         repo_url="https://github.com/VoltAgent/awesome-claude-code-subagents",
-        pinned_sha="PLACEHOLDER_PIN_UPDATE_VIA_RELEASE",
-        expected_sha256=_UNPINNED_SHA256,
+        pinned_sha="2f9cf8b9562dcc235cc2296bda6df82d60e800be",
+        expected_sha256="ec52baa379192189b833ce9c9bec0bf0d0af28159eebdff363d3cede5c1f70b2",
         kind="subagents",
     ),
     PinnedKBSource(
         repo_url="https://github.com/travisvn/awesome-claude-skills",
-        pinned_sha="PLACEHOLDER_PIN_UPDATE_VIA_RELEASE",
-        expected_sha256=_UNPINNED_SHA256,
+        pinned_sha="1da55aa810f206d3fe2005e7e3989b15a275d942",
+        expected_sha256="b15fa837edeb632f4a85871590df4dab64deec10af904d512a5ee12bce8773c9",
         kind="skills",
     ),
 ]

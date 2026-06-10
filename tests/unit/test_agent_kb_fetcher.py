@@ -4,6 +4,7 @@ Unit tests for code_review/agent_kb_fetcher.py
 
 import hashlib
 import json
+import re
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
@@ -293,12 +294,16 @@ class TestAgentKBPinning:
         assert "deadbeef" * 5 in url
         assert "/main/" not in url
 
-    def test_default_pins_fail_closed(self):
-        # The shipped pins are placeholders: their expected hash cannot match
-        # any real content, so nothing is ever parsed or cached.
+    def test_default_pins_are_immutable_refs_with_real_hashes(self):
+        # The shipped pins must reference an immutable commit SHA (never a
+        # mutable branch ref) and carry a real content hash so any upstream
+        # tamper fails closed.
         for source in AGENT_REPOS:
-            assert source.expected_sha256 == "0" * 64
+            assert re.fullmatch(r"[0-9a-f]{40}", source.pinned_sha)
+            assert re.fullmatch(r"[0-9a-f]{64}", source.expected_sha256)
+            assert source.expected_sha256 != "0" * 64
             assert "/main/" not in source.readme_url()
+            assert source.pinned_sha in source.readme_url()
 
     def test_happy_path_with_injected_pin(self, tmp_path):
         sources = [
