@@ -1721,6 +1721,7 @@ def run(
     if not m27_client.api_key:
         console.print("[red]Error: MINIMAX_API_KEY not set[/red]")
         console.print("Set it with: export MINIMAX_API_KEY='your-key'")
+        console.print("Get a key at: https://platform.minimax.io")
         sys.exit(1)
 
     pm, _, context_budgeter, telemetry_recorder, lesson_resolver, _, _ = (
@@ -1992,6 +1993,7 @@ def resume(session_id: str) -> None:
     if not m27_client.api_key:
         console.print("[red]Error: MINIMAX_API_KEY not set[/red]")
         console.print("Set it with: export MINIMAX_API_KEY='your-key'")
+        console.print("Get a key at: https://platform.minimax.io")
         sys.exit(1)
 
     resolved_resume_project_path, _ = _resolve_project_context(
@@ -3117,6 +3119,7 @@ def review(
         else:
             console.print("[red]Error: MINIMAX_API_KEY not set[/red]")
             console.print("Set it with: export MINIMAX_API_KEY='your-key'")
+            console.print("Get a key at: https://platform.minimax.io")
         sys.exit(1)
 
     from .m27_client import M27Client
@@ -3586,6 +3589,7 @@ def lifeline(
     if not api_key:
         console.print("[red]Error: MINIMAX_API_KEY not set[/red]")
         console.print("Set it with: export MINIMAX_API_KEY='your-key'")
+        console.print("Get a key at: https://platform.minimax.io")
         sys.exit(1)
 
     from .m27_client import M27Client
@@ -5903,6 +5907,21 @@ def escalation_resolve_cmd(escalation_id: int) -> None:
         click.echo(f"Escalation {escalation_id} resolved.")
     else:
         click.echo(f"Escalation {escalation_id} not found.", err=True)
+
+
+@cli.command()
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
+def completion(shell: str) -> None:
+    """Print a shell-completion activation snippet for SHELL.
+
+    Add the printed line to your shell startup file, e.g.::
+
+        muscle completion zsh >> ~/.zshrc
+    """
+    if shell == "fish":
+        click.echo("eval (env _MUSCLE_COMPLETE=fish_source muscle)")
+    else:
+        click.echo(f'eval "$(_MUSCLE_COMPLETE={shell}_source muscle)"')
 
 
 def main() -> None:

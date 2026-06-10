@@ -1748,3 +1748,38 @@ class TestCostDelegationReport:
         assert payload["total_events"] == 1
         assert payload["m27_tokens_by_tier"]["bulk_review"] == 15000
         assert payload["m27_usd_cents"] == 7
+
+
+class TestCompletionCommand:
+    """Tests for the `muscle completion` shell-completion helper."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_zsh_emits_source_snippet(self, runner):
+        from muscle.cli import cli
+
+        result = runner.invoke(cli, ["completion", "zsh"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "_MUSCLE_COMPLETE=zsh_source muscle" in result.output
+
+    def test_bash_emits_source_snippet(self, runner):
+        from muscle.cli import cli
+
+        result = runner.invoke(cli, ["completion", "bash"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "_MUSCLE_COMPLETE=bash_source muscle" in result.output
+
+    def test_fish_emits_source_snippet(self, runner):
+        from muscle.cli import cli
+
+        result = runner.invoke(cli, ["completion", "fish"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "_MUSCLE_COMPLETE=fish_source muscle" in result.output
+
+    def test_invalid_shell_rejected(self, runner):
+        from muscle.cli import cli
+
+        result = runner.invoke(cli, ["completion", "powershell"])
+        assert result.exit_code != 0

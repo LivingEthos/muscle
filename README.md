@@ -174,6 +174,24 @@ muscle doctor                 # confirm health
 
 This creates `.muscle/` with project-local state and writes nothing global.
 
+Add `.muscle/` to your project's `.gitignore` — it holds a SQLite learning
+database, sessions, and logs, all of which are per-machine state that should
+not be committed:
+
+```bash
+echo ".muscle/" >> .gitignore
+```
+
+The per-project settings live in `.muscle/config.yaml`. See
+[`config.yaml.example`](config.yaml.example) for a documented reference of
+every field.
+
+Optional: enable tab completion for your shell (bash, zsh, or fish):
+
+```bash
+muscle completion zsh >> ~/.zshrc   # then restart your shell
+```
+
 ### 4. Run your first self-learning review
 
 ```bash

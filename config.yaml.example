@@ -1,0 +1,66 @@
+# Example per-project MUSCLE configuration.
+#
+# This file documents the shape of `.muscle/config.yaml`, which MUSCLE creates
+# when you run `muscle init`. It is NOT read from the repo root — copy the
+# relevant fields into `.muscle/config.yaml` if you want to hand-edit them, or
+# (recommended) let `muscle init` / `muscle settings ...` manage the file.
+#
+# Format note: MUSCLE writes `.muscle/config.yaml` as JSON (the loader parses
+# JSON first and falls back to YAML), so the real file looks like JSON. This
+# example uses YAML purely so each field can carry an inline comment — the
+# loader accepts it as the YAML fallback. All settings live under a single
+# top-level `project:` key.
+
+project:
+  # Display name for the project. Defaults to the git-root directory name.
+  name: my-project
+
+  # Languages detected in the project (drives evaluator/linter selection).
+  # Auto-detected at init time from project files (pyproject.toml, package.json, ...).
+  languages:
+    - Python
+
+  # How aggressively MUSCLE acts on findings: "auto-fix", "review", etc.
+  automation_level: auto-fix
+
+  # Review gating policy applied to findings, e.g. "block+fix".
+  review_gate: block+fix
+
+  # Where reviews run: "local" (this machine) vs other execution backends.
+  review_execution: local
+
+  # Event triggers that should kick off automated reviews (empty = none).
+  triggers: []
+
+  # Whether GitHub adapter integration is enabled for this project.
+  github_enabled: false
+
+  # Directory holding project-local MUSCLE state. Default: ".muscle".
+  memory_location: .muscle
+
+  # Host platform integration: "auto", "claude-code", "codex", or "opencode".
+  platform: auto
+
+  # Where the MiniMax API key comes from: "env", "manual", "opencode", or "ask".
+  api_key_source: env
+
+  # Whether host-side hooks (e.g. Claude Code SessionStart) are installed.
+  hooks_enabled: true
+
+  # Explicit path to the `muscle` CLI, if not discoverable on PATH (null = auto).
+  cli_path: null
+
+  # Cross-project memory sharing: "suggest", "auto", or "off".
+  related_project_mode: suggest
+
+  # Model-pack overlay behavior: "suggest", "auto", or "off".
+  model_pack_mode: suggest
+
+  # Canonical model identity key once resolved (null until verified).
+  canonical_model_key: null
+
+  # How the model identity was determined: "unresolved", "manual", "verified", ...
+  model_identity_source: unresolved
+
+  # User-pinned canonical model override (null = no override).
+  model_manual_override: null
