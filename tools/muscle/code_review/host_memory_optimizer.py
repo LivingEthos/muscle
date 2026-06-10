@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..backup_manager import BackupManager
+from ..claude_publisher import reconcile_pending_published_revisions
+from ..io_safety import atomic_write_text
 from ..project_memory import ProjectMemory
 from .host_memory_templates import (
     PINNED_SECTION_ORDER,
@@ -48,6 +50,11 @@ class HostMemoryOptimizer:
         self.project_path = Path(project_path)
         self._pm = ProjectMemory(str(self.project_path))
         self._backup = BackupManager(self._pm, str(self.project_path))
+        # Reconcile any revision left 'pending' by a crash between the file swap
+        # and the commit-mark (check-on-next-use; no background daemon). This is
+        # the same shared logic ClaudePublisher runs, so a revision staged here
+        # is reconciled whichever writer constructs next, and vice versa.
+        reconcile_pending_published_revisions(self._pm, str(self.project_path))
 
     def plan(self, filename: str) -> OptimizeResult:
         """Return what the optimizer WOULD do for this file, without writing."""
@@ -87,7 +94,9 @@ class HostMemoryOptimizer:
             return result
 
         target = self.project_path / filename
-        # Back up first (no-op if target doesn't exist).
+        # Back up first (no-op if target doesn't exist). Backup is a hard
+        # precondition: if it fails we refuse to write rather than silently
+        # degrading the rollback guarantee.
         try:
             if target.exists():
                 self._backup.create_backup("claude_md")
@@ -96,10 +105,35 @@ class HostMemoryOptimizer:
             raise
 
         if not target.exists():
-            target.write_text(self._render_new_file())
+            new_content = self._render_new_file()
         else:
             original = target.read_text()
-            target.write_text(self._rewrite_region(original))
+            new_content = self._rewrite_region(original)
+
+        # Two-phase publish, identical to ClaudePublisher.publish so both writers
+        # of the authoritative marker region share the same crash-recovery
+        # invariant:
+        #   Phase 1: stage the new content as a 'pending' revision in the DB.
+        #   Phase 2: atomic swap (temp + fsync + os.replace) so a crash mid-write
+        #            never leaves the file truncated.
+        #   Phase 3: mark the staged revision committed.
+        # If we crash between phases 2 and 3, the next HostMemoryOptimizer /
+        # ClaudePublisher init reconciles the pending row by comparing the
+        # on-disk hash to the staged hash.
+        revision_id = self._pm.stage_published_revision(
+            project_path=str(self.project_path),
+            target_path=str(target),
+            content=new_content,
+        )
+        try:
+            atomic_write_text(target, new_content)
+        except Exception:
+            # The swap never completed; abort the staged revision so it is not
+            # later mistaken for an interrupted-but-successful swap. The file is
+            # untouched (atomic_write_text replaces only on success).
+            self._pm.abort_published_revision(revision_id)
+            raise
+        self._pm.commit_published_revision(revision_id)
         logger.info(f"Optimized {filename}")
         return result
 

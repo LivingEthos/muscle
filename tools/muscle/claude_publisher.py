@@ -68,6 +68,59 @@ PINNED_SECTIONS: frozenset[str] = frozenset(
 MAX_SECTION_LINES = 50
 
 
+def reconcile_pending_published_revisions(pm: Any, project_path: str) -> None:
+    """Resolve revisions stuck in 'pending' from an earlier interrupted publish.
+
+    Shared by every writer of the authoritative host-doc marker region
+    (``ClaudePublisher`` and ``HostMemoryOptimizer``) so the two-phase publish
+    invariant holds no matter which writer ran last. For each pending revision
+    we compare the on-disk file's sha256 to the staged content's sha256:
+
+    - match  -> the swap happened but the commit-mark was lost; mark committed.
+    - differ -> the swap never happened (or has since been superseded); mark
+      aborted so the next publish proceeds cleanly.
+
+    Missing/unreadable files are treated as 'swap did not happen' -> aborted.
+
+    All pending revisions for ``project_path`` are reconciled regardless of which
+    target file or which writer staged them (same table, keyed by on-disk hash),
+    so a ``HostMemoryOptimizer``-staged revision is reconciled by a later
+    ``ClaudePublisher`` init and vice versa.
+    """
+    try:
+        pending = pm.list_pending_published_revisions(project_path)
+    except Exception as exc:  # pragma: no cover - defensive, DB unavailable
+        logger.debug(f"Could not list pending published revisions: {exc}")
+        return
+
+    for revision in pending:
+        revision_id = revision.get("id")
+        target_path = Path(revision.get("target_path", ""))
+        staged_sha = revision.get("content_sha256", "")
+        on_disk_sha: str | None = None
+        try:
+            if target_path.exists():
+                on_disk_sha = pm.published_content_sha256(target_path.read_text())
+        except Exception as exc:
+            logger.warning(f"Failed to read {target_path} during reconcile: {exc}")
+            on_disk_sha = None
+
+        if on_disk_sha is not None and on_disk_sha == staged_sha:
+            pm.commit_published_revision(revision_id)
+            logger.warning(
+                f"Reconciled pending publish revision {revision_id} for "
+                f"{target_path}: on-disk content matched staged content; "
+                "marked committed (commit-mark was lost after a successful swap)."
+            )
+        else:
+            pm.abort_published_revision(revision_id)
+            logger.warning(
+                f"Reconciled pending publish revision {revision_id} for "
+                f"{target_path}: on-disk content did not match staged content; "
+                "marked aborted (swap never completed; superseded by next publish)."
+            )
+
+
 class ClaudePublisher:
     """Publishes compact learned content to root CLAUDE.md."""
 
@@ -121,45 +174,11 @@ class ClaudePublisher:
     def _reconcile_pending_revisions(self) -> None:
         """Resolve revisions stuck in 'pending' from an earlier interrupted publish.
 
-        For each pending revision we compare the on-disk file's sha256 to the
-        staged content's sha256:
-        - match  -> the swap happened but the commit-mark was lost; mark committed.
-        - differ -> the swap never happened (or has since been superseded); mark
-          aborted so the next publish proceeds cleanly.
-        Missing/unreadable files are treated as 'swap did not happen' -> aborted.
+        Delegates to the shared :func:`reconcile_pending_published_revisions`,
+        which covers revisions staged by *any* host-doc writer for this project
+        (including ``HostMemoryOptimizer``), keyed on the on-disk file hash.
         """
-        try:
-            pending = self._pm.list_pending_published_revisions(str(self.project_path))
-        except Exception as exc:  # pragma: no cover - defensive, DB unavailable
-            logger.debug(f"Could not list pending published revisions: {exc}")
-            return
-
-        for revision in pending:
-            revision_id = revision.get("id")
-            target_path = Path(revision.get("target_path", ""))
-            staged_sha = revision.get("content_sha256", "")
-            on_disk_sha: str | None = None
-            try:
-                if target_path.exists():
-                    on_disk_sha = self._pm.published_content_sha256(target_path.read_text())
-            except Exception as exc:
-                logger.warning(f"Failed to read {target_path} during reconcile: {exc}")
-                on_disk_sha = None
-
-            if on_disk_sha is not None and on_disk_sha == staged_sha:
-                self._pm.commit_published_revision(revision_id)
-                logger.warning(
-                    f"Reconciled pending publish revision {revision_id} for "
-                    f"{target_path}: on-disk content matched staged content; "
-                    "marked committed (commit-mark was lost after a successful swap)."
-                )
-            else:
-                self._pm.abort_published_revision(revision_id)
-                logger.warning(
-                    f"Reconciled pending publish revision {revision_id} for "
-                    f"{target_path}: on-disk content did not match staged content; "
-                    "marked aborted (swap never completed; superseded by next publish)."
-                )
+        reconcile_pending_published_revisions(self._pm, str(self.project_path))
 
     @property
     def backup_manager(self) -> BackupManager:
