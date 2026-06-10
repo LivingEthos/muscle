@@ -762,3 +762,48 @@ class TestClaudePublisherTwoPhase:
                     )
             assert result is True
             assert any("no longer pending at commit time" in r.message for r in caplog.records)
+
+    def test_host_doc_lock_sentinel_stable_and_under_muscle_locks(self):
+        """Both writers derive the same sentinel for a target, under .muscle/locks."""
+        from tools.muscle.claude_publisher import host_doc_lock_sentinel
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            target = project / "CLAUDE.md"
+
+            sentinel = host_doc_lock_sentinel(project, target)
+            assert sentinel.parent == project / ".muscle" / "locks"
+            assert sentinel.name.startswith("host-doc-")
+            # Deterministic: a second derivation (e.g. by HostMemoryOptimizer)
+            # serializes on the same sentinel.
+            assert host_doc_lock_sentinel(project, project / "CLAUDE.md") == sentinel
+            # Distinct targets get distinct sentinels.
+            assert host_doc_lock_sentinel(project, project / "AGENTS.md") != sentinel
+
+    def test_publish_holds_host_doc_lock_around_rmw(self):
+        """The read-modify-write publish span runs under the host-doc lock."""
+        from contextlib import contextmanager
+        from unittest.mock import patch
+
+        from tools.muscle.claude_publisher import ClaudePublisher, host_doc_lock_sentinel
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            claude_md = project / "CLAUDE.md"
+            claude_md.write_text("# CLAUDE.md\n")
+
+            publisher = ClaudePublisher(tmpdir, target_files=["CLAUDE.md"])
+            locked_paths: list[Path] = []
+
+            @contextmanager
+            def spy_lock(path):
+                locked_paths.append(Path(path))
+                yield
+
+            with patch("tools.muscle.claude_publisher.advisory_file_lock", spy_lock):
+                result = publisher.publish(
+                    critical_rules=[{"text": "Use type hints", "score": 0.8, "validated_count": 3}],
+                )
+
+            assert result is True
+            assert locked_paths == [host_doc_lock_sentinel(project, claude_md)]

@@ -147,6 +147,38 @@ class TestHostMemoryOptimizerTwoPhasePublish:
             # Committed content sha matches what landed on disk.
             assert committed[0]["content_sha256"] == pm.published_content_sha256(target.read_text())
 
+    def test_apply_holds_host_doc_lock_around_rmw(self) -> None:
+        """apply() serializes its read-modify-write on the shared host-doc sentinel."""
+        from contextlib import contextmanager
+        from unittest.mock import patch
+
+        from tools.muscle.claude_publisher import host_doc_lock_sentinel
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from tools.muscle.project_memory import ProjectMemory
+
+            pm = ProjectMemory(tmpdir)
+            pm._init_db()
+
+            opt = HostMemoryOptimizer(tmpdir)
+            target = Path(tmpdir) / "CLAUDE.md"
+            locked_paths: list[Path] = []
+
+            @contextmanager
+            def spy_lock(path):
+                locked_paths.append(Path(path))
+                yield
+
+            with patch(
+                "tools.muscle.code_review.host_memory_optimizer.advisory_file_lock",
+                spy_lock,
+            ):
+                result = opt.apply("CLAUDE.md")
+
+            assert result.changed is True
+            # Same sentinel ClaudePublisher uses, so the two writers serialize.
+            assert locked_paths == [host_doc_lock_sentinel(Path(tmpdir), target)]
+
     def test_commit_mark_failure_left_pending_then_reconciled(self) -> None:
         """If the commit-mark is lost (crash between swap and commit), a later
         reconcile detects the on-disk content matches the staged content and

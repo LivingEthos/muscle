@@ -17,8 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..backup_manager import BackupManager
-from ..claude_publisher import reconcile_pending_published_revisions
-from ..io_safety import atomic_write_text
+from ..claude_publisher import (
+    host_doc_lock_sentinel,
+    reconcile_pending_published_revisions,
+)
+from ..io_safety import advisory_file_lock, atomic_write_text
 from ..project_memory import ProjectMemory
 from .host_memory_templates import (
     PINNED_SECTION_ORDER,
@@ -104,6 +107,16 @@ class HostMemoryOptimizer:
             logger.error(f"Backup failed for {filename}: {e}")
             raise
 
+        # Serialize the read-modify-write with the other host-doc writers
+        # (ClaudePublisher) so a concurrent publish of the same file cannot
+        # silently lose this update; the swap alone is atomic, the RMW is not.
+        with advisory_file_lock(host_doc_lock_sentinel(self.project_path, target)):
+            self._apply_locked(target)
+        logger.info(f"Optimized {filename}")
+        return result
+
+    def _apply_locked(self, target: Path) -> None:
+        """Two-phase publish of ``target``; the host-doc lock must be held."""
         if not target.exists():
             new_content = self._render_new_file()
         else:
@@ -137,11 +150,9 @@ class HostMemoryOptimizer:
             # A concurrent reconcile resolved this revision while the swap was in
             # flight; the file content is live, only the audit row is mis-labeled.
             logger.warning(
-                f"Publish revision {revision_id} for {filename} was no longer "
+                f"Publish revision {revision_id} for {target.name} was no longer "
                 "pending at commit time (resolved by a concurrent reconcile)."
             )
-        logger.info(f"Optimized {filename}")
-        return result
 
     # --- internals ---------------------------------------------------------
 

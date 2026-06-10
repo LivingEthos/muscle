@@ -27,6 +27,7 @@ Architecture Decision Record (ADR):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -41,7 +42,7 @@ from .code_review.host_memory_templates import (
     SECTION_EFFORT,
     SECTION_METHODOLOGY,
 )
-from .io_safety import atomic_write_text
+from .io_safety import advisory_file_lock, atomic_write_text
 from .optimization.prompt_compactor import compact_prompt_text
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,22 @@ PINNED_SECTIONS: frozenset[str] = frozenset(
 
 # Size cap per section
 MAX_SECTION_LINES = 50
+
+
+def host_doc_lock_sentinel(project_path: Path, target_path: Path) -> Path:
+    """Cross-process lock sentinel for a host-doc read-modify-write.
+
+    Every writer of the authoritative marker region (``ClaudePublisher`` and
+    ``HostMemoryOptimizer``) serializes its read -> rewrite-region -> atomic-swap
+    span on this sentinel so two concurrent publishes cannot silently lose one
+    writer's update (the swap itself is atomic, but the read-modify-write is
+    not). The sentinel lives under ``.muscle/locks/`` keyed by a hash of the
+    resolved target path, so no lock file pollutes the user's repo root.
+    """
+    digest = hashlib.sha256(str(target_path.resolve()).encode("utf-8")).hexdigest()[:16]
+    locks_dir = project_path / ".muscle" / "locks"
+    locks_dir.mkdir(parents=True, exist_ok=True)
+    return locks_dir / f"host-doc-{digest}"
 
 
 def reconcile_pending_published_revisions(pm: Any, project_path: str) -> None:
@@ -499,68 +516,75 @@ Return ONLY the JSON array, nothing else."""
                 continue
 
             try:
-                content = target_path.read_text()
-                updated_content = self._update_published_section(
-                    content,
-                    critical_rules=critical_rules or [],
-                    mistake_corrections=mistake_corrections or [],
-                    agent_calls=agent_calls or [],
-                    skill_calls=skill_calls or [],
-                    tooling_notes=tooling_notes or [],
-                )
+                # The swap below is atomic, but the read-modify-write spanning
+                # it is not: serialize it cross-process so a concurrent writer
+                # of the same host doc cannot silently lose this update.
+                with advisory_file_lock(host_doc_lock_sentinel(self.project_path, target_path)):
+                    content = target_path.read_text()
+                    updated_content = self._update_published_section(
+                        content,
+                        critical_rules=critical_rules or [],
+                        mistake_corrections=mistake_corrections or [],
+                        agent_calls=agent_calls or [],
+                        skill_calls=skill_calls or [],
+                        tooling_notes=tooling_notes or [],
+                    )
 
-                # Two-phase publish:
-                #   Phase 1: stage the new content as a 'pending' revision in the
-                #            DB. If we crash after the swap but before the
-                #            commit-mark, the next publisher init reconciles this
-                #            row by comparing the on-disk hash to the staged hash.
-                revision_id = self._pm.stage_published_revision(
-                    project_path=str(self.project_path),
-                    target_path=str(target_path),
-                    content=updated_content,
-                )
-
-                #   Phase 2: atomic swap (temp + fsync + os.replace) so a crash
-                #            mid-write never leaves the file truncated.
-                atomic_write_text(target_path, updated_content)
-                logger.info(f"Successfully published to {filename}")
-                any_written = True
-
-                try:
-                    self._backup_manager._pm.insert_action_log(
+                    # Two-phase publish:
+                    #   Phase 1: stage the new content as a 'pending' revision in
+                    #            the DB. If we crash after the swap but before the
+                    #            commit-mark, the next publisher init reconciles
+                    #            this row by comparing the on-disk hash to the
+                    #            staged hash.
+                    revision_id = self._pm.stage_published_revision(
                         project_path=str(self.project_path),
-                        action_type="publish",
-                        entity_type=filename,
-                        entity_id=revision_id,
-                        details_json='{"sections": ["critical_rules", "mistake_corrections", "agent_calls", "skill_calls", "tooling_notes"]}',
+                        target_path=str(target_path),
+                        content=updated_content,
                     )
-                except Exception as log_exc:
-                    # The file is already written but the audit-log insert failed.
-                    # Restore the pre-write content so the file and the DB stay
-                    # consistent (no published change without an audit record),
-                    # and abort the staged revision so it is not later mistaken
-                    # for an interrupted-but-successful swap.
-                    logger.error(
-                        f"Failed to record publish action for {filename}; "
-                        f"rolling back file write: {log_exc}"
-                    )
-                    atomic_write_text(target_path, content)
-                    self._pm.abort_published_revision(revision_id)
-                    any_written = False
-                    continue
 
-                #   Phase 3: mark the staged revision committed now that the file
-                #            and the audit log are both in place.
-                if not self._pm.commit_published_revision(revision_id):
-                    # A concurrent reconcile resolved this revision while the swap
-                    # was in flight. The file write succeeded, so this is only an
-                    # audit mis-label — surface it rather than stay silent.
-                    logger.warning(
-                        f"Publish revision {revision_id} for {filename} was no longer "
-                        "pending at commit time (resolved by a concurrent reconcile); "
-                        "file content is live but the revision audit row may be "
-                        "marked aborted."
-                    )
+                    #   Phase 2: atomic swap (temp + fsync + os.replace) so a
+                    #            crash mid-write never leaves the file truncated.
+                    atomic_write_text(target_path, updated_content)
+                    logger.info(f"Successfully published to {filename}")
+                    any_written = True
+
+                    try:
+                        self._backup_manager._pm.insert_action_log(
+                            project_path=str(self.project_path),
+                            action_type="publish",
+                            entity_type=filename,
+                            entity_id=revision_id,
+                            details_json='{"sections": ["critical_rules", "mistake_corrections", "agent_calls", "skill_calls", "tooling_notes"]}',
+                        )
+                    except Exception as log_exc:
+                        # The file is already written but the audit-log insert
+                        # failed. Restore the pre-write content so the file and
+                        # the DB stay consistent (no published change without an
+                        # audit record), and abort the staged revision so it is
+                        # not later mistaken for an interrupted-but-successful
+                        # swap.
+                        logger.error(
+                            f"Failed to record publish action for {filename}; "
+                            f"rolling back file write: {log_exc}"
+                        )
+                        atomic_write_text(target_path, content)
+                        self._pm.abort_published_revision(revision_id)
+                        any_written = False
+                        continue
+
+                    #   Phase 3: mark the staged revision committed now that the
+                    #            file and the audit log are both in place.
+                    if not self._pm.commit_published_revision(revision_id):
+                        # A concurrent reconcile resolved this revision while the
+                        # swap was in flight. The file write succeeded, so this is
+                        # only an audit mis-label — surface it rather than stay
+                        # silent.
+                        logger.warning(
+                            f"Publish revision {revision_id} for {filename} was no longer "
+                            "pending at commit time (resolved by a concurrent reconcile); "
+                            "file content is live but the revision audit row may be "
+                            "marked aborted."
+                        )
             except Exception as e:
                 logger.error(f"Failed to publish to {filename}: {e}")
                 continue
@@ -945,25 +969,27 @@ Return ONLY the JSON array, nothing else."""
             logger.warning(f"CLAUDE.md not found at {self.claude_md_path}")
             return False
 
-        content = self.claude_md_path.read_text()
-        if PUBLISHED_START in content:
-            return True  # Already has markers
-
         try:
-            # Create backup first using shared BackupManager
-            self._backup_manager.create_backup("claude_md")
+            # Serialize the read-modify-write with the other host-doc writers.
+            with advisory_file_lock(host_doc_lock_sentinel(self.project_path, self.claude_md_path)):
+                content = self.claude_md_path.read_text()
+                if PUBLISHED_START in content:
+                    return True  # Already has markers
 
-            # Insert markers with empty content
-            empty_content = (
-                f"{SECTION_CRITICAL_RULES}\n\n"
-                f"{SECTION_MISTAKE_CORRECTIONS}\n\n"
-                f"{SECTION_AGENT_CALLS}\n\n"
-                f"{SECTION_SKILL_CALLS}\n\n"
-                f"{SECTION_TOOLING_NOTES}\n"
-            )
-            updated_content = self._insert_markers(content, empty_content)
-            atomic_write_text(self.claude_md_path, updated_content)
-            return True
+                # Create backup first using shared BackupManager
+                self._backup_manager.create_backup("claude_md")
+
+                # Insert markers with empty content
+                empty_content = (
+                    f"{SECTION_CRITICAL_RULES}\n\n"
+                    f"{SECTION_MISTAKE_CORRECTIONS}\n\n"
+                    f"{SECTION_AGENT_CALLS}\n\n"
+                    f"{SECTION_SKILL_CALLS}\n\n"
+                    f"{SECTION_TOOLING_NOTES}\n"
+                )
+                updated_content = self._insert_markers(content, empty_content)
+                atomic_write_text(self.claude_md_path, updated_content)
+                return True
         except Exception as e:
             logger.error(f"Failed to insert markers: {e}")
             return False
