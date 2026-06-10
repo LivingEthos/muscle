@@ -62,10 +62,11 @@ def test_marketplace_muscle_plugin_version_matches_pyproject(manifest: Path) -> 
     assert manifest.exists(), f"missing manifest: {manifest}"
     data = json.loads(manifest.read_text())
     entries = [p for p in data.get("plugins", []) if p.get("name") == "muscle"]
+    assert entries, f"{manifest} has no 'muscle' plugin entry"
     versioned = [p for p in entries if "version" in p]
-    if not versioned:
-        # Marketplace entry without a version field carries nothing to desync.
-        return
+    # Removing the version field entirely is itself a desync: the guard must
+    # fail loudly rather than silently pass.
+    assert versioned, f"{manifest} 'muscle' entry lost its version field"
     for entry in versioned:
         assert entry["version"] == _pyproject_version(), (
             f"{manifest} plugin 'muscle' version {entry['version']!r} != "

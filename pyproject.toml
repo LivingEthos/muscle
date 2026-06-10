@@ -62,9 +62,16 @@ exclude = [
 
 [tool.hatch.build.targets.sdist.force-include]
 "src/muscle/plugin/skills" = "src/muscle/plugin/skills"
+# Tracked in git, but the root .gitignore's global `.opencode/` pattern would
+# otherwise make hatchling drop it from the archives (ignore files are honored
+# even for tracked paths).
+"src/muscle/.opencode" = "src/muscle/.opencode"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/muscle"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/muscle/.opencode" = "muscle/.opencode"
 
 [tool.ruff]
 line-length = 100

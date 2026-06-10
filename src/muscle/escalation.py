@@ -99,7 +99,7 @@ class EscalationRecorder:
             f"\n"
             f"## Next step\n"
             f"The host model (Claude Code / Codex) should review this issue directly; "
-            f"MUSCLE's\nM2.7 agents exhausted their retry budget. "
+            f"MUSCLE's\nM3 agents exhausted their retry budget. "
             f"See `.muscle/reports/escalations/`\nfor related attempts.\n"
         )
 

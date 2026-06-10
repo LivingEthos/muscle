@@ -1,7 +1,7 @@
 """
 MUSCLE (MiniMax Unified Self-Correcting Learning Engine).
 
-A self-learning code review tool that uses the MiniMax M2.7 model via
+A self-learning code review tool that uses the MiniMax M3 model via
 an Anthropic-compatible API.
 """
 
