@@ -790,6 +790,30 @@ class TestSecretRedaction:
         assert "abcd1234efgh5678" not in out
         assert "[REDACTED:16]" in out
 
+    def test_redact_unquoted_assignment_with_digit(self):
+        from tools.muscle.code_review.code_reviewer import redact_secrets
+
+        out = redact_secrets("password=hunter2secret9")
+        assert "hunter2secret9" not in out
+        assert "[REDACTED:14]" in out
+
+    def test_assignment_does_not_redact_function_calls_or_identifiers(self):
+        """Ordinary code that findings quote must survive byte-identical.
+
+        The tightened assignment rule only matches quoted literals or unquoted
+        digit-bearing tokens that are not function calls, so these identifiers
+        (no digit / followed by ``(``) are left untouched.
+        """
+        from tools.muscle.code_review.code_reviewer import redact_secrets
+
+        for code in (
+            "token = get_token()",
+            "password = bcrypt.hashpw(raw, salt)",
+            "secret = compute_hmac(payload)",
+            "token = parseAuthHeader",
+        ):
+            assert redact_secrets(code) == code
+
     def test_redact_bearer_and_pat_and_pem(self):
         from tools.muscle.code_review.code_reviewer import redact_secrets
 

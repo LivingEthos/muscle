@@ -60,10 +60,21 @@ _AWS_KEY_RE = re.compile(r"\b((?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA)[A-Z0-9]{16}
 _BEARER_RE = re.compile(r"(?i)(bearer\s+)([A-Za-z0-9\-._~+/=]{12,})")
 _GH_PAT_RE = re.compile(r"\b((?:ghp|gho|ghu|ghs|ghr|glpat)_[A-Za-z0-9]{20,})\b")
 _OPENAI_KEY_RE = re.compile(r"\b(sk-[A-Za-z0-9]{20,})\b")
-# key = "value" / token: value style assignments (quotes optional).
+# key = "value" / token: value style assignments. We only redact values that
+# *look like literal credentials*, not ordinary code that security findings
+# routinely quote (``token = get_token()``, ``password = bcrypt.hashpw(...)``):
+#   - a quoted string literal of length >= 8 (single or double quotes), OR
+#   - an unquoted token of length >= 8 that contains at least one digit and is
+#     NOT immediately followed by ``(`` (which would make it a function call).
+# Identifiers like ``get_token`` / ``parseAuthHeader`` / ``compute_hmac`` have no
+# digit; ``bcrypt.hashpw(...)`` is excluded by the call lookahead.
 _ASSIGNMENT_RE = re.compile(
     r"(?i)((?:api[_-]?key|secret|token|password|passwd|pwd|access[_-]?token)\s*[:=]\s*)"
-    r"(['\"]?)([A-Za-z0-9\-._~+/=]{8,})(\2)"
+    r"(?:"
+    r"(['\"])([^'\"]{8,})(\2)"  # group2=quote, group3=quoted value, group4=closing quote
+    r"|"
+    r"(?P<bare>(?=[A-Za-z0-9\-._~+/=]*[0-9])[A-Za-z0-9\-._~+/=]{8,})(?![A-Za-z0-9\-._~+/=]*\()"
+    r")"
 )
 
 
@@ -87,11 +98,22 @@ def redact_secrets(text: str | None) -> str:
     cleaned = _GH_PAT_RE.sub(lambda m: _redact_secret_value(m.group(1)), cleaned)
     cleaned = _OPENAI_KEY_RE.sub(lambda m: _redact_secret_value(m.group(1)), cleaned)
     cleaned = _BEARER_RE.sub(lambda m: f"{m.group(1)}{_redact_secret_value(m.group(2))}", cleaned)
-    cleaned = _ASSIGNMENT_RE.sub(
-        lambda m: f"{m.group(1)}{m.group(2)}{_redact_secret_value(m.group(3))}{m.group(4)}",
-        cleaned,
-    )
+    cleaned = _ASSIGNMENT_RE.sub(_redact_assignment, cleaned)
     return cleaned
+
+
+def _redact_assignment(m: re.Match[str]) -> str:
+    """Rebuild an assignment match with only the credential value redacted.
+
+    Two RHS shapes match: a quoted literal (groups 2/3/4) or a bare digit-bearing
+    token (named group ``bare``). The key+operator prefix (group 1) and any quotes
+    are preserved verbatim.
+    """
+    prefix = m.group(1)
+    bare = m.group("bare")
+    if bare is not None:
+        return f"{prefix}{_redact_secret_value(bare)}"
+    return f"{prefix}{m.group(2)}{_redact_secret_value(m.group(3))}{m.group(4)}"
 
 
 def _redact_issue(issue: ReviewIssue) -> ReviewIssue:
