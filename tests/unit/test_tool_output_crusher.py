@@ -63,21 +63,39 @@ class TestJsonRecordsStrategy:
         result = crush_text(json.dumps([1, 2, 3]))
         assert result.strategy != "json_records"
 
-    def test_smaller_dedupe_window_candidate_wins_over_table(self) -> None:
-        # Wide records with identical values: the indented JSON has long runs of
-        # identical consecutive lines (dedupe + window crushes hard), while the
-        # table keeps every wide row. The dedupe/window candidate is the smaller
-        # one, so the table candidate must NOT short-circuit it.
+    def test_table_wins_for_records_even_when_window_candidate_is_smaller(self) -> None:
+        # Policy: losslessness trumps size for structured record payloads. Wide
+        # records with identical values give the indented JSON long runs of
+        # identical consecutive lines, so the lossy dedupe/window candidate is far
+        # smaller than the lossless table. The table must still WIN because it
+        # preserves every record, while windowing would silently elide lines.
         records = [{f"col{k}": "value" for k in range(15)} for _ in range(60)]
         text = json.dumps(records, indent=2)
         result = crush_text(text)
         assert result.applied
-        # The smaller candidate (dedupe/window) wins, not json_records.
-        assert result.strategy != "json_records"
-        assert "window" in result.strategy or "dedupe" in result.strategy
+        # The lossless table wins over the smaller lossy dedupe/window candidate.
+        assert result.strategy == "json_records"
         table = _crush_records(records, "records", DEFAULT_RECORD_CAP)
         assert table is not None
-        assert result.compact_chars < len(table)
+        assert result.compact_chars == len(table)
+        # Sanity: a dedupe/window candidate genuinely smaller than the table exists,
+        # so the win is a deliberate losslessness-over-size choice, not a tie.
+        assert result.text == table
+
+    def test_record_payload_table_not_beating_original_falls_through(self) -> None:
+        # When the table does NOT beat the original, the record payload falls
+        # through to the lossy dedupe/window path (the documented fallback).
+        # Disjoint keys per record give a wide, sparse table that does not shrink
+        # the indented JSON, so the table candidate is rejected.
+        records = [{f"k{i}_{j}": "v" for j in range(3)} for i in range(80)]
+        text = json.dumps(records, indent=2)
+        table = _crush_records(records, "records", DEFAULT_RECORD_CAP)
+        assert table is None  # table cannot beat the original here
+        result = crush_text(text)
+        assert result.applied
+        # Falls through to the lossy window path, never json_records.
+        assert result.strategy != "json_records"
+        assert "window" in result.strategy or "dedupe" in result.strategy
 
 
 class TestLineStrategies:

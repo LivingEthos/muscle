@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -28,6 +29,53 @@ logger = logging.getLogger(__name__)
 REPORT_PREFIX = "mutation_eval"
 DEFAULT_TIMEOUT_SECONDS = 300
 DEFAULT_MUTATION_LIMIT = 12
+
+# Shell metacharacters that mean the command can only be run through a shell
+# (chaining, pipes, redirection, subshells, globbing, env expansion). The default
+# command (``uv run pytest tests/ -q``) and any single-program command split
+# cleanly with shlex; only commands that genuinely need shell features fall back
+# to ``shell=True``.
+_SHELL_OPERATOR_RE = re.compile(r"[&|;<>()$`*?]|\n")
+
+
+def _build_test_invocation(test_command: str) -> tuple[list[str] | str, bool]:
+    """Return ``(command, use_shell)`` for running ``test_command``.
+
+    Prefer ``shell=False`` with ``shlex.split`` so the command is not interpreted
+    by a shell (no injection of one token leaking into another). The test command
+    is trusted input (operator-supplied via ``--test-command`` or the built-in
+    default), but it may legitimately use shell features such as ``&&`` or pipes;
+    when shell operators are present we fall back to ``shell=True`` and log a
+    warning so the trust boundary is explicit. ``shlex.split`` failures (e.g.
+    unbalanced quotes) also fall back to the shell.
+    """
+    if _SHELL_OPERATOR_RE.search(test_command):
+        logger.warning(
+            "Test command %r contains shell operators; executing via shell "
+            "(treated as trusted input)",
+            test_command,
+        )
+        return test_command, True
+    try:
+        argv = shlex.split(test_command)
+    except ValueError as exc:
+        logger.warning(
+            "Could not shlex-split test command %r (%s); executing via shell "
+            "(treated as trusted input)",
+            test_command,
+            exc,
+        )
+        return test_command, True
+    if not argv:
+        logger.warning(
+            "Test command %r split to an empty argv; executing via shell "
+            "(treated as trusted input)",
+            test_command,
+        )
+        return test_command, True
+    return argv, False
+
+
 IGNORED_DIR_NAMES = {
     ".git",
     ".mypy_cache",
@@ -403,11 +451,12 @@ class MutationRunner:
             original_lines[candidate.line_number - 1] = candidate.mutated_line
             atomic_write_text(target_file, "\n".join(original_lines) + "\n")
 
+            invocation, use_shell = _build_test_invocation(test_command)
             try:
                 completed = subprocess.run(
-                    test_command,
+                    invocation,
                     cwd=str(workspace),
-                    shell=True,
+                    shell=use_shell,
                     capture_output=True,
                     text=True,
                     timeout=timeout_seconds,

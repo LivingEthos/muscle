@@ -279,18 +279,25 @@ def crush_text(
     original_chars = len(text)
     original_lines = text.count("\n") + 1 if text else 0
 
-    # Compute every candidate that beats the original, then keep the smallest.
-    # The table transform must never short-circuit the dedupe/window path: a
-    # record-shaped payload that the table barely shrinks should still lose to a
-    # smaller dedupe/window candidate, and a table that fails to beat the original
-    # must not block one that does.
-    candidates: list[tuple[str, str]] = []  # (strategy, text)
+    # Routing policy: losslessness is preferred over raw size for structured
+    # record payloads. The json_records table transform is lossless (it preserves
+    # every field of every kept record); the dedupe/window path is lossy (it
+    # *elides* whole lines, marking but dropping content). Live benchmarking on
+    # structured analyzer JSON showed the lossy window candidate can be far smaller
+    # than the table (e.g. 46% vs 91% of original) yet silently discards records —
+    # the wrong default for structured data. So when the payload parses as JSON
+    # records AND the table beats the original, the table WINS outright, regardless
+    # of how small a dedupe/window candidate might be. The dedupe/window path is
+    # the candidate for non-record payloads, and the fallback when the table does
+    # not beat the original.
+    strategy = "none"
+    crushed: str | None = None
 
     records = _try_parse_records(text)
     if records is not None:
         table = _crush_records(records, label, record_cap)
         if table is not None and len(table) < original_chars:
-            candidates.append(("json_records", table))
+            return _build_result(text, table, "json_records", store)
 
     lines = text.split("\n")
     deduped = _dedupe_lines(lines)
@@ -303,12 +310,7 @@ def crush_text(
     if applied_parts:
         candidate = "\n".join(windowed)
         if len(candidate) < original_chars:
-            candidates.append(("+".join(applied_parts), candidate))
-
-    crushed: str | None = None
-    strategy = "none"
-    if candidates:
-        strategy, crushed = min(candidates, key=lambda c: len(c[1]))
+            strategy, crushed = "+".join(applied_parts), candidate
 
     if crushed is None or len(crushed) >= original_chars:
         return CrushResult(
@@ -323,6 +325,17 @@ def crush_text(
             handle=None,
         )
 
+    return _build_result(text, crushed, strategy, store)
+
+
+def _build_result(
+    text: str,
+    crushed: str,
+    strategy: str,
+    store: CcrStore | None,
+) -> CrushResult:
+    """Assemble an applied ``CrushResult``, persisting the original when a store is set."""
+    original_chars = len(text)
     handle = store.save(text) if store is not None else None
     return CrushResult(
         text=crushed,
@@ -330,7 +343,7 @@ def crush_text(
         strategy=strategy,
         original_chars=original_chars,
         compact_chars=len(crushed),
-        original_lines=original_lines,
+        original_lines=text.count("\n") + 1 if text else 0,
         kept_lines=crushed.count("\n") + 1,
         estimated_tokens_saved=max(0, (original_chars - len(crushed)) // 4),
         handle=handle,

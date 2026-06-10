@@ -3,6 +3,7 @@ Tests for memory_manager.py
 """
 
 import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -575,3 +576,83 @@ class TestAtomicLockedWrites:
             assert removed == 30
             # At least the backup write + the file write went through atomic_write_text.
             assert called["atomic"] >= 2
+
+
+class TestConcurrentMutators:
+    """Stress the advisory-lock contract demanded by the project critical rule:
+
+    many concurrent writers plus a pruner plus a consolidator must not lose any
+    entry. ``update``/``prune``/``consolidate`` all route file mutations through
+    ``update_text_file_locked`` / ``advisory_file_lock``, which open a fresh fd per
+    acquisition; ``fcntl.flock`` is per-open-file-description, so the threads here
+    genuinely exclude one another.
+    """
+
+    def test_concurrent_writers_pruner_consolidator_lose_no_entries(self):
+        from muscle.code_review.memory_manager import MemoryManager
+
+        n_writers = 80
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # No m27 client -> consolidate_memories() is a no-op (returns 0) but
+            # still contends on the same advisory lock, exercising the contract.
+            manager = MemoryManager(tmpdir)
+
+            # Unique entries with no file extensions and a unique numeric token so
+            # neither the substring nor the file-path duplicate heuristic fires.
+            # These are NOT prune-eligible: max_entries below stays well above the
+            # final count, so a legitimate prune never removes a writer's entry.
+            entries = [f"concurrent stress unique marker token {i:05d}" for i in range(n_writers)]
+            max_entries = n_writers * 10
+
+            start = threading.Barrier(n_writers + 2)
+            stop_background = threading.Event()
+            errors: list[BaseException] = []
+
+            def writer(entry: str) -> None:
+                try:
+                    start.wait()
+                    assert manager.update_memory_md(entry, category="stress") is True
+                except BaseException as exc:  # noqa: BLE001 - surfaced via errors list
+                    errors.append(exc)
+
+            def pruner() -> None:
+                try:
+                    start.wait()
+                    while not stop_background.is_set():
+                        manager.prune_old_entries("MEMORY.md", max_entries=max_entries)
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            def consolidator() -> None:
+                try:
+                    start.wait()
+                    while not stop_background.is_set():
+                        manager.consolidate_memories()
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=writer, args=(e,)) for e in entries]
+            threads.append(threading.Thread(target=pruner))
+            threads.append(threading.Thread(target=consolidator))
+
+            for t in threads:
+                t.start()
+            # Join writers first (last two threads are the background loops).
+            for t in threads[:-2]:
+                t.join(timeout=10)
+            stop_background.set()
+            for t in threads[-2:]:
+                t.join(timeout=10)
+
+            assert not errors, f"background tasks raised: {errors}"
+            assert all(not t.is_alive() for t in threads)
+
+            section = manager._extract_section((manager.muscle_dir / "MEMORY.md").read_text())
+            lines = [ln for ln in section.split("\n") if ln.strip().startswith("-")]
+
+            # Every unique entry survives exactly once: no lost writes (lock holds)
+            # and no duplicates (each entry is appended once).
+            for entry in entries:
+                matches = [ln for ln in lines if entry in ln]
+                assert len(matches) == 1, f"entry {entry!r} appears {len(matches)} times"
+            assert len(lines) == n_writers
