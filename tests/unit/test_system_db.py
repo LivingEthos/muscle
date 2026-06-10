@@ -7,9 +7,9 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from tools.muscle.project_memory import ProjectMemory
-from tools.muscle.project_memory_types import ProjectFingerprint
-from tools.muscle.system_db import CURRENT_SYSTEM_SCHEMA_VERSION, SystemDatabase
+from muscle.project_memory import ProjectMemory
+from muscle.project_memory_types import ProjectFingerprint
+from muscle.system_db import CURRENT_SYSTEM_SCHEMA_VERSION, SystemDatabase
 
 
 def test_system_db_initializes_schema_version_and_integrity(tmp_path: Path) -> None:

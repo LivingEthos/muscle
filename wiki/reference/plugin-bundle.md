@@ -4,7 +4,7 @@
 |---|---|
 | Audience | Plugin maintainers and release operators |
 | Status | Current bundle inventory |
-| Source of truth | [`tools/muscle/plugin/`](../../tools/muscle/plugin/), [`tests/unit/test_plugin_manifest.py`](../../tests/unit/test_plugin_manifest.py), [`tests/unit/test_plugin_docs.py`](../../tests/unit/test_plugin_docs.py), [`tests/unit/test_plugin_hooks.py`](../../tests/unit/test_plugin_hooks.py) |
+| Source of truth | [`src/muscle/plugin/`](../../src/muscle/plugin/), [`tests/unit/test_plugin_manifest.py`](../../tests/unit/test_plugin_manifest.py), [`tests/unit/test_plugin_docs.py`](../../tests/unit/test_plugin_docs.py), [`tests/unit/test_plugin_hooks.py`](../../tests/unit/test_plugin_hooks.py) |
 
 The plugin bundle is shared across Claude Code and Codex-style hosts. Both hosts
 reuse the same commands, agents, skills, and assets.
@@ -12,7 +12,7 @@ reuse the same commands, agents, skills, and assets.
 ## Bundle Tree
 
 ```text
-tools/muscle/plugin/
+src/muscle/plugin/
   .claude-plugin/
     plugin.json
     marketplace.json
@@ -39,7 +39,7 @@ tools/muscle/plugin/
 | `.claude-plugin/plugin.json` | Claude plugin manifest and advertised command list. |
 | `.claude-plugin/marketplace.json` | Nested marketplace manifest with local `source: "./"`. |
 | `hooks/hooks.json` | Claude hook events and timeouts. |
-| repository `.claude-plugin/marketplace.json` | Git-subdir marketplace entry for `tools/muscle/plugin`. |
+| repository `.claude-plugin/marketplace.json` | Git-subdir marketplace entry for `src/muscle/plugin`. |
 
 ## Codex Files
 
@@ -69,8 +69,8 @@ uv run muscle doctor --json
 If Claude Code is installed:
 
 ```bash
-claude plugin validate tools/muscle/plugin/.claude-plugin/plugin.json
-claude plugin validate tools/muscle/plugin/.claude-plugin/marketplace.json
+claude plugin validate src/muscle/plugin/.claude-plugin/plugin.json
+claude plugin validate src/muscle/plugin/.claude-plugin/marketplace.json
 claude plugin validate .claude-plugin/marketplace.json
 ```
 

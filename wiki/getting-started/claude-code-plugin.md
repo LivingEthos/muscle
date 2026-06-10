@@ -4,11 +4,11 @@
 |---|---|
 | Audience | Claude Code users and plugin maintainers |
 | Status | Current bundle behavior |
-| Source of truth | [`tools/muscle/plugin/.claude-plugin/plugin.json`](../../tools/muscle/plugin/.claude-plugin/plugin.json), [`tools/muscle/plugin/.claude-plugin/marketplace.json`](../../tools/muscle/plugin/.claude-plugin/marketplace.json), [`.claude-plugin/marketplace.json`](../../.claude-plugin/marketplace.json), [`tools/muscle/plugin/hooks/hooks.json`](../../tools/muscle/plugin/hooks/hooks.json) |
+| Source of truth | [`src/muscle/plugin/.claude-plugin/plugin.json`](../../src/muscle/plugin/.claude-plugin/plugin.json), [`src/muscle/plugin/.claude-plugin/marketplace.json`](../../src/muscle/plugin/.claude-plugin/marketplace.json), [`.claude-plugin/marketplace.json`](../../.claude-plugin/marketplace.json), [`src/muscle/plugin/hooks/hooks.json`](../../src/muscle/plugin/hooks/hooks.json) |
 
 The Claude Code plugin exposes `/muscle:*` slash commands, a code-review skill,
 two helper agents, and lifecycle hooks. The plugin files live under
-[`tools/muscle/plugin/`](../../tools/muscle/plugin/).
+[`src/muscle/plugin/`](../../src/muscle/plugin/).
 
 ## Marketplace Install
 
@@ -19,7 +19,7 @@ Inside Claude Code:
 /plugin install muscle@muscle-marketplace
 ```
 
-The repository-level marketplace manifest points at the `tools/muscle/plugin`
+The repository-level marketplace manifest points at the `src/muscle/plugin`
 git subdirectory. The nested marketplace manifest supports local bundle
 validation and plugin development from the plugin root.
 
@@ -29,7 +29,7 @@ From a local checkout:
 
 ```bash
 uv sync --extra dev
-claude --plugin-dir ./tools/muscle/plugin
+claude --plugin-dir ./src/muscle/plugin
 ```
 
 ## Claude Hook Events
@@ -47,8 +47,8 @@ The hook runtime fails open so degraded hook behavior does not block Claude Code
 Use the local Claude validator when available:
 
 ```bash
-claude plugin validate tools/muscle/plugin/.claude-plugin/plugin.json
-claude plugin validate tools/muscle/plugin/.claude-plugin/marketplace.json
+claude plugin validate src/muscle/plugin/.claude-plugin/plugin.json
+claude plugin validate src/muscle/plugin/.claude-plugin/marketplace.json
 claude plugin validate .claude-plugin/marketplace.json
 ```
 

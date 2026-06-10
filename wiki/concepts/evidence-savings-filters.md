@@ -4,7 +4,7 @@
 |---|---|
 | Audience | Operators and agents evaluating review evidence quality |
 | Status | Current evidence surfaces |
-| Source of truth | [`tools/muscle/command_evidence.py`](../../tools/muscle/command_evidence.py), [`tools/muscle/output_filters.py`](../../tools/muscle/output_filters.py), [`tools/muscle/savings.py`](../../tools/muscle/savings.py), [`docs/release-notes-2026-05-01-plugin-readiness.md`](../../docs/release-notes-2026-05-01-plugin-readiness.md) |
+| Source of truth | [`src/muscle/command_evidence.py`](../../src/muscle/command_evidence.py), [`src/muscle/output_filters.py`](../../src/muscle/output_filters.py), [`src/muscle/savings.py`](../../src/muscle/savings.py), [`docs/release-notes-2026-05-01-plugin-readiness.md`](../../docs/release-notes-2026-05-01-plugin-readiness.md) |
 | Primary commands | `muscle savings`, `muscle discover`, `muscle filters verify`, `muscle filters trust` |
 
 MUSCLE records local evidence about what commands ran, what output was retained,

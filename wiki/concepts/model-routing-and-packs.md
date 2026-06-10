@@ -4,7 +4,7 @@
 |---|---|
 | Audience | Operators tuning model behavior and agents deciding delegation |
 | Status | Current overlay and routing model |
-| Source of truth | [`tools/muscle/routing.py`](../../tools/muscle/routing.py), [`tools/muscle/model_identity.py`](../../tools/muscle/model_identity.py), [`tools/muscle/lesson_resolver.py`](../../tools/muscle/lesson_resolver.py), [`tools/muscle/system_db.py`](../../tools/muscle/system_db.py), [`tools/muscle/model_packs.py`](../../tools/muscle/model_packs.py) |
+| Source of truth | [`src/muscle/routing.py`](../../src/muscle/routing.py), [`src/muscle/model_identity.py`](../../src/muscle/model_identity.py), [`src/muscle/lesson_resolver.py`](../../src/muscle/lesson_resolver.py), [`src/muscle/system_db.py`](../../src/muscle/system_db.py), [`src/muscle/model_packs.py`](../../src/muscle/model_packs.py) |
 | Primary commands | `muscle route`, `muscle model status`, `muscle model select`, `muscle model packs ...` |
 
 MUSCLE separates task routing, model identity, and optional model-pack lessons.

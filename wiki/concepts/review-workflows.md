@@ -4,7 +4,7 @@
 |---|---|
 | Audience | Users, maintainers, and agents deciding how to review code |
 | Status | Current review behavior |
-| Source of truth | [`tools/muscle/cli.py`](../../tools/muscle/cli.py), [`tools/muscle/code_review/review_controller.py`](../../tools/muscle/code_review/review_controller.py), [`tools/muscle/code_review/types.py`](../../tools/muscle/code_review/types.py), [`tools/muscle/workflows/`](../../tools/muscle/workflows/) |
+| Source of truth | [`src/muscle/cli.py`](../../src/muscle/cli.py), [`src/muscle/code_review/review_controller.py`](../../src/muscle/code_review/review_controller.py), [`src/muscle/code_review/types.py`](../../src/muscle/code_review/types.py), [`src/muscle/workflows/`](../../src/muscle/workflows/) |
 | Primary commands | `muscle review`, `/muscle:review`, `/muscle:pressure`, `/muscle:check` |
 
 `muscle review` combines local static analysis, M2.7 semantic review, optional
@@ -38,7 +38,7 @@ Pressure focus accepts comma-separated tags such as `design`, `failure`, `race`,
 
 ## Workflow Engine
 
-Structured workflows live under [`tools/muscle/workflows/`](../../tools/muscle/workflows/).
+Structured workflows live under [`src/muscle/workflows/`](../../src/muscle/workflows/).
 They are constrained YAML DAGs. Supported node types include:
 
 - `classify`

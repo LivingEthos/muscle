@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tools.muscle.llm.client import (
+from muscle.llm.client import (
     LLMClient,
     LLMClientWrapper,
     LLMMessage,
@@ -95,14 +95,14 @@ def test_wrapper_delegates_properties():
 def test_get_context_window_exact_match():
     # FakeClient provider_name is "fake", so no exact match in MODEL_CONTEXT_WINDOWS
     # Use a provider that exists in the registry
-    from tools.muscle.llm.adapters.openai import OpenAIClient
+    from muscle.llm.adapters.openai import OpenAIClient
 
     oai = OpenAIClient(api_key="test")
     assert oai.get_context_window("gpt-4o") == 128_000
 
 
 def test_get_context_window_segment_match():
-    from tools.muscle.llm.adapters.openrouter import OpenRouterClient
+    from muscle.llm.adapters.openrouter import OpenRouterClient
 
     or_client = OpenRouterClient(api_key="test")
     assert or_client.get_context_window("openai/gpt-4o-mini") == 128_000
@@ -110,7 +110,7 @@ def test_get_context_window_segment_match():
 
 
 def test_get_context_window_fallback():
-    from tools.muscle.llm.adapters.openai import OpenAIClient
+    from muscle.llm.adapters.openai import OpenAIClient
 
     oai = OpenAIClient(api_key="test")
     assert oai.get_context_window("unknown-model-xyz") == 128_000

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.muscle.tui.project_manager import ProjectConfig, ProjectManager
+from muscle.tui.project_manager import ProjectConfig, ProjectManager
 
 
 class TestProjectConfig:

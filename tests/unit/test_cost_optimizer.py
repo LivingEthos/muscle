@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from tools.muscle.cost_optimizer import (
+from muscle.cost_optimizer import (
     HOST_MODEL_PRICING,
     M3_LONG_CONTEXT_THRESHOLD,
     CostOptimizer,

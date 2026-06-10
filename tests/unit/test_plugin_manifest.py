@@ -22,7 +22,7 @@ import pytest
 
 logger = logging.getLogger(__name__)
 
-PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "tools" / "muscle" / "plugin"
+PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "muscle" / "plugin"
 ROOT_MARKETPLACE_PATH = Path(__file__).resolve().parents[2] / ".claude-plugin" / "marketplace.json"
 MANIFEST_PATH = PLUGIN_ROOT / ".claude-plugin" / "plugin.json"
 MARKETPLACE_PATH = PLUGIN_ROOT / ".claude-plugin" / "marketplace.json"
@@ -124,7 +124,7 @@ class TestPluginManifest:
         assert plugin.get("source") == {
             "source": "git-subdir",
             "url": "https://github.com/LivingEthos/muscle.git",
-            "path": "tools/muscle/plugin",
+            "path": "src/muscle/plugin",
         }
         assert "savings" in plugin.get("description", "")
         assert "discovery" in plugin.get("description", "")

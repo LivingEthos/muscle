@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tools.muscle.git_history_forensics import GitHistoryForensics
+from muscle.git_history_forensics import GitHistoryForensics
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:

@@ -13,7 +13,7 @@ class TestMemoryManager:
 
     def test_memory_manager_init(self):
         """Test MemoryManager initialization."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -22,7 +22,7 @@ class TestMemoryManager:
 
     def test_update_memory_md_creates_file(self):
         """Test that update_memory_md creates file if not exists."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -33,7 +33,7 @@ class TestMemoryManager:
 
     def test_update_claude_md(self):
         """Test updating CLAUDE.md."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -44,7 +44,7 @@ class TestMemoryManager:
 
     def test_update_agent_md(self):
         """Test updating AGENT.md."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -55,7 +55,7 @@ class TestMemoryManager:
 
     def test_duplicate_entry_skipped(self):
         """Test that duplicate entries are skipped."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -66,7 +66,7 @@ class TestMemoryManager:
 
     def test_seed_contains_methodology(self):
         """Test that freshly-created .muscle/CLAUDE.md is seeded with Methodology section."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -84,7 +84,7 @@ class TestMemoryManager:
 
     def test_add_skill_reference(self):
         """Test adding skill reference."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -97,7 +97,7 @@ class TestMemoryManager:
 
     def test_add_agent_reference(self):
         """Test adding agent reference."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -111,7 +111,7 @@ class TestMemoryManager:
 
     def test_add_pattern_learned(self):
         """Test recording learned pattern."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -125,7 +125,7 @@ class TestMemoryManager:
 
     def test_add_fix_validated(self):
         """Test recording validated fix."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -138,7 +138,7 @@ class TestMemoryManager:
 
     def test_prune_old_entries(self):
         """Test pruning old entries."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -149,7 +149,7 @@ class TestMemoryManager:
 
     def test_marker_based_editing(self):
         """Test that edits are bounded by markers."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -177,7 +177,7 @@ class TestStructuredClaudeMd:
 
     def test_write_do_rule(self):
         """Test writing a 'do' rule to CLAUDE.md."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -197,7 +197,7 @@ class TestStructuredClaudeMd:
 
     def test_write_dont_rule(self):
         """Test writing a 'dont' rule to CLAUDE.md."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -217,7 +217,7 @@ class TestStructuredClaudeMd:
 
     def test_write_skill_reference(self):
         """Test writing a skill reference to CLAUDE.md."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -231,7 +231,7 @@ class TestStructuredClaudeMd:
 
     def test_dedup_rules(self):
         """Test that writing the same rule twice only appears once."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -257,7 +257,7 @@ class TestStructuredClaudeMd:
 
     def test_read_rules(self):
         """Test reading rules back from CLAUDE.md."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -292,7 +292,7 @@ class TestStructuredClaudeMd:
 
     def test_update_rule_validated_count(self):
         """Test updating a rule's validation count in-place."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -316,7 +316,7 @@ class TestStructuredClaudeMd:
 
     def test_archive_rule(self):
         """Test archiving a rule moves it from CLAUDE.md to MEMORY.md."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -343,7 +343,7 @@ class TestStructuredClaudeMd:
 
     def test_log_review_session(self):
         """Test logging a review session to MEMORY.md."""
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -380,7 +380,7 @@ class TestSummarizeTruncation:
     """Regression tests for _m27_summarize_entry / _truncate_clean."""
 
     def test_truncate_does_not_cut_mid_word(self):
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -391,7 +391,7 @@ class TestSummarizeTruncation:
             assert all(tok == "word" for tok in result.split())
 
     def test_truncate_does_not_cut_inside_tag(self):
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -402,7 +402,7 @@ class TestSummarizeTruncation:
             assert "<sometag" not in result
 
     def test_truncate_does_not_cut_inside_bracket(self):
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)
@@ -412,7 +412,7 @@ class TestSummarizeTruncation:
             assert "[unclosed" not in result
 
     def test_summarize_no_llm_truncates_cleanly(self):
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager(tmpdir)  # no m27 client
@@ -422,7 +422,7 @@ class TestSummarizeTruncation:
             assert all(tok == "alpha" for tok in result.split())
 
     def test_summarize_llm_failure_truncates_cleanly(self):
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             client = MagicMock()
@@ -438,7 +438,7 @@ class TestConsolidateMemories:
     """Regression tests for the consolidate_memories data-loss guard."""
 
     def test_consolidate_aborts_and_backs_up_on_mass_deletion(self):
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             import json as _json
@@ -462,7 +462,7 @@ class TestConsolidateMemories:
             assert "entry number 79" in (manager.muscle_dir / "MEMORY.md.bak").read_text()
 
     def test_consolidate_returns_real_removed_count(self):
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             import json as _json
@@ -487,7 +487,7 @@ class TestConsolidateMemories:
             assert line_count == 50
 
     def test_consolidate_rejects_garbage_entries(self):
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             import json as _json
@@ -506,7 +506,7 @@ class TestConsolidateMemories:
             assert (manager.muscle_dir / "MEMORY.md").read_text() == original
 
     def test_consolidate_guards_invalid_json(self):
-        from tools.muscle.code_review.memory_manager import MemoryManager
+        from muscle.code_review.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             client = MagicMock()
@@ -525,7 +525,7 @@ class TestAtomicLockedWrites:
     """Regression tests asserting mutators use the locked/atomic write path."""
 
     def test_prune_uses_locked_atomic_write(self, monkeypatch):
-        from tools.muscle.code_review import memory_manager as mm
+        from muscle.code_review import memory_manager as mm
 
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = mm.MemoryManager(tmpdir)
@@ -549,7 +549,7 @@ class TestAtomicLockedWrites:
             assert line_count == 100
 
     def test_consolidate_uses_atomic_write(self, monkeypatch):
-        from tools.muscle.code_review import memory_manager as mm
+        from muscle.code_review import memory_manager as mm
 
         with tempfile.TemporaryDirectory() as tmpdir:
             import json as _json

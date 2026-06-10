@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tools.muscle.optimization.importers import ExternalBenchmarkImporter
-from tools.muscle.optimization.recorder import LLMCallEvent, TelemetryRecorder
-from tools.muscle.project_memory import ProjectMemory
+from muscle.optimization.importers import ExternalBenchmarkImporter
+from muscle.optimization.recorder import LLMCallEvent, TelemetryRecorder
+from muscle.project_memory import ProjectMemory
 
 
 def test_telemetry_recorder_flushes_llm_calls(tmp_path: Path) -> None:

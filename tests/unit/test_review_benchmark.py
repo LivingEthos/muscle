@@ -8,8 +8,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.muscle.code_review import review_benchmark as benchmark_module
-from tools.muscle.code_review.types import IssueCategory, ReviewIssue, Severity
+from muscle.code_review import review_benchmark as benchmark_module
+from muscle.code_review.types import IssueCategory, ReviewIssue, Severity
 
 
 def _issue(file_path: str, severity: Severity, title: str, description: str) -> ReviewIssue:

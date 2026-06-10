@@ -10,8 +10,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from tools.muscle.evolver import Evolver, _build_evolver_prompt, _sanitize_for_prompt
-from tools.muscle.m27_client import TokenUsage
+from muscle.evolver import Evolver, _build_evolver_prompt, _sanitize_for_prompt
+from muscle.m27_client import TokenUsage
 
 
 @pytest.fixture(autouse=True)

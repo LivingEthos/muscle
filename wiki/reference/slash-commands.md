@@ -3,10 +3,10 @@
 | Field | Value |
 |---|---|
 | Audience | Plugin users, maintainers, and agents |
-| Status | Catalog of current `tools/muscle/plugin/commands/*.md` files |
-| Source of truth | [`tools/muscle/plugin/commands/`](../../tools/muscle/plugin/commands/), [`tools/muscle/plugin/.claude-plugin/plugin.json`](../../tools/muscle/plugin/.claude-plugin/plugin.json), [`tests/unit/test_plugin_manifest.py`](../../tests/unit/test_plugin_manifest.py), [`tests/unit/test_plugin_docs.py`](../../tests/unit/test_plugin_docs.py) |
+| Status | Catalog of current `src/muscle/plugin/commands/*.md` files |
+| Source of truth | [`src/muscle/plugin/commands/`](../../src/muscle/plugin/commands/), [`src/muscle/plugin/.claude-plugin/plugin.json`](../../src/muscle/plugin/.claude-plugin/plugin.json), [`tests/unit/test_plugin_manifest.py`](../../tests/unit/test_plugin_manifest.py), [`tests/unit/test_plugin_docs.py`](../../tests/unit/test_plugin_docs.py) |
 
-The plugin currently ships 36 command docs under `tools/muscle/plugin/commands/`.
+The plugin currently ships 36 command docs under `src/muscle/plugin/commands/`.
 Every advertised `/muscle:*` command should have a matching markdown file, and
 every markdown file should be advertised by the Claude manifest.
 
@@ -84,7 +84,7 @@ learning, and optimization writes.
 
 When adding or removing a command:
 
-1. Add or remove the markdown file under `tools/muscle/plugin/commands/`.
-2. Update `tools/muscle/plugin/.claude-plugin/plugin.json`.
+1. Add or remove the markdown file under `src/muscle/plugin/commands/`.
+2. Update `src/muscle/plugin/.claude-plugin/plugin.json`.
 3. Update tests if the command maps to a new CLI surface.
 4. Update this page and [`../data/commands.yml`](../data/commands.yml).

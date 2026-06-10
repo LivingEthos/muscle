@@ -1,5 +1,5 @@
 """
-Unit tests for tools.muscle.adapters.http_utils.redact_secrets.
+Unit tests for muscle.adapters.http_utils.redact_secrets.
 
 Table-driven cases covering: Bearer tokens, GitHub PATs (ghp_*),
 GitLab PATs (glpat_*), Authorization header lines, and token= query strings.
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from tools.muscle.adapters.http_utils import redact_secrets
+from muscle.adapters.http_utils import redact_secrets
 
 REDACTED = "***REDACTED***"
 

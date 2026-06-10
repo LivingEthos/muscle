@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tools.muscle.optimization.context_budgeter import (
+from muscle.optimization.context_budgeter import (
     DEFAULT_ESCALATION_LINE_BUDGET,
     LARGE_WINDOW_ESCALATION_LINE_BUDGET,
     ContextBudgeter,

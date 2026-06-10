@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from tools.muscle.adapters.github import GitHubAdapter
+from muscle.adapters.github import GitHubAdapter
 
 
 class TestGitHubAdapter:
@@ -141,7 +141,7 @@ class TestGitHubAdapter:
             Mock(status_code=422, json=lambda: {}, text="sha required"),
             Mock(status_code=200, json=lambda: {"content": {"path": "foo.txt"}}, text=""),
         ]
-        with patch("tools.muscle.adapters.github.requests.put", side_effect=responses) as mock_put:
+        with patch("muscle.adapters.github.requests.put", side_effect=responses) as mock_put:
             with patch.object(
                 adapter,
                 "get_file_metadata",

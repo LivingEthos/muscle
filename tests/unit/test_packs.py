@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`tools.muscle.packs` (Phase B.5).
+"""Unit tests for :mod:`muscle.packs` (Phase B.5).
 
 Covers:
 
@@ -24,10 +24,10 @@ from pathlib import Path
 
 import pytest
 
-from tools.muscle.migrations import MigrationRunner
-from tools.muscle.optimization.context_budgeter import ContextBudgeter
-from tools.muscle.packs import Pack, PackBuilder, PackStore
-from tools.muscle.response_cache import ResponseCache
+from muscle.migrations import MigrationRunner
+from muscle.optimization.context_budgeter import ContextBudgeter
+from muscle.packs import Pack, PackBuilder, PackStore
+from muscle.response_cache import ResponseCache
 
 logger = logging.getLogger(__name__)
 

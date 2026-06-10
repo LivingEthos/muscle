@@ -1,6 +1,6 @@
 """Tests for host_memory_templates.py — byte-stability and rendering."""
 
-from tools.muscle.code_review.host_memory_templates import (
+from muscle.code_review.host_memory_templates import (
     INTERNAL_SEED,
     PINNED_SECTION_ORDER,
     PINNED_TEMPLATE,

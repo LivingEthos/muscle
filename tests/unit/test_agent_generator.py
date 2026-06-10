@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from tools.muscle.code_review.agent_generator import (
+from muscle.code_review.agent_generator import (
     MAX_ACTIVE_AGENTS,
     MAX_AGENT_REVISIONS,
     MIN_EVIDENCE_COUNT,
@@ -438,7 +438,7 @@ class TestAtomicWriteAndGuard:
             {},
         )
 
-        with patch("tools.muscle.code_review.agent_generator.atomic_write_text") as mock_atomic:
+        with patch("muscle.code_review.agent_generator.atomic_write_text") as mock_atomic:
             result = generator.generate_agent(mock_pattern, [])
 
         assert result is not None
@@ -567,7 +567,7 @@ class TestGenerateAgentLockingContract:
         mock_pm.count_decisions_for_pattern.return_value = 5
 
         sentinel = generator._agents_lock_sentinel()
-        with patch("tools.muscle.code_review.agent_generator.advisory_file_lock", spy_lock):
+        with patch("muscle.code_review.agent_generator.advisory_file_lock", spy_lock):
             result = generator.generate_agent(self._ok_pattern(), [])
 
         assert result is not None

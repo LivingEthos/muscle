@@ -4,7 +4,7 @@
 |---|---|
 | Audience | Maintainers, operators, and agents debugging state |
 | Status | Current storage guide with known stale-doc caveat |
-| Source of truth | [`tools/muscle/project_memory.py`](../../tools/muscle/project_memory.py), [`tools/muscle/system_db.py`](../../tools/muscle/system_db.py), [`docs/migration-and-data-safety.md`](../../docs/migration-and-data-safety.md), [`tools/muscle/code_review/shadow_broker.py`](../../tools/muscle/code_review/shadow_broker.py) |
+| Source of truth | [`src/muscle/project_memory.py`](../../src/muscle/project_memory.py), [`src/muscle/system_db.py`](../../src/muscle/system_db.py), [`docs/migration-and-data-safety.md`](../../docs/migration-and-data-safety.md), [`src/muscle/code_review/shadow_broker.py`](../../src/muscle/code_review/shadow_broker.py) |
 
 ## Per-Project State
 

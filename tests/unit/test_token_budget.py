@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from tools.muscle.exceptions import BudgetExceededError
-from tools.muscle.llm.token_budget import BudgetConfig, TokenBudget, TokenUsage
+from muscle.exceptions import BudgetExceededError
+from muscle.llm.token_budget import BudgetConfig, TokenBudget, TokenUsage
 
 
 def test_budget_config_defaults():

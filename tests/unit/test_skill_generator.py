@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
-from tools.muscle.code_review.skill_generator import SkillGenerator
+from muscle.code_review.skill_generator import SkillGenerator
 
 
 @pytest.fixture

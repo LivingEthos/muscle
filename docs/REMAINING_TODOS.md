@@ -89,9 +89,9 @@ Completed:
 Current live rerun result:
 - focused foresight/plugin docs subset: `263 passed, 1 skipped`
 - `uv sync --extra dev` exits `0`
-- `uv run mypy tools/muscle/` exits `0`
-- `uv run ruff check tools/muscle/` exits `0`
-- `uv run ruff format --check tools/muscle/` exits `0`
+- `uv run mypy src/muscle/` exits `0`
+- `uv run ruff check src/muscle/` exits `0`
+- `uv run ruff format --check src/muscle/` exits `0`
 - `uv run pytest tests/ -q` exits `0` with `2445 passed, 3 skipped`
 - `uv build --out-dir /tmp/muscle-dist-20260524-5` builds source distribution
   and wheel
@@ -129,16 +129,16 @@ Completed:
   optimization ledgers, or review artifacts
 - added `/muscle:foresight` plugin command docs and manifest parity
 - fixed package-data inclusion so the plugin skill file
-  `tools/muscle/plugin/skills/code-review/SKILL.md` is present in the release
+  `src/muscle/plugin/skills/code-review/SKILL.md` is present in the release
   sdist/wheel without duplicate wheel entries
 
 Current live rerun result:
 - targeted foresight/plugin tests:
   `312 passed, 1 skipped`
 - `uv sync --extra dev` exits `0`
-- `uv run mypy tools/muscle/` exits `0`
-- `uv run ruff check tools/muscle/` exits `0`
-- `uv run ruff format --check tools/muscle/` exits `0`
+- `uv run mypy src/muscle/` exits `0`
+- `uv run ruff check src/muscle/` exits `0`
+- `uv run ruff format --check src/muscle/` exits `0`
 - `uv run pytest tests/ -q` exits `0` with `2445 passed, 3 skipped`
 - `uv build --out-dir /tmp/muscle-dist-20260524-4` builds source distribution
   and wheel
@@ -146,8 +146,8 @@ Current live rerun result:
   duplicate entries, and includes Claude/Codex plugin manifests, hooks, command
   docs including `foresight.md`, agents, shared assets, and the code-review
   skill file
-- `uv run python -m tools.muscle.cli foresight --task "Plan the next safe
-  product slice" --target tools/muscle/cli.py --no-write --json | python3 -m
+- `uv run python -m muscle.cli foresight --task "Plan the next safe
+  product slice" --target src/muscle/cli.py --no-write --json | python3 -m
   json.tool` exits `0`
 - `uv run muscle doctor --json | python3 -m json.tool` exits `0`
 
@@ -174,9 +174,9 @@ Completed:
 
 Current live rerun result:
 - `uv sync --extra dev` exits `0`
-- `uv run mypy tools/muscle/` exits `0`
-- `uv run ruff check tools/muscle/` exits `0`
-- `uv run ruff format --check tools/muscle/` exits `0`
+- `uv run mypy src/muscle/` exits `0`
+- `uv run ruff check src/muscle/` exits `0`
+- `uv run ruff format --check src/muscle/` exits `0`
 - `uv run pytest tests/ -q` exits `0` with `2432 passed, 3 skipped`
 - `git diff --check` exits `0`
 
@@ -208,7 +208,7 @@ Current live rerun result:
   - `tasks`: `218`
   - `working_memory`: `299`
   - `external_benchmark_sessions`: `14`
-- `uv run python -m tools.muscle.cli doctor --json` exits `0`
+- `uv run python -m muscle.cli doctor --json` exits `0`
 - `uv run muscle doctor --json` exits `0` and emits parseable JSON
 
 Decision:
@@ -278,10 +278,10 @@ Decision:
 
 Validation:
 - `uv run pytest tests/unit/test_committee_reviewer.py tests/unit/test_review_benchmark.py -q`
-- `uv run ruff check tools/muscle/code_review/committee_reviewer.py tools/muscle/code_review/review_benchmark.py tests/unit/test_committee_reviewer.py tests/unit/test_review_benchmark.py`
-- `uv run ruff format --check tools/muscle/code_review/committee_reviewer.py tools/muscle/code_review/review_benchmark.py tests/unit/test_committee_reviewer.py tests/unit/test_review_benchmark.py`
-- `uv run mypy tools/muscle/code_review/committee_reviewer.py tools/muscle/code_review/review_benchmark.py`
-- `uv run python -m tools.muscle.cli long-eval benchmark --suite all --enforce-gates`
+- `uv run ruff check src/muscle/code_review/committee_reviewer.py src/muscle/code_review/review_benchmark.py tests/unit/test_committee_reviewer.py tests/unit/test_review_benchmark.py`
+- `uv run ruff format --check src/muscle/code_review/committee_reviewer.py src/muscle/code_review/review_benchmark.py tests/unit/test_committee_reviewer.py tests/unit/test_review_benchmark.py`
+- `uv run mypy src/muscle/code_review/committee_reviewer.py src/muscle/code_review/review_benchmark.py`
+- `uv run python -m muscle.cli long-eval benchmark --suite all --enforce-gates`
 
 ### 2026-04-17 — Credentialed full-suite benchmark rerun and release-evidence capture
 
@@ -289,7 +289,7 @@ Status: completed
 
 Completed:
 - ran the full benchmark and release-gate flow with live MiniMax credentials:
-  - `uv run python -m tools.muscle.cli long-eval benchmark --suite all --enforce-gates`
+  - `uv run python -m muscle.cli long-eval benchmark --suite all --enforce-gates`
 - captured the generated evidence:
   - benchmark JSON:
     `.muscle/reports/benchmarks/benchmark_20260417_231502.json`
@@ -336,12 +336,12 @@ Status: completed
 
 Completed:
 - ran the new benchmark CLI path for the current project:
-  - `uv run python -m tools.muscle.cli long-eval benchmark --suite all --no-history`
+  - `uv run python -m muscle.cli long-eval benchmark --suite all --no-history`
 - verified the current shell has no `MINIMAX_API_KEY` / `ANTHROPIC_API_KEY`, so
   the full credentialed fixture-review benchmark did not produce a report and
   remains blocked on credentials
 - fixed a benchmark-adjacent regression where importing `ClaudePublisher`
-  triggered a circular import through `tools.muscle.code_review.__init__`
+  triggered a circular import through `muscle.code_review.__init__`
 - reran targeted validation on the touched surfaces:
   - `uv run pytest tests/unit/test_claude_publisher.py -v`
   - `uv run pytest tests/unit/test_review_benchmark.py tests/unit/test_routing.py -v`

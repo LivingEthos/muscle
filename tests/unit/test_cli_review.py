@@ -14,8 +14,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from tools.muscle.cli import cli
-from tools.muscle.tui.project_manager import ProjectConfig, ProjectManager
+from muscle.cli import cli
+from muscle.tui.project_manager import ProjectConfig, ProjectManager
 
 
 class TestReviewCommand:
@@ -48,7 +48,7 @@ class TestReviewCommand:
         mock_instance.run.return_value = mock_run_result
         mock_instance.get_review_result.return_value = mock_result
 
-        with patch("tools.muscle.code_review.ReviewController") as mock_class:
+        with patch("muscle.code_review.ReviewController") as mock_class:
             mock_class.return_value = mock_instance
             yield mock_instance
 
@@ -74,7 +74,7 @@ class TestReviewCommand:
         env.pop("MINIMAX_API_KEY", None)
 
         with patch(
-            "tools.muscle.foresight.build_foresight_report",
+            "muscle.foresight.build_foresight_report",
             side_effect=AssertionError("review should not call foresight"),
         ) as build_foresight:
             result = runner.invoke(
@@ -194,8 +194,8 @@ class TestReviewCommand:
         env["MINIMAX_API_KEY"] = "test-key"
 
         with (
-            patch("tools.muscle.cli.ProjectMemory") as mock_project_memory,
-            patch("tools.muscle.cli.LearningPipeline") as mock_learning_pipeline,
+            patch("muscle.cli.ProjectMemory") as mock_project_memory,
+            patch("muscle.cli.LearningPipeline") as mock_learning_pipeline,
         ):
             result = runner.invoke(
                 cli,
@@ -217,7 +217,7 @@ class TestReviewCommand:
         env["MINIMAX_API_KEY"] = "test-key"
 
         with patch(
-            "tools.muscle.cli.ModelPackManager",
+            "muscle.cli.ModelPackManager",
             side_effect=AssertionError("review should not instantiate remote model-pack flows"),
         ):
             result = runner.invoke(
@@ -319,7 +319,7 @@ class TestReviewCommand:
         mock_instance.run.return_value = mock_run_result
         mock_instance.get_review_result.return_value = mock_result
 
-        with patch("tools.muscle.code_review.ReviewController") as mock_class:
+        with patch("muscle.code_review.ReviewController") as mock_class:
             mock_class.return_value = mock_instance
             result = runner.invoke(
                 cli,
@@ -349,7 +349,7 @@ class TestReviewCommand:
         env = os.environ.copy()
         env["MINIMAX_API_KEY"] = "test-key"
 
-        with patch("tools.muscle.code_review.shadow_worker.WorkerManager") as mock_manager_cls:
+        with patch("muscle.code_review.shadow_worker.WorkerManager") as mock_manager_cls:
             mock_manager = MagicMock()
             mock_manager.submit_shadow_job.return_value = "shadow123"
             mock_manager_cls.return_value = mock_manager
@@ -386,7 +386,7 @@ class TestReviewCommand:
         mock_run_result.stats.duration_seconds = 0.0
         mock_run_result.stats.tokens_used = 0
 
-        with patch("tools.muscle.code_review.ReviewController") as mock_class:
+        with patch("muscle.code_review.ReviewController") as mock_class:
             mock_instance = MagicMock()
             mock_instance.run.return_value = mock_run_result
             mock_instance.get_review_result.return_value = mock_result
@@ -437,7 +437,7 @@ class TestReviewCommand:
         mock_run_result.stats.duration_seconds = 0.0
         mock_run_result.stats.tokens_used = 0
 
-        with patch("tools.muscle.code_review.ReviewController") as mock_class:
+        with patch("muscle.code_review.ReviewController") as mock_class:
             mock_instance = MagicMock()
             mock_instance.run.return_value = mock_run_result
             mock_instance.get_review_result.return_value = mock_result
@@ -487,11 +487,11 @@ class TestReviewLearningIntegration:
 
         with (
             patch(
-                "tools.muscle.code_review.ReviewController",
+                "muscle.code_review.ReviewController",
                 return_value=mock_controller,
             ),
             patch(
-                "tools.muscle.cli.LearningPipeline",
+                "muscle.cli.LearningPipeline",
                 return_value=mock_pipeline,
             ) as mock_pipeline_class,
         ):
@@ -534,11 +534,11 @@ class TestReviewLearningIntegration:
 
         with (
             patch(
-                "tools.muscle.code_review.ReviewController",
+                "muscle.code_review.ReviewController",
                 return_value=mock_controller,
             ),
             patch(
-                "tools.muscle.cli.LearningPipeline",
+                "muscle.cli.LearningPipeline",
                 return_value=mock_pipeline,
             ),
         ):

@@ -3,7 +3,7 @@
 import tempfile
 from pathlib import Path
 
-from tools.muscle.code_review.host_memory_optimizer import (
+from muscle.code_review.host_memory_optimizer import (
     HostMemoryOptimizer,
     run_optimizer,
 )
@@ -20,7 +20,7 @@ class TestHostMemoryOptimizer:
     def test_apply_creates_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             # Need project_memory.db for BackupManager.
-            from tools.muscle.project_memory import ProjectMemory
+            from muscle.project_memory import ProjectMemory
 
             pm = ProjectMemory(tmpdir)
             pm._init_db()
@@ -36,7 +36,7 @@ class TestHostMemoryOptimizer:
 
     def test_idempotent_on_optimal_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            from tools.muscle.project_memory import ProjectMemory
+            from muscle.project_memory import ProjectMemory
 
             pm = ProjectMemory(tmpdir)
             pm._init_db()
@@ -49,7 +49,7 @@ class TestHostMemoryOptimizer:
 
     def test_preserves_user_content_outside_markers(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            from tools.muscle.project_memory import ProjectMemory
+            from muscle.project_memory import ProjectMemory
 
             pm = ProjectMemory(tmpdir)
             pm._init_db()
@@ -72,7 +72,7 @@ class TestHostMemoryOptimizer:
 
     def test_preserves_existing_dynamic_sections(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            from tools.muscle.project_memory import ProjectMemory
+            from muscle.project_memory import ProjectMemory
 
             pm = ProjectMemory(tmpdir)
             pm._init_db()
@@ -123,7 +123,7 @@ class TestHostMemoryOptimizerTwoPhasePublish:
 
     def test_apply_stages_swaps_and_commits(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            from tools.muscle.project_memory import ProjectMemory
+            from muscle.project_memory import ProjectMemory
 
             pm = ProjectMemory(tmpdir)
             pm._init_db()
@@ -152,10 +152,10 @@ class TestHostMemoryOptimizerTwoPhasePublish:
         from contextlib import contextmanager
         from unittest.mock import patch
 
-        from tools.muscle.claude_publisher import host_doc_lock_sentinel
+        from muscle.claude_publisher import host_doc_lock_sentinel
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            from tools.muscle.project_memory import ProjectMemory
+            from muscle.project_memory import ProjectMemory
 
             pm = ProjectMemory(tmpdir)
             pm._init_db()
@@ -170,7 +170,7 @@ class TestHostMemoryOptimizerTwoPhasePublish:
                 yield
 
             with patch(
-                "tools.muscle.code_review.host_memory_optimizer.advisory_file_lock",
+                "muscle.code_review.host_memory_optimizer.advisory_file_lock",
                 spy_lock,
             ):
                 result = opt.apply("CLAUDE.md")
@@ -185,7 +185,7 @@ class TestHostMemoryOptimizerTwoPhasePublish:
         promotes the pending row to committed."""
         from unittest.mock import patch
 
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pm = ProjectMemory(tmpdir)
@@ -225,7 +225,7 @@ class TestHostMemoryOptimizerTwoPhasePublish:
         revision is aborted (never left as a false 'pending success')."""
         from unittest.mock import patch
 
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pm = ProjectMemory(tmpdir)
@@ -246,7 +246,7 @@ class TestHostMemoryOptimizerTwoPhasePublish:
             opt = HostMemoryOptimizer(tmpdir)
 
             with patch(
-                "tools.muscle.code_review.host_memory_optimizer.atomic_write_text",
+                "muscle.code_review.host_memory_optimizer.atomic_write_text",
                 side_effect=OSError("simulated disk failure"),
             ):
                 try:
@@ -266,7 +266,7 @@ class TestHostMemoryOptimizerTwoPhasePublish:
 
 def _all_revisions(project_path: str) -> list[dict]:
     """Read every published_revisions row regardless of status."""
-    from tools.muscle.project_memory import ProjectMemory
+    from muscle.project_memory import ProjectMemory
 
     pm = ProjectMemory(project_path)
     conn = pm._get_connection()

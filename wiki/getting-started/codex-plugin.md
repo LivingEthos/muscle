@@ -4,7 +4,7 @@
 |---|---|
 | Audience | Codex plugin operators and maintainers |
 | Status | Bundle reference; install command intentionally host-dependent |
-| Source of truth | [`tools/muscle/plugin/.codex-plugin/plugin.json`](../../tools/muscle/plugin/.codex-plugin/plugin.json), [`tools/muscle/plugin/hooks.json`](../../tools/muscle/plugin/hooks.json), [`tools/muscle/host_runtime.py`](../../tools/muscle/host_runtime.py) |
+| Source of truth | [`src/muscle/plugin/.codex-plugin/plugin.json`](../../src/muscle/plugin/.codex-plugin/plugin.json), [`src/muscle/plugin/hooks.json`](../../src/muscle/plugin/hooks.json), [`src/muscle/host_runtime.py`](../../src/muscle/host_runtime.py) |
 
 MUSCLE ships Codex plugin metadata in the same bundle as the Claude Code plugin.
 The repo currently documents the bundle and validation path, not a universal
@@ -13,12 +13,12 @@ Codex install command.
 ## Bundle Files
 
 ```text
-tools/muscle/plugin/.codex-plugin/plugin.json
-tools/muscle/plugin/hooks.json
-tools/muscle/plugin/assets/muscle-mark.svg
-tools/muscle/plugin/commands/
-tools/muscle/plugin/skills/
-tools/muscle/plugin/agents/
+src/muscle/plugin/.codex-plugin/plugin.json
+src/muscle/plugin/hooks.json
+src/muscle/plugin/assets/muscle-mark.svg
+src/muscle/plugin/commands/
+src/muscle/plugin/skills/
+src/muscle/plugin/agents/
 ```
 
 ## Codex Manifest

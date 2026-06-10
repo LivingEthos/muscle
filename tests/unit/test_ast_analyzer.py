@@ -5,8 +5,8 @@ Unit tests for AST analyzer.
 import tempfile
 from pathlib import Path
 
-from tools.muscle.analysis.ast_analyzer import ASTAnalyzer, ASTFinding, ASTSecurityAnalyzer
-from tools.muscle.analysis.types import Severity
+from muscle.analysis.ast_analyzer import ASTAnalyzer, ASTFinding, ASTSecurityAnalyzer
+from muscle.analysis.types import Severity
 
 
 class TestASTSecurityAnalyzer:

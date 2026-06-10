@@ -10,10 +10,10 @@ from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
-from tools.muscle.cli import cli
-from tools.muscle.code_review.code_reviewer import CodeReviewer
-from tools.muscle.code_review.review_controller import ReviewController
-from tools.muscle.code_review.types import (
+from muscle.cli import cli
+from muscle.code_review.code_reviewer import CodeReviewer
+from muscle.code_review.review_controller import ReviewController
+from muscle.code_review.types import (
     PressureFocus,
     ReviewConfig,
     ReviewMode,
@@ -46,7 +46,7 @@ def test_review_pressure_challenge_threads_into_config() -> None:
     mock_instance.run.return_value = mock_run_result
     mock_instance.get_review_result.return_value = mock_result
 
-    with patch("tools.muscle.code_review.ReviewController") as mock_class:
+    with patch("muscle.code_review.ReviewController") as mock_class:
         mock_class.return_value = mock_instance
         result = runner.invoke(
             cli,
@@ -77,7 +77,7 @@ def test_pressure_review_fragility_challenge_normalizes_hardening_guidance() -> 
     ``_normalize_fragility_payload`` post-processor backfills
     ``suggested_approach`` from ``hardening_suggestions`` when the model
     omits it. Adapted to HEAD's ``chat_structured`` API."""
-    from tools.muscle.code_review.code_reviewer import (
+    from muscle.code_review.code_reviewer import (
         FragilityPressureFinding,
         FragilityPressureReviewResponse,
     )

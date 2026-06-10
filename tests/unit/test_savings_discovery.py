@@ -8,10 +8,10 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tools.muscle.command_evidence import ParserTier, build_command_evidence
-from tools.muscle.discovery import build_discovery_report
-from tools.muscle.project_memory import ProjectMemory
-from tools.muscle.savings import build_savings_report
+from muscle.command_evidence import ParserTier, build_command_evidence
+from muscle.discovery import build_discovery_report
+from muscle.project_memory import ProjectMemory
+from muscle.savings import build_savings_report
 
 
 def test_savings_aggregates_llm_ledger_and_command_evidence(tmp_path: Path) -> None:

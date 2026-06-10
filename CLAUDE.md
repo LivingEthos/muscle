@@ -8,7 +8,7 @@ MUSCLE (MiniMax Unified Self-Correcting Learning Engine) is a local-first code r
 
 Current reality in this repo:
 
-- `tools/muscle/` is the active implementation.
+- `src/muscle/` is the active implementation.
 - The strongest working path today is `muscle review` plus its post-review learning pipeline.
 - Runtime learning currently writes to `.muscle/CLAUDE.md`, `.muscle/AGENT.md`, and `.muscle/MEMORY.md`.
 - The root `CLAUDE.md` file you are reading is a maintainer guide for Claude Code working in this repository.
@@ -35,23 +35,23 @@ uv run pytest tests/unit/test_cli.py -k "test_review_command" -v
 # Quality gates (ALL must pass before merging)
 # IMPORTANT: always invoke mypy via `uv run` — running a globally installed mypy
 # can produce false positives/negatives due to stub version mismatches (PKG-03)
-uv run mypy tools/muscle/
-uv run ruff check tools/muscle/
-uv run ruff format --check tools/muscle/
+uv run mypy src/muscle/
+uv run ruff check src/muscle/
+uv run ruff format --check src/muscle/
 uv run pytest tests/
 
 # Auto-fix lint/format issues
-uv run ruff check tools/muscle/ --fix
-uv run ruff format tools/muscle/
+uv run ruff check src/muscle/ --fix
+uv run ruff format src/muscle/
 ```
 
 ## Architecture
 
 ### Package Tree
 
-- **`tools/muscle/`** - The MUSCLE package, installed as the `muscle` CLI via `pyproject.toml` entry point (`tools.muscle.cli:main`). (The legacy `tools/scle/` predecessor was removed in the 2026-06 cleanup; references in historical docs are informational only.)
+- **`src/muscle/`** - The MUSCLE package, installed as the `muscle` CLI via `pyproject.toml` entry point (`muscle.cli:main`). (The legacy `tools/scle/` predecessor was removed in the 2026-06 cleanup; references in historical docs are informational only.)
 
-### Core Runtime Flows (tools/muscle/)
+### Core Runtime Flows (src/muscle/)
 
 The active package has two main runtime flows:
 
@@ -87,7 +87,7 @@ The active package has two main runtime flows:
 | `optimization/` | Context budgeting, prompt optimization, session recording, and external-session importers (Claude Code + Codex). See `optimization/importers.py`. |
 | `optimization/tool_output_crusher.py` | Host-side tool-output compression (`muscle crush` / `muscle expand`): JSON-records → deterministic tables, log dedupe, anomaly-preserving windowing, with a bounded content-addressed reversible store under `.muscle/ccr/`. |
 
-### Code Review Subsystem (tools/muscle/code_review/)
+### Code Review Subsystem (src/muscle/code_review/)
 
 | Module | Role |
 |--------|------|
@@ -120,7 +120,7 @@ The active package has two main runtime flows:
 - **`adapters/`** - Git, GitHub, GitLab, Jenkins, MCP integrations.
 - **`tui/`** - Rich-based terminal UI with views and project manager.
 
-### Claude Code Plugin (`tools/muscle/plugin/`)
+### Claude Code Plugin (`src/muscle/plugin/`)
 
 The plugin bundle contains slash-command definitions, hooks, skills, and subagent docs for the MUSCLE product. When working on this repository, edit and verify those files as source artifacts rather than assuming the plugin workflow itself is part of your development loop.
 
@@ -150,7 +150,7 @@ Global state:
 
 ## Current Maturity Notes
 
-- `tools/muscle/` is the sole package tree (the legacy `tools/scle/` predecessor was removed).
+- `src/muscle/` is the sole package tree (the legacy `tools/scle/` predecessor was removed).
 - DB-first architecture is wired: `project_memory.db` is authoritative for rules and learnings; `claude_publisher.py` publishes DB-backed content to root `CLAUDE.md`.
 - The TUI is live against `project_memory.db` for review runs, model-identity history, and lesson-usage history. Some advanced panels still render lighter/placeholder data per `docs/architecture.md`.
 - GitHub, GitLab, Jenkins, and MCP adapters exist as modules, but not all are first-class CLI workflows yet.
@@ -175,7 +175,7 @@ Guidance for editing MUSCLE prompts and plugin artifacts:
 - Claude Fable 5 ≈ **$10 / $50 per MTok** (the current top host model); Claude Code (Opus 4.8) ≈ **$5 / $25 per MTok**; Codex hosts are in the Opus range. MiniMax M3 is ~**8–20× cheaper** for equivalent review-scoped reasoning (≈ **$0.60 / $2.40 per MTok** at the ≤512K-input tier, **doubling to $1.20 / $4.80 above 512K input**). M3's base rate is ~2× M2.7's, but it remains roughly an order of magnitude below the host models, so the delegation rationale is unchanged — and twice as strong on a Fable 5 host. Host pricing lives in `cost_optimizer.HOST_MODEL_PRICING`; `muscle cost delegation-report` defaults to `claude-fable-5` and reports estimated host dollars avoided.
 - **Host-side context compression:** large tool outputs (search results, logs, analyzer JSON) should be piped through `muscle crush` before they enter the host model's context (~50–70% smaller, anomaly lines always preserved, original retrievable via `muscle expand <ccr:handle>`). This is the headroom-style lever for host token cost; it composes with delegation rather than replacing it.
 - MUSCLE's active backlog (`docs/REMAINING_TODOS.md`) tracks the pinned **Methodology + Delegation Protocol + Effort Guidance** work for reviewed-project host docs so the host model hands bulk execution off to MUSCLE's M3 agents (`/muscle:review`, `/muscle:rescue`, `/muscle:pressure`, verification agent) while keeping planning and synthesis with itself.
-- The plugin manifest at `tools/muscle/plugin/.claude-plugin/plugin.json` is **manually curated** — new slash commands require updating the manifest's `description` field as well as adding the command file.
+- The plugin manifest at `src/muscle/plugin/.claude-plugin/plugin.json` is **manually curated** — new slash commands require updating the manifest's `description` field as well as adding the command file.
 
 ## MiniMax-M3 Feature Wiring
 
@@ -191,8 +191,8 @@ How MUSCLE exploits M3 over M2.7 (design doc: `docs/plans/m3-thinking-toggle-sco
 
 - **API Client**: `M27Client` uses direct HTTP calls against MiniMax's Anthropic-compatible API and includes retry, rate limiting, and JSON recovery behavior.
 - **Event-driven loops**: `LoopController` emits `LoopEvent` callbacks for streaming, evaluation, and iteration tracking.
-- **Review modes**: `review`, `auto-fix`, `plan`, `hybrid`, `pressure` are defined in `tools/muscle/code_review/types.py`.
-- **Types**: Core types in `tools/muscle/types.py` use dataclasses, not Pydantic.
+- **Review modes**: `review`, `auto-fix`, `plan`, `hybrid`, `pressure` are defined in `src/muscle/code_review/types.py`.
+- **Types**: Core types in `src/muscle/types.py` use dataclasses, not Pydantic.
 
 ## Environment Variables
 
@@ -209,7 +209,7 @@ How MUSCLE exploits M3 over M2.7 (design doc: `docs/plans/m3-thinking-toggle-sco
 - All tests in `tests/unit/` with `test_` prefix matching the module name.
 - Heavy use of `unittest.mock` - shared fixtures in `tests/conftest.py` (mock_subprocess, mock_requests, mock_sqlite3, temp_project_dir).
 - Uses `pytest-asyncio` with `asyncio_mode = "auto"`.
-- Coverage source is `tools.muscle`.
+- Coverage source is `muscle`.
 
 ## Tool Configuration
 
@@ -239,7 +239,7 @@ Once you've decided what needs to happen, write a concise plan and hand executio
 
 Keep the planning with you. Do not ask MUSCLE to plan the work. Do not do the bulk execution yourself. When MUSCLE reports back, integrate and decide — cite the MUSCLE session id so follow-ups stay linked. If MUSCLE's output is clearly off-target on a novel problem (empty pattern memory, low confidence across findings), fall back to direct reasoning.
 
-_These commands require the MUSCLE plugin bundle to be active in this project (for example, the Claude or Codex plugin bundle under `tools/muscle/plugin`). Without it, reason directly._
+_These commands require the MUSCLE plugin bundle to be active in this project (for example, the Claude or Codex plugin bundle under `src/muscle/plugin`). Without it, reason directly._
 
 ### Effort & Tool Guidance
 - On Claude Code (Opus 4.8): run MUSCLE fix-application flows at `xhigh` effort; summarization-only at `high`. In auto mode, proceed through delegations without confirmation prompts.

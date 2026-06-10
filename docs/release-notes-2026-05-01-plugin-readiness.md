@@ -57,9 +57,9 @@ RTK-inspired evidence, savings, discovery, filter, and plugin-doctor work.
 Recommended release gates for this plugin bundle:
 
 1. `uv sync --extra dev`
-2. `uv run mypy tools/muscle/`
-3. `uv run ruff check tools/muscle/`
-4. `uv run ruff format --check tools/muscle/`
+2. `uv run mypy src/muscle/`
+3. `uv run ruff check src/muscle/`
+4. `uv run ruff format --check src/muscle/`
 5. `uv run pytest tests/ -v`
 6. `uv run pytest tests/unit/test_plugin_manifest.py tests/unit/test_plugin_docs.py tests/unit/test_plugin_hooks.py tests/unit/test_active_review_runtime.py tests/integration/test_install_lifecycle.py -q`
 7. `uv build --out-dir /tmp/muscle-dist`
@@ -75,9 +75,9 @@ Recommended release gates for this plugin bundle:
 Current checkout validation on 2026-05-24:
 
 - `uv sync --extra dev`: passed
-- `uv run mypy tools/muscle/`: passed
-- `uv run ruff check tools/muscle/`: passed
-- `uv run ruff format --check tools/muscle/`: passed
+- `uv run mypy src/muscle/`: passed
+- `uv run ruff check src/muscle/`: passed
+- `uv run ruff format --check src/muscle/`: passed
 - `uv run pytest tests/ -q`: `2445 passed, 3 skipped`
 - `uv run muscle doctor --json | python3 -m json.tool`: passed
 - `git diff --check`: passed
@@ -87,7 +87,7 @@ Current checkout validation on 2026-05-24:
 - wheel inspection: `muscle-0.1.0-py3-none-any.whl` listed `264` files with
   no duplicate entries and included Claude/Codex plugin manifests, hooks,
   command docs including `foresight.md`, agents, shared assets, and
-  `tools/muscle/plugin/skills/code-review/SKILL.md`
+  `src/muscle/plugin/skills/code-review/SKILL.md`
 - clean wheel smoke: installed the wheel into
   `/tmp/muscle-wheel-smoke-venv-vbi1Bd` and ran from
   `/tmp/muscle-wheel-smoke-cwd-k0Ot2i`; `muscle --help`, the foresight JSON
@@ -104,9 +104,9 @@ Current checkout validation on 2026-05-24:
 Current checkout validation on 2026-05-22:
 
 - `uv sync --extra dev`: passed
-- `uv run mypy tools/muscle/`: passed
-- `uv run ruff check tools/muscle/`: passed
-- `uv run ruff format --check tools/muscle/`: passed
+- `uv run mypy src/muscle/`: passed
+- `uv run ruff check src/muscle/`: passed
+- `uv run ruff format --check src/muscle/`: passed
 - `uv run pytest tests/ -q`: `2432 passed, 3 skipped`
 - `uv build --out-dir /tmp/muscle-dist-20260522`: built source distribution
   and wheel
@@ -126,9 +126,9 @@ Current checkout validation on 2026-05-22:
 Current checkout validation on 2026-05-01:
 
 - `uv sync --extra dev`: passed
-- `uv run mypy tools/muscle/`: passed
-- `uv run ruff check tools/muscle/`: passed
-- `uv run ruff format --check tools/muscle/`: passed
+- `uv run mypy src/muscle/`: passed
+- `uv run ruff check src/muscle/`: passed
+- `uv run ruff format --check src/muscle/`: passed
 - `uv run pytest tests/ -v`: `2213 passed, 3 skipped`
 - targeted plugin gate: `345 passed, 1 skipped`
 - `uv build --out-dir /tmp/muscle-dist`: built source distribution and wheel

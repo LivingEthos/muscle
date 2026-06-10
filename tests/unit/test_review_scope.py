@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.muscle.code_review.review_scope import ReviewScopeClassifier, ScopeInputs
-from tools.muscle.code_review.types import ReviewMode
+from muscle.code_review.review_scope import ReviewScopeClassifier, ScopeInputs
+from muscle.code_review.types import ReviewMode
 
 
 class TestReviewScopeClassifier:

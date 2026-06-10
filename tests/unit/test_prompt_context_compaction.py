@@ -4,7 +4,7 @@ Unit tests for prompt-context compaction wiring.
 
 from __future__ import annotations
 
-from tools.muscle.optimization.prompt_context import compose_prompt_envelope
+from muscle.optimization.prompt_context import compose_prompt_envelope
 
 
 def test_compose_prompt_envelope_applies_prompt_compaction_for_safe_stage() -> None:

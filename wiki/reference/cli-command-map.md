@@ -4,7 +4,7 @@
 |---|---|
 | Audience | Terminal users, automation authors, and plugin maintainers |
 | Status | Current command-family map |
-| Source of truth | [`tools/muscle/cli.py`](../../tools/muscle/cli.py), [`README.md`](../../README.md) |
+| Source of truth | [`src/muscle/cli.py`](../../src/muscle/cli.py), [`README.md`](../../README.md) |
 
 The `muscle` CLI can be used without any plugin host. It is also the source of
 truth behind `/muscle:*` slash commands.

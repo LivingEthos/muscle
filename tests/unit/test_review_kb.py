@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.muscle.code_review.review_kb import GlobalReviewKB, ReviewKB
+from muscle.code_review.review_kb import GlobalReviewKB, ReviewKB
 
 
 @pytest.fixture

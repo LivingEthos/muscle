@@ -12,13 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from tools.muscle.code_review.types import (
+from muscle.code_review.types import (
     IssueCategory,
     ReviewIssue,
     ReviewResult,
     Severity,
 )
-from tools.muscle.m27_client import TokenUsage
+from muscle.m27_client import TokenUsage
 
 # ---------------------------------------------------------------------------
 # Realistic M27 mock that returns structured JSON like the real model

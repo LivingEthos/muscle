@@ -5,7 +5,7 @@ Unit tests for evaluators/assertions.py
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from tools.muscle.evaluators.assertions import (
+from muscle.evaluators.assertions import (
     BenchmarkEvaluator,
     DummyEvaluator,
     OutputFormatEvaluator,

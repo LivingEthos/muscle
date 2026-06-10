@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tools.muscle.code_review.handoff_generator import HandoffGenerator
-from tools.muscle.code_review.types import (
+from muscle.code_review.handoff_generator import HandoffGenerator
+from muscle.code_review.types import (
     IssueCategory,
     ReviewIssue,
     Severity,

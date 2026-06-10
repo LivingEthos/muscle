@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from tools.muscle.analysis.types import Severity
-from tools.muscle.rules.engine import Rule, RuleEngine, RuleFinding, RuleType
+from muscle.analysis.types import Severity
+from muscle.rules.engine import Rule, RuleEngine, RuleFinding, RuleType
 
 
 class TestRuleEngineBuiltinRules:
@@ -105,7 +105,7 @@ class TestRuleEngineBuiltinRules:
         def trusted_check(file_path: str, source: str) -> list[RuleFinding]:
             return []
 
-        trusted_check.__module__ = "tools.muscle.rules.engine"
+        trusted_check.__module__ = "muscle.rules.engine"
         custom_rule = Rule(
             id="RULE-CUST",
             name="custom",

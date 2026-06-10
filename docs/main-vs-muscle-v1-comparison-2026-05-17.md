@@ -14,7 +14,7 @@ Important state:
 - MUSCLE v1 is a clean git repo on `main` at `2c85b28`.
 - I compared the working trees, not just git `HEAD`, because that reflects what
   is actually present on disk today.
-- The active implementation remains `tools/muscle/`. I treated `.venv`,
+- The active implementation remains `src/muscle/`. I treated `.venv`,
   caches, `.git`, `__pycache__`, `.DS_Store`, `htmlcov`, and runtime-heavy
   `.muscle` state as generated/local state unless called out separately.
 
@@ -35,11 +35,11 @@ The valuable v1 material falls into two buckets:
    standalone auto-fixer.
 
 The main project is currently more release-clean. It passes the local
-`tools/muscle` ruff and mypy gates I ran. MUSCLE v1 collects more tests and has
+`src/muscle` ruff and mypy gates I ran. MUSCLE v1 collects more tests and has
 some promising new modules, but it currently fails lint, format, and mypy. The
 new LLM provider package also cannot be imported through the installed package
 namespace because it uses `muscle.*` imports inside a package configured as
-`tools.muscle`.
+`muscle`.
 
 Bottom line: do not merge v1 wholesale. Cherry-pick and harden the direct bug
 fixes first, then bring over the v2-inspired modules only after import paths,
@@ -63,7 +63,7 @@ v1 wholesale. Implemented items include:
 - `auto_fixable=True` normalization when `suggested_fix` is present.
 - Fallback fix generation when reviewers omit `suggested_fix`, while preserving
   fail-closed verification behavior.
-- V1 module ports under `tools.muscle.*`: `llm`, `analysis`, `rules`,
+- V1 module ports under `muscle.*`: `llm`, `analysis`, `rules`,
   `repository`, `services`, `diff_analyzer`, `exceptions`, and `review_cache`.
 - AST/rule findings wired into the existing Python static-analysis pipeline.
 
@@ -83,15 +83,15 @@ Partial/future items:
 |---|---:|---:|
 | Git state | dirty branch `codex/muscle-plugin-release-prep` | clean branch `main` |
 | HEAD | `016875f` | `2c85b28` |
-| `tools/muscle` Python files | 133 | 162 |
-| `tools/muscle` Python LOC | 53,386 | 58,619 |
+| `src/muscle` Python files | 133 | 162 |
+| `src/muscle` Python LOC | 53,386 | 58,619 |
 | Unit test files | 98 | 111 |
 | Integration test files | 9 | 9 |
 | Collected tests | 2,247 | 2,414 |
 | Plugin bundle files | 46 | 46 |
 | Wiki/docs plugin content | same | same |
 
-V1 adds 29 Python source files under `tools/muscle`, 13 unit test files, and 3
+V1 adds 29 Python source files under `src/muscle`, 13 unit test files, and 3
 docs/design files compared with the main working tree.
 
 ## Validation Results
@@ -99,9 +99,9 @@ docs/design files compared with the main working tree.
 Commands run in the main project:
 
 - `uv run pytest --collect-only -q`: 2,247 tests collected.
-- `uv run ruff check tools/muscle/`: passed.
-- `uv run ruff format --check tools/muscle/`: passed.
-- `uv run mypy tools/muscle/`: passed, 133 source files checked.
+- `uv run ruff check src/muscle/`: passed.
+- `uv run ruff format --check src/muscle/`: passed.
+- `uv run mypy src/muscle/`: passed, 133 source files checked.
 
 Commands run in MUSCLE v1:
 
@@ -109,10 +109,10 @@ Commands run in MUSCLE v1:
 - Targeted new-feature slice:
   `uv run --extra dev pytest tests/unit/test_ast_analyzer.py tests/unit/test_llm_client.py tests/unit/test_llm_wrappers.py tests/unit/test_rule_engine.py tests/unit/test_cli_review.py::TestReviewCommand::test_review_no_db_flag -q`
   passed, 65 tests.
-- `uv run --extra dev ruff check tools/muscle/`: failed with 12 errors.
-- `uv run --extra dev ruff format --check tools/muscle/`: failed, 13 files
+- `uv run --extra dev ruff check src/muscle/`: failed with 12 errors.
+- `uv run --extra dev ruff format --check src/muscle/`: failed, 13 files
   would be reformatted.
-- `uv run --extra dev mypy tools/muscle/`: failed with 33 errors in 15 files.
+- `uv run --extra dev mypy src/muscle/`: failed with 33 errors in 15 files.
 
 The v1 targeted tests are useful evidence that the isolated modules have test
 coverage, but the failed quality gates mean v1 is not ready to port as-is.
@@ -121,25 +121,25 @@ coverage, but the failed quality gates mean v1 is not ready to port as-is.
 
 V1-only source areas:
 
-- `tools/muscle/analysis/`
+- `src/muscle/analysis/`
   - `ast_analyzer.py`
   - `cross_reference.py`
   - `types.py`
-- `tools/muscle/llm/`
+- `src/muscle/llm/`
   - provider interface, token budget, circuit breaker, wrappers
   - adapters for MiniMax, OpenRouter, OpenAI, Anthropic, Kimi, and Z.AI
-- `tools/muscle/repository/`
+- `src/muscle/repository/`
   - in-memory project, review, and learning repositories
-- `tools/muscle/rules/`
+- `src/muscle/rules/`
   - deterministic regex/AST/custom rule engine
   - subprocess regex timeout helper
-- `tools/muscle/services/`
+- `src/muscle/services/`
   - standalone auto-fixer
   - confidence scorer
 - Root-level v1 source additions:
-  - `tools/muscle/diff_analyzer.py`
-  - `tools/muscle/exceptions.py`
-  - `tools/muscle/review_cache.py`
+  - `src/muscle/diff_analyzer.py`
+  - `src/muscle/exceptions.py`
+  - `src/muscle/review_cache.py`
 
 V1-only test files:
 
@@ -167,7 +167,7 @@ Unchanged or effectively shared surfaces:
 
 - `README.md`
 - `wiki/`
-- `tools/muscle/plugin/`
+- `src/muscle/plugin/`
 - Visual DevFlow files are present in both working trees.
 
 Local-state differences worth not over-reading:
@@ -182,7 +182,7 @@ Local-state differences worth not over-reading:
 These are the v1 changes that touch existing main-project files and are closest
 to being portable.
 
-### `tools/muscle/cli.py`
+### `src/muscle/cli.py`
 
 V1 adds `muscle review --no-db`. In current form it:
 
@@ -196,7 +196,7 @@ described in the v1 docs. The v1 test for `--no-db` only verifies CLI acceptance
 and that `ProjectMemory` is not constructed under a mocked review controller.
 It does not prove a real no-db review can complete end to end.
 
-### `tools/muscle/m27_client.py`
+### `src/muscle/m27_client.py`
 
 V1 substantially changes MiniMax runtime behavior:
 
@@ -215,7 +215,7 @@ V1 substantially changes MiniMax runtime behavior:
 This is likely one of the highest-value v1 changes, but it needs focused tests
 before porting because the default endpoint change is behavioral, not cosmetic.
 
-### `tools/muscle/code_review/code_reviewer.py`
+### `src/muscle/code_review/code_reviewer.py`
 
 V1 changes the semantic reviewer in four ways:
 
@@ -232,7 +232,7 @@ required `cwe_id` and `code_snippet` positional arguments. Mypy catches this,
 and the fallback can crash exactly when it is supposed to rescue a failed
 structured review.
 
-### `tools/muscle/code_review/fix_generator.py`
+### `src/muscle/code_review/fix_generator.py`
 
 V1 adds fallback fix generation when a review issue has no `suggested_fix`.
 Instead of immediately returning "No suggested fix available", it can ask the
@@ -244,7 +244,7 @@ only be ported with the current fail-closed verification behavior intact and
 with tests covering rejected fallback fixes, malformed fallback output, and no
 silent mutation on fallback failure.
 
-### `tools/muscle/code_review/review_controller.py`
+### `src/muscle/code_review/review_controller.py`
 
 V1 skips task routing in auto-fix mode:
 
@@ -256,13 +256,13 @@ This is a pragmatic fix if routing failures have been blocking auto-fix runs.
 It should be ported with an integration test around auto-fix mode and workflow
 configuration.
 
-### `tools/muscle/routing.py`
+### `src/muscle/routing.py`
 
 V1 catches M2.7 routing failures and falls back to offline routing. This is a
 good reliability improvement and fits the product direction: routing should not
 make local review impossible.
 
-### `tools/muscle/evaluators/tester.py`
+### `src/muscle/evaluators/tester.py`
 
 V1 changes pytest execution to:
 
@@ -276,7 +276,7 @@ This is a useful fix for single-file/source-only checks. It should be tested
 against file targets, package targets, target directories with tests, and target
 directories without tests.
 
-### `tools/muscle/code_review/memory_manager.py`
+### `src/muscle/code_review/memory_manager.py`
 
 V1 replaces exact-string duplicate detection with heuristic matching based on
 file paths and title-like words. The direction is good because summarized memory
@@ -285,7 +285,7 @@ entries will not always match exactly.
 Current implementation needs type annotations for the local sets before mypy
 will pass.
 
-### `tools/muscle/code_review/verification_loop.py`
+### `src/muscle/code_review/verification_loop.py`
 
 V1 weakens the verifier prompt from conservative fail-closed wording to:
 
@@ -302,7 +302,7 @@ acceptance when the model is uncertain.
 
 ### Provider-Agnostic LLM Layer
 
-V1 adds a substantial `tools/muscle/llm/` package:
+V1 adds a substantial `src/muscle/llm/` package:
 
 - `LLMClient`, `LLMRequest`, `LLMResponse`, stream chunks, and token tracker.
 - Retry, budget, circuit breaker, and fallback wrappers.
@@ -313,17 +313,17 @@ This is directionally valuable. It matches the desired future of separating
 provider selection from review orchestration.
 
 Current blocker: the package imports itself as `muscle.*` even though this repo
-packages `tools` and exposes the CLI as `tools.muscle.cli:main`. A direct import
+packages `tools` and exposes the CLI as `muscle.cli:main`. A direct import
 check from v1 failed:
 
 ```text
-import tools.muscle.llm failed ModuleNotFoundError No module named 'muscle'
+import muscle.llm failed ModuleNotFoundError No module named 'muscle'
 import muscle.llm failed ModuleNotFoundError No module named 'muscle'
 ```
 
 Pytest masks this by setting `pythonpath = ["tools"]`, but runtime imports do
 not get that path. Before this layer is ported, change internal imports to
-relative imports or `tools.muscle.*`, then rerun mypy and runtime import smoke
+relative imports or `muscle.*`, then rerun mypy and runtime import smoke
 tests.
 
 ### AST and Cross-Reference Analysis
@@ -367,7 +367,7 @@ This is useful, but it currently has two issues:
 
 ### Standalone AutoFixer
 
-V1 adds `tools/muscle/services/auto_fixer.py` with:
+V1 adds `src/muscle/services/auto_fixer.py` with:
 
 - path traversal checks;
 - backup behavior;
@@ -422,14 +422,14 @@ in a small branch or clean worktree rather than by copying v1 over the top.
 
 Evidence:
 
-- `tools/muscle/llm/*` imports `muscle.exceptions`, `muscle.llm.client`, etc.
+- `src/muscle/llm/*` imports `muscle.exceptions`, `muscle.llm.client`, etc.
 - The package is configured as `packages = ["tools"]`.
-- Direct import from v1 failed for both `tools.muscle.llm` and `muscle.llm`.
+- Direct import from v1 failed for both `muscle.llm` and `muscle.llm`.
 - Mypy reports many `import-not-found` errors for the same reason.
 
 Impact:
 
-- Any production path that imports `tools.muscle.llm` will fail before the
+- Any production path that imports `muscle.llm` will fail before the
   provider abstraction can be used.
 - The v1 tests do not catch this because pytest adds `tools` to `pythonpath`.
 
@@ -438,7 +438,7 @@ Recommendation:
 - Convert all internal LLM imports to relative imports.
 - Remove reliance on pytest-only `pythonpath`.
 - Add a runtime smoke test:
-  `uv run python -c "import tools.muscle.llm; import tools.muscle.llm.adapters"`.
+  `uv run python -c "import muscle.llm; import muscle.llm.adapters"`.
 
 ### P0: V1 quality gates fail
 
@@ -451,7 +451,7 @@ Evidence:
 Impact:
 
 - V1 is not merge-ready.
-- Copying v1 into main would regress the current green `tools/muscle` quality
+- Copying v1 into main would regress the current green `src/muscle` quality
   gates.
 
 Recommendation:

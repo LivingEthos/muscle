@@ -4,7 +4,7 @@
 |---|---|
 | Audience | Maintainers, agents, and users debugging learning behavior |
 | Status | Current DB-first memory model |
-| Source of truth | [`tools/muscle/project_memory.py`](../../tools/muscle/project_memory.py), [`tools/muscle/code_review/learning_pipeline.py`](../../tools/muscle/code_review/learning_pipeline.py), [`tools/muscle/code_review/memory_manager.py`](../../tools/muscle/code_review/memory_manager.py), [`docs/migration-and-data-safety.md`](../../docs/migration-and-data-safety.md) |
+| Source of truth | [`src/muscle/project_memory.py`](../../src/muscle/project_memory.py), [`src/muscle/code_review/learning_pipeline.py`](../../src/muscle/code_review/learning_pipeline.py), [`src/muscle/code_review/memory_manager.py`](../../src/muscle/code_review/memory_manager.py), [`docs/migration-and-data-safety.md`](../../docs/migration-and-data-safety.md) |
 | Primary commands | `muscle memory status`, `muscle memory history`, `muscle memory related`, `muscle memory import-project` |
 
 MUSCLE is project-first. The local project database is authoritative for learned

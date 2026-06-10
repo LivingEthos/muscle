@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from tools.muscle.response_cache import ResponseCache
+from muscle.response_cache import ResponseCache
 
 
 class TestResponseCache:
@@ -141,7 +141,7 @@ class TestChatStructuredPackIdWiring:
 
         from pydantic import BaseModel
 
-        from tools.muscle.m27_client import M27Client
+        from muscle.m27_client import M27Client
 
         class FakeSchema(BaseModel):
             value: int

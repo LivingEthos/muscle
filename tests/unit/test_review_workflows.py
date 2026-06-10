@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tools.muscle.code_review.review_artifacts import ReviewArtifactStore
-from tools.muscle.code_review.review_workflows import ReviewWorkflowEngine, ReviewWorkflowLoader
-from tools.muscle.code_review.types import IssueCategory, ReviewIssue, ReviewScope, Severity
+from muscle.code_review.review_artifacts import ReviewArtifactStore
+from muscle.code_review.review_workflows import ReviewWorkflowEngine, ReviewWorkflowLoader
+from muscle.code_review.types import IssueCategory, ReviewIssue, ReviewScope, Severity
 
 
 class TestReviewWorkflowLoader:

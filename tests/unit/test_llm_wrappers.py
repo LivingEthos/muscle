@@ -6,11 +6,11 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from tools.muscle.exceptions import CircuitBreakerOpenError, PermanentLLMError, TransientLLMError
-from tools.muscle.llm.circuit_breaker import MemoryCircuitBreaker
-from tools.muscle.llm.client import LLMClient, LLMRequest, LLMResponse, LLMStreamChunk
-from tools.muscle.llm.token_budget import TokenBudget
-from tools.muscle.llm.wrappers import (
+from muscle.exceptions import CircuitBreakerOpenError, PermanentLLMError, TransientLLMError
+from muscle.llm.circuit_breaker import MemoryCircuitBreaker
+from muscle.llm.client import LLMClient, LLMRequest, LLMResponse, LLMStreamChunk
+from muscle.llm.token_budget import TokenBudget
+from muscle.llm.wrappers import (
     BudgetEnforcingLLMClient,
     CircuitBreakerLLMWrapper,
     FallbackLLMWrapper,
@@ -281,7 +281,7 @@ async def test_retryable_half_open_max_calls(request_fixture: LLMRequest) -> Non
 
 async def test_fallback_llmerror_type(request_fixture: LLMRequest) -> None:
     """Test that FallbackLLMWrapper raises LLMError, not bare Exception."""
-    from tools.muscle.exceptions import LLMError
+    from muscle.exceptions import LLMError
 
     primary = FakeClient(name="primary", fail_with=RuntimeError("p"))
     fallback = FakeClient(name="fallback", fail_with=RuntimeError("f"))

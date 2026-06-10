@@ -13,7 +13,7 @@ Important context:
   snapshot.
 - The current checkout is dirty. I treated "current app" as the working tree,
   not just `HEAD`.
-- The active current implementation is `tools/muscle/`; `tools/scle/` is legacy
+- The active current implementation is `src/muscle/`; `tools/scle/` is legacy
   and excluded from this comparison.
 
 ## Executive Summary
@@ -48,7 +48,7 @@ The short version:
 | Area | v2 snapshot | current app |
 |---|---:|---:|
 | Total tracked-ish files inspected | 145 | 421 |
-| Python source files in app package | 82 under `src/muscle_v2` | 133 under `tools/muscle` |
+| Python source files in app package | 82 under `src/muscle_v2` | 133 under `src/muscle` |
 | Python test files | 30 | 107 |
 | Test cases collected | 235 | 2247 |
 | Full test run in this pass | `uv run --extra dev pytest -q` succeeded | not run; collect-only succeeded |
@@ -66,7 +66,7 @@ v2 packages as `muscle-v2` with a `src/muscle_v2` layout, Python 3.11+, Typer,
 async-first dependencies (`aiofiles`, `aiosqlite`, `httpx`), and direct provider
 adapters.
 
-Current packages as `muscle` with `tools.muscle` as the installed package,
+Current packages as `muscle` with `muscle` as the installed package,
 Python 3.10+, Click, synchronous `requests`-based MiniMax access, and a large
 plugin/docs/install lifecycle. Dependencies are pinned with upper bounds, which
 is more conservative for release stability.
@@ -100,7 +100,7 @@ LLM, repository, filesystem, and event bus interfaces.
 
 ### current
 
-Current uses a pragmatic subsystem architecture centered on `tools/muscle/cli.py`
+Current uses a pragmatic subsystem architecture centered on `src/muscle/cli.py`
 and project-local runtime state:
 
 - `cli.py`: one large command/router surface, 5689 lines

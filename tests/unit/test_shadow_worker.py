@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from tools.muscle.code_review.shadow_worker import (
+from muscle.code_review.shadow_worker import (
     WORKER_DEFAULT_TIMEOUT_SECONDS,
     JobTask,
     ShadowWorker,
@@ -144,7 +144,7 @@ class TestShadowWorker:
         assert mock_broker.start_job.call_count == 1
 
     def test_parse_review_mode(self):
-        from tools.muscle.code_review.types import ReviewMode
+        from muscle.code_review.types import ReviewMode
 
         assert ShadowWorker._parse_review_mode("review") == ReviewMode.REVIEW
         assert ShadowWorker._parse_review_mode("auto_fix") == ReviewMode.AUTO_FIX
@@ -152,7 +152,7 @@ class TestShadowWorker:
         assert ShadowWorker._parse_review_mode("unknown") == ReviewMode.REVIEW
 
     def test_parse_intensity(self):
-        from tools.muscle.code_review.types import Intensity
+        from muscle.code_review.types import Intensity
 
         assert ShadowWorker._parse_intensity("minimal") == Intensity.MINIMAL
         assert ShadowWorker._parse_intensity("moderate") == Intensity.MODERATE
@@ -194,7 +194,7 @@ class TestWorkerManager:
         assert broker.project_path == str(tmp_project)
 
     def test_multiple_projects_have_isolated_state(self, tmp_path):
-        from tools.muscle.code_review.types import Intensity, ReviewMode
+        from muscle.code_review.types import Intensity, ReviewMode
 
         proj_a = tmp_path / "proj_a"
         proj_b = tmp_path / "proj_b"
@@ -235,7 +235,7 @@ class TestWorkerManager:
         assert result is True
 
     def test_submit_shadow_job(self, tmp_project):
-        from tools.muscle.code_review.types import Intensity, ReviewMode
+        from muscle.code_review.types import Intensity, ReviewMode
 
         mgr = WorkerManager(project_path=str(tmp_project))
         worker = mgr.get_worker()
@@ -263,7 +263,7 @@ class TestWorkerManager:
             mgr.stop_worker(timeout=3.0)
 
     def test_submit_shadow_job_with_timeout_and_budget(self, tmp_project):
-        from tools.muscle.code_review.types import Intensity, ReviewMode
+        from muscle.code_review.types import Intensity, ReviewMode
 
         mgr = WorkerManager(project_path=str(tmp_project))
         worker = mgr.get_worker()
@@ -288,7 +288,7 @@ class TestWorkerManager:
             mgr.stop_worker(timeout=3.0)
 
     def test_submit_shadow_job_persists_execution_mode(self, tmp_project):
-        from tools.muscle.code_review.types import Intensity, ReviewMode
+        from muscle.code_review.types import Intensity, ReviewMode
 
         mgr = WorkerManager(project_path=str(tmp_project))
         worker = mgr.get_worker()
@@ -309,11 +309,11 @@ class TestWorkerManager:
             mgr.stop_worker(timeout=3.0)
 
     def test_submit_shadow_job_detached_spawns_process(self, tmp_project):
-        from tools.muscle.code_review.types import Intensity, ReviewMode
+        from muscle.code_review.types import Intensity, ReviewMode
 
         mgr = WorkerManager(project_path=str(tmp_project))
 
-        with patch("tools.muscle.code_review.shadow_worker.subprocess.Popen") as mock_popen:
+        with patch("muscle.code_review.shadow_worker.subprocess.Popen") as mock_popen:
             job_id = mgr.submit_shadow_job(
                 "/src",
                 ReviewMode.REVIEW,

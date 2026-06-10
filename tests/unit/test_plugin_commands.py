@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-PLUGIN_DIR = Path(__file__).parent.parent.parent / "tools" / "muscle" / "plugin"
+PLUGIN_DIR = Path(__file__).parent.parent.parent / "src" / "muscle" / "plugin"
 COMMANDS_DIR = PLUGIN_DIR / "commands"
 PLUGIN_JSON = PLUGIN_DIR / ".claude-plugin" / "plugin.json"
 

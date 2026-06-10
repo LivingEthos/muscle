@@ -175,7 +175,7 @@ print_plugin_instructions() {
     printf "To use MUSCLE as a Claude Code plugin:\n"
     printf "\n"
     printf "  Option A: Load locally\n"
-    printf "    claude --plugin-dir %s/tools/muscle/plugin\n" "$INSTALL_DIR"
+    printf "    claude --plugin-dir %s/src/muscle/plugin\n" "$INSTALL_DIR"
     printf "\n"
     printf "  Option B: Install from marketplace\n"
     printf "    /plugin marketplace add %s\n" "$REPO"

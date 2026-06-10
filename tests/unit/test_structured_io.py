@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
-from tools.muscle.m27_client import M27Client, M27StructuredError, _strip_json_fences
-from tools.muscle.structured_io import (
+from muscle.m27_client import M27Client, M27StructuredError, _strip_json_fences
+from muscle.structured_io import (
     FixCandidate,
     PatternScanResult,
     ReviewFinding,

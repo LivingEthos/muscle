@@ -9,15 +9,15 @@ from pathlib import Path
 
 import pytest
 
-from tools.muscle.cost_optimizer import estimate_request_cost
-from tools.muscle.delegation_metrics import (
+from muscle.cost_optimizer import estimate_request_cost
+from muscle.delegation_metrics import (
     DelegationEvent,
     DelegationMetrics,
     estimate_m27_cents,
     resolve_m27_token_split,
 )
-from tools.muscle.migrations._0013_delegation_events import MIGRATION_SQL
-from tools.muscle.migrations._0017_delegation_event_metadata import (
+from muscle.migrations._0013_delegation_events import MIGRATION_SQL
+from muscle.migrations._0017_delegation_event_metadata import (
     migrate as migrate_delegation_metadata,
 )
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tools.muscle.optimization.structured_compactor import (
+from muscle.optimization.structured_compactor import (
     compact_records,
     expand_records,
 )

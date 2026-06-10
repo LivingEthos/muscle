@@ -1,9 +1,17 @@
 [project]
-name = "muscle"
+name = "muscle-cli"
 version = "0.1.0"
 description = "MUSCLE - MiniMax Unified Self-Correcting Learning Engine"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
 # Fix: PKG-01. Dependencies pinned with upper bounds to prevent surprise
 # breakage from the next major release of any transitive or direct dep.
 # Upper bounds target the next major version; revisit before each release.
@@ -34,7 +42,7 @@ dev = [
 ]
 
 [project.scripts]
-muscle = "tools.muscle.cli:main"
+muscle = "muscle.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -53,10 +61,10 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.sdist.force-include]
-"tools/muscle/plugin/skills" = "tools/muscle/plugin/skills"
+"src/muscle/plugin/skills" = "src/muscle/plugin/skills"
 
 [tool.hatch.build.targets.wheel]
-packages = ["tools"]
+packages = ["src/muscle"]
 
 [tool.ruff]
 line-length = 100
@@ -81,7 +89,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 
 [tool.coverage.run]
-source = ["tools.muscle"]
+source = ["muscle"]
 branch = true
 omit = [
     "*/tests/*",

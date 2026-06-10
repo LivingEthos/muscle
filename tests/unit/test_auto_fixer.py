@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.muscle.services.auto_fixer import (
+from muscle.services.auto_fixer import (
     AutoFixer,
     GitBackup,
     Suggestion,

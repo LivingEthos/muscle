@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from tools.muscle.exceptions import CircuitBreakerOpenError
-from tools.muscle.llm.circuit_breaker import MemoryCircuitBreaker
+from muscle.exceptions import CircuitBreakerOpenError
+from muscle.llm.circuit_breaker import MemoryCircuitBreaker
 
 
 async def test_circuit_breaker_closed_allows_calls():

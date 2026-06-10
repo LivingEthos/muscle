@@ -14,8 +14,8 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from tools.muscle.cli import cli
-from tools.muscle.tui.project_manager import ProjectConfig, ProjectManager
+from muscle.cli import cli
+from muscle.tui.project_manager import ProjectConfig, ProjectManager
 
 
 class TestProjectManagerInit:
@@ -263,7 +263,7 @@ class TestCLIInitCommand:
         """muscle init --non-interactive should complete without prompts."""
         runner = CliRunner()
 
-        with patch("tools.muscle.tui.project_manager.ProjectManager.detect_project") as mock_detect:
+        with patch("muscle.tui.project_manager.ProjectManager.detect_project") as mock_detect:
             mock_detect.return_value = ProjectConfig(
                 name="test-init",
                 path=tmp_path,
@@ -289,7 +289,7 @@ class TestCLIInitCommand:
         """muscle init should create .muscle/ directory structure."""
         runner = CliRunner()
 
-        with patch("tools.muscle.tui.project_manager.ProjectManager.detect_project") as mock_detect:
+        with patch("muscle.tui.project_manager.ProjectManager.detect_project") as mock_detect:
             mock_detect.return_value = ProjectConfig(
                 name="file-test",
                 path=tmp_path,
@@ -308,7 +308,7 @@ class TestCLIInitCommand:
         """Codex init should persist the platform and generate active-review.md."""
         runner = CliRunner()
 
-        with patch("tools.muscle.tui.project_manager.ProjectManager.detect_project") as mock_detect:
+        with patch("muscle.tui.project_manager.ProjectManager.detect_project") as mock_detect:
             mock_detect.return_value = ProjectConfig(
                 name="codex-project",
                 path=tmp_path,
@@ -633,7 +633,7 @@ class TestInitUninstallRoundtrip:
         runner = CliRunner()
 
         # Step 1: Init
-        with patch("tools.muscle.tui.project_manager.ProjectManager.detect_project") as mock_det:
+        with patch("muscle.tui.project_manager.ProjectManager.detect_project") as mock_det:
             mock_det.return_value = ProjectConfig(
                 name="lifecycle-test",
                 path=tmp_path,
@@ -804,7 +804,7 @@ class TestCLIStatusCommand:
 
         with patch("pathlib.Path.cwd", return_value=tmp_path):
             with patch(
-                "tools.muscle.tui.project_manager.ProjectManager.detect_project",
+                "muscle.tui.project_manager.ProjectManager.detect_project",
                 return_value=config,
             ):
                 result = runner.invoke(cli, ["status"], catch_exceptions=False)
@@ -852,7 +852,7 @@ class TestInitStoresEnablement:
         """muscle init should store enabled=true in project_memory.db."""
         runner = CliRunner()
 
-        with patch("tools.muscle.tui.project_manager.ProjectManager.detect_project") as mock_detect:
+        with patch("muscle.tui.project_manager.ProjectManager.detect_project") as mock_detect:
             mock_detect.return_value = ProjectConfig(
                 name="init-enablement-test",
                 path=tmp_path,
@@ -873,7 +873,7 @@ class TestInitStoresEnablement:
         """muscle init --platform claude-code should set platform correctly."""
         runner = CliRunner()
 
-        with patch("tools.muscle.tui.project_manager.ProjectManager.detect_project") as mock_detect:
+        with patch("muscle.tui.project_manager.ProjectManager.detect_project") as mock_detect:
             mock_detect.return_value = ProjectConfig(
                 name="claude-code-test",
                 path=tmp_path,

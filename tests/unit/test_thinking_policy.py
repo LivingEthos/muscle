@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from tools.muscle.code_review import thinking_policy
-from tools.muscle.code_review.thinking_policy import (
+from muscle.code_review import thinking_policy
+from muscle.code_review.thinking_policy import (
     THINKING_POLICY,
     UNKNOWN_STAGE_THINKING_MODE,
     thinking_for,
 )
-from tools.muscle.m27_client import VALID_THINKING_MODES
+from muscle.m27_client import VALID_THINKING_MODES
 
 
 @pytest.fixture(autouse=True)

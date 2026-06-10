@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.muscle.optimization.structured_compactor import expand_records
-from tools.muscle.optimization.tool_output_crusher import (
+from muscle.optimization.structured_compactor import expand_records
+from muscle.optimization.tool_output_crusher import (
     DEFAULT_RECORD_CAP,
     CcrStore,
     CcrStoreError,
@@ -183,7 +183,7 @@ class TestCcrStore:
         sibling threads, so rather than race threads we assert the lock is taken
         on the store sentinel for the duration of save (which contains prune).
         """
-        import tools.muscle.optimization.tool_output_crusher as toc
+        import muscle.optimization.tool_output_crusher as toc
 
         store = CcrStore(tmp_path / "ccr")
         locked_paths: list[Path] = []

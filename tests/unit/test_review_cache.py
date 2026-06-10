@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from tools.muscle.review_cache import CachedReview, ReviewCache
+from muscle.review_cache import CachedReview, ReviewCache
 
 
 def test_compute_hash_is_stable():

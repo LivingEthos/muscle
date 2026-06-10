@@ -12,12 +12,12 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from tools.muscle.code_review.types import Intensity, ReviewMode
+from muscle.code_review.types import Intensity, ReviewMode
 
 
 def _make_broker(tmp_path: Path):
     """Create a ShadowBroker scoped to tmp_path (uses an isolated project_memory.db)."""
-    from tools.muscle.code_review.shadow_broker import ShadowBroker
+    from muscle.code_review.shadow_broker import ShadowBroker
 
     db_path = str(tmp_path / ".muscle" / "project_memory.db")
     (tmp_path / ".muscle").mkdir(parents=True, exist_ok=True)
@@ -106,7 +106,7 @@ class TestShadowWorkerIntegration:
 
     def test_worker_starts_and_stops(self, tmp_path: Path):
         """Worker should start as daemon and stop cleanly."""
-        from tools.muscle.code_review.shadow_worker import ShadowWorker, WorkerConfig
+        from muscle.code_review.shadow_worker import ShadowWorker, WorkerConfig
 
         broker = _make_broker(tmp_path)
 
@@ -128,7 +128,7 @@ class TestShadowWorkerIntegration:
 
     def test_worker_processes_job(self, tmp_path: Path):
         """Worker should process submitted jobs via processor callback."""
-        from tools.muscle.code_review.shadow_worker import (
+        from muscle.code_review.shadow_worker import (
             JobTask,
             ShadowWorker,
             WorkerConfig,
@@ -164,7 +164,7 @@ class TestLongEvalRunnerIntegration:
 
     def test_long_eval_runner_generates_report(self, tmp_path: Path):
         """LongEvalRunner should generate a report file."""
-        from tools.muscle.code_review.long_eval_runner import LongEvalConfig, LongEvalRunner
+        from muscle.code_review.long_eval_runner import LongEvalConfig, LongEvalRunner
 
         # Create a simple source file to review
         src = tmp_path / "src"
@@ -200,7 +200,7 @@ class TestLongEvalRunnerIntegration:
 
     def test_long_eval_saves_report_file(self, tmp_path: Path):
         """Reports should be persisted to .muscle/reports/."""
-        from tools.muscle.code_review.long_eval_runner import LongEvalConfig, LongEvalRunner
+        from muscle.code_review.long_eval_runner import LongEvalConfig, LongEvalRunner
 
         config = LongEvalConfig(
             target_paths=[str(tmp_path)],
@@ -221,7 +221,7 @@ class TestLongEvalRunnerIntegration:
 
     def test_long_eval_reports_listing(self, tmp_path: Path):
         """Recent reports should be listable."""
-        from tools.muscle.code_review.long_eval_runner import LongEvalRunner
+        from muscle.code_review.long_eval_runner import LongEvalRunner
 
         runner = LongEvalRunner(str(tmp_path))
 

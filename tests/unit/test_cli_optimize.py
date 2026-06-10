@@ -4,8 +4,8 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from tools.muscle.cli import cli
-from tools.muscle.project_memory import ProjectMemory
+from muscle.cli import cli
+from muscle.project_memory import ProjectMemory
 
 
 def test_optimize_status_displays_project_summary(tmp_path: Path, monkeypatch) -> None:

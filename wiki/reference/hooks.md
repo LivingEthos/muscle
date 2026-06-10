@@ -4,7 +4,7 @@
 |---|---|
 | Audience | Plugin maintainers and operators debugging host integration |
 | Status | Current hook contract |
-| Source of truth | [`tools/muscle/plugin/hooks/hooks.json`](../../tools/muscle/plugin/hooks/hooks.json), [`tools/muscle/plugin/hooks.json`](../../tools/muscle/plugin/hooks.json), [`tools/muscle/host_runtime.py`](../../tools/muscle/host_runtime.py), [`tests/unit/test_plugin_hooks.py`](../../tests/unit/test_plugin_hooks.py) |
+| Source of truth | [`src/muscle/plugin/hooks/hooks.json`](../../src/muscle/plugin/hooks/hooks.json), [`src/muscle/plugin/hooks.json`](../../src/muscle/plugin/hooks.json), [`src/muscle/host_runtime.py`](../../src/muscle/host_runtime.py), [`tests/unit/test_plugin_hooks.py`](../../tests/unit/test_plugin_hooks.py) |
 
 Hooks route host lifecycle events into `muscle _host-hook`. The runtime fails
 open: degraded hook behavior should not block the host application.

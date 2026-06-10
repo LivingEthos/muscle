@@ -9,15 +9,15 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from tools.muscle.active_review import (
+from muscle.active_review import (
     refresh_active_review,
     refresh_external_catchup,
 )
-from tools.muscle.cli import cli
-from tools.muscle.doctor import build_doctor_report
-from tools.muscle.host_runtime import run_host_hook
-from tools.muscle.project_memory import ProjectMemory
-from tools.muscle.tui.project_manager import ProjectConfig, ProjectManager
+from muscle.cli import cli
+from muscle.doctor import build_doctor_report
+from muscle.host_runtime import run_host_hook
+from muscle.project_memory import ProjectMemory
+from muscle.tui.project_manager import ProjectConfig, ProjectManager
 
 
 def _init_project(tmp_path: Path) -> ProjectMemory:

@@ -6,7 +6,7 @@ from datetime import datetime
 
 import pytest
 
-from tools.muscle.code_review.fix_tracker import FixAttempt, FixTracker
+from muscle.code_review.fix_tracker import FixAttempt, FixTracker
 
 
 class TestFixTracker:

@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from tools.muscle.cli import cli
-from tools.muscle.routing import (
+from muscle.cli import cli
+from muscle.routing import (
     Recommendation,
     RouteDecision,
     TaskRouter,
@@ -183,7 +183,7 @@ class TestRouteCLI:
         return CliRunner()
 
     def test_route_text_output(self, runner: CliRunner) -> None:
-        with patch("tools.muscle.cli.M27Client") as mock_client_cls:
+        with patch("muscle.cli.M27Client") as mock_client_cls:
             mock_instance = MagicMock()
             mock_client_cls.return_value = mock_instance
             mock_instance.chat.return_value = (
@@ -198,7 +198,7 @@ class TestRouteCLI:
         assert "mechanical" in result.output
 
     def test_route_json_output(self, runner: CliRunner) -> None:
-        with patch("tools.muscle.cli.M27Client") as mock_client_cls:
+        with patch("muscle.cli.M27Client") as mock_client_cls:
             mock_instance = MagicMock()
             mock_client_cls.return_value = mock_instance
             mock_instance.chat.return_value = (
@@ -232,7 +232,7 @@ class TestRouteCLI:
     def test_route_falls_back_when_classifier_raises(self, runner: CliRunner) -> None:
         """B1: if the M2.7 client fails, the CLI falls back to the heuristic
         instead of bubbling a Python traceback up to the host model."""
-        with patch("tools.muscle.cli.M27Client") as mock_client_cls:
+        with patch("muscle.cli.M27Client") as mock_client_cls:
             mock_client_cls.side_effect = ValueError("boom")
             with patch.dict("os.environ", {"MINIMAX_API_KEY": "test-key"}):
                 result = runner.invoke(cli, ["route", "--task", "rename a variable", "--json"])

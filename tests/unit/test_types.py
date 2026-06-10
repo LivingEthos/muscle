@@ -4,7 +4,7 @@ Unit tests for SCLE types.
 
 import pytest
 
-from tools.muscle.types import (
+from muscle.types import (
     BudgetMode,
     EvalMode,
     EvaluationResult,

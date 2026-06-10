@@ -1,7 +1,7 @@
 """
 CLI documentation smoke tests for plugin command docs.
 
-Verifies that all .md files in tools/muscle/plugin/commands/ reference real CLI
+Verifies that all .md files in src/muscle/plugin/commands/ reference real CLI
 commands and do not document non-existent commands like `muscle shadow *`.
 """
 
@@ -102,7 +102,7 @@ def _parse_frontmatter(content: str) -> dict | None:
         return None
 
 
-COMMANDS_DIR = Path(__file__).parent.parent.parent / "tools" / "muscle" / "plugin" / "commands"
+COMMANDS_DIR = Path(__file__).parent.parent.parent / "src" / "muscle" / "plugin" / "commands"
 
 
 class TestPluginDocsReferenceRealCommands:

@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.muscle.budget_manager import BudgetInfo, BudgetManager
-from tools.muscle.session_manager import SessionManager
-from tools.muscle.types import (
+from muscle.budget_manager import BudgetInfo, BudgetManager
+from muscle.session_manager import SessionManager
+from muscle.types import (
     BudgetMode,
     IterationResult,
     RunConfig,

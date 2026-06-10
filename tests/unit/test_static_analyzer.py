@@ -8,12 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from tools.muscle.code_review.static_analyzer import (
+from muscle.code_review.static_analyzer import (
     AUTO_FIXABLE_TOOLS,
     LANGUAGE_TOOLS,
     StaticAnalyzer,
 )
-from tools.muscle.command_evidence import ParserTier
+from muscle.command_evidence import ParserTier
 
 
 @pytest.fixture
@@ -589,11 +589,11 @@ test.ts(10,5): warning TS6032: File change detected. Starting fresh analysis."""
             return Result()
 
         monkeypatch.setattr(
-            "tools.muscle.code_review.static_analyzer.shutil.which",
+            "muscle.code_review.static_analyzer.shutil.which",
             lambda _: "/bin/tool",
         )
         monkeypatch.setattr(
-            "tools.muscle.code_review.static_analyzer.subprocess.run",
+            "muscle.code_review.static_analyzer.subprocess.run",
             fake_run,
         )
 
@@ -629,11 +629,11 @@ test.ts(10,5): warning TS6032: File change detected. Starting fresh analysis."""
             return Result()
 
         monkeypatch.setattr(
-            "tools.muscle.code_review.static_analyzer.shutil.which",
+            "muscle.code_review.static_analyzer.shutil.which",
             lambda _: "/bin/tool",
         )
         monkeypatch.setattr(
-            "tools.muscle.code_review.static_analyzer.subprocess.run",
+            "muscle.code_review.static_analyzer.subprocess.run",
             fake_run,
         )
 
@@ -667,11 +667,11 @@ test.ts(10,5): warning TS6032: File change detected. Starting fresh analysis."""
             return Result()
 
         monkeypatch.setattr(
-            "tools.muscle.code_review.static_analyzer.shutil.which",
+            "muscle.code_review.static_analyzer.shutil.which",
             lambda _: "/bin/tool",
         )
         monkeypatch.setattr(
-            "tools.muscle.code_review.static_analyzer.subprocess.run",
+            "muscle.code_review.static_analyzer.subprocess.run",
             fake_run,
         )
 

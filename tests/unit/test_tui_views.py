@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from rich.console import Console
 
-from tools.muscle.tui.views import (
+from muscle.tui.views import (
     TUI,
     AgentsView,
     AuditView,
@@ -91,7 +91,7 @@ class TestTUIRefreshDataUnavailable:
     def test_provider_raise_sets_data_unavailable(self):
         from unittest.mock import patch
 
-        from tools.muscle.tui.views import TUI
+        from muscle.tui.views import TUI
 
         tui = TUI()
         with patch.object(tui.provider, "get_data", side_effect=RuntimeError("DB locked")):
@@ -103,8 +103,8 @@ class TestTUIRefreshDataUnavailable:
     def test_provider_success_clears_unavailable(self):
         from unittest.mock import patch
 
-        from tools.muscle.tui.data_provider import TUIData
-        from tools.muscle.tui.views import TUI
+        from muscle.tui.data_provider import TUIData
+        from muscle.tui.views import TUI
 
         tui = TUI()
         # First simulate a failure
@@ -179,7 +179,7 @@ class TestDashboardView:
 
     def test_render_with_data_shows_counts(self):
         view = DashboardView()
-        from tools.muscle.tui.data_provider import TUIData
+        from muscle.tui.data_provider import TUIData
 
         data = TUIData(
             project_path="/fake",
@@ -210,7 +210,7 @@ class TestDashboardView:
 
     def test_render_with_learned_rules(self):
         view = DashboardView()
-        from tools.muscle.tui.data_provider import TUIData
+        from muscle.tui.data_provider import TUIData
 
         data = TUIData(
             project_path="/fake",
@@ -251,7 +251,7 @@ class TestReviewsView:
 
     def test_render_with_review_runs(self):
         view = ReviewsView()
-        from tools.muscle.tui.data_provider import TUIData
+        from muscle.tui.data_provider import TUIData
 
         data = TUIData(
             project_path="/fake",
@@ -290,7 +290,7 @@ class TestHistoryView:
 
     def test_render_with_runs(self):
         view = HistoryView()
-        from tools.muscle.tui.data_provider import TUIData
+        from muscle.tui.data_provider import TUIData
 
         data = TUIData(
             project_path="/fake",
@@ -311,7 +311,7 @@ class TestHistoryView:
 
     def test_render_with_model_identity_and_lesson_usage_history(self):
         view = HistoryView()
-        from tools.muscle.tui.data_provider import TUIData
+        from muscle.tui.data_provider import TUIData
 
         data = TUIData(
             project_path="/fake",
@@ -362,7 +362,7 @@ class TestSettingsView:
 
     def test_render_with_config(self):
         view = SettingsView()
-        from tools.muscle.tui.data_provider import TUIData
+        from muscle.tui.data_provider import TUIData
 
         data = TUIData(
             project_path="/fake",
@@ -397,7 +397,7 @@ class TestKnowledgeView:
 
     def test_render_with_rules(self):
         view = KnowledgeView()
-        from tools.muscle.tui.data_provider import TUIData
+        from muscle.tui.data_provider import TUIData
 
         data = TUIData(
             project_path="/fake",
@@ -418,7 +418,7 @@ class TestKnowledgeView:
 
     def test_render_with_external_lessons(self):
         view = KnowledgeView()
-        from tools.muscle.tui.data_provider import TUIData
+        from muscle.tui.data_provider import TUIData
 
         data = TUIData(
             project_path="/fake",
@@ -456,7 +456,7 @@ class TestFixesView:
 
     def test_render_with_findings(self):
         view = FixesView()
-        from tools.muscle.tui.data_provider import TUIData
+        from muscle.tui.data_provider import TUIData
 
         data = TUIData(
             project_path="/fake",
@@ -493,7 +493,7 @@ class TestSkillsView:
 
     def test_render_with_skills(self):
         view = SkillsView()
-        from tools.muscle.tui.data_provider import TUIData
+        from muscle.tui.data_provider import TUIData
 
         data = TUIData(
             project_path="/fake",
@@ -529,7 +529,7 @@ class TestAgentsView:
 
     def test_render_with_agents(self):
         view = AgentsView()
-        from tools.muscle.tui.data_provider import TUIData
+        from muscle.tui.data_provider import TUIData
 
         data = TUIData(
             project_path="/fake",
@@ -565,8 +565,8 @@ class TestBackupsView:
 
     def test_render_with_backups(self):
         view = BackupsView()
-        from tools.muscle.backup_manager import BackupInfo
-        from tools.muscle.tui.data_provider import TUIData
+        from muscle.backup_manager import BackupInfo
+        from muscle.tui.data_provider import TUIData
 
         data = TUIData(
             project_path="/fake",
@@ -591,7 +591,7 @@ class TestBackupsView:
 class TestAuditView:
     def test_render_empty_state(self):
         view = AuditView()
-        from tools.muscle.tui.data_provider import TUIData
+        from muscle.tui.data_provider import TUIData
 
         data = TUIData(project_path="/fake", action_logs=[])
         state = ViewState(current_project="/fake", data=data)
@@ -601,7 +601,7 @@ class TestAuditView:
 
     def test_render_with_transferred_lesson_actions(self):
         view = AuditView()
-        from tools.muscle.tui.data_provider import TUIData
+        from muscle.tui.data_provider import TUIData
 
         data = TUIData(
             project_path="/fake",
@@ -635,7 +635,7 @@ class TestOptimizationView:
 
     def test_render_with_optimization_data(self):
         view = OptimizationView()
-        from tools.muscle.tui.data_provider import TUIData
+        from muscle.tui.data_provider import TUIData
 
         data = TUIData(
             project_path="/fake",
@@ -688,7 +688,7 @@ class TestNotesView:
         state = ViewState(current_project="/fake")
         # Patch imports to raise
         with patch.dict(
-            "sys.modules", {"tools.muscle.project_memory": None, "tools.muscle.project_notes": None}
+            "sys.modules", {"muscle.project_memory": None, "muscle.project_notes": None}
         ):
             panel = view.render(state)
             assert panel is not None

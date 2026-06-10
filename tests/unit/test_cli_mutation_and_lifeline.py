@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
-from tools.muscle.cli import lifeline, long_eval_group
+from muscle.cli import lifeline, long_eval_group
 
 
 def test_long_eval_mutate_runs_mutation_runner(tmp_path: Path) -> None:
@@ -18,7 +18,7 @@ def test_long_eval_mutate_runs_mutation_runner(tmp_path: Path) -> None:
     target = tmp_path / "service.py"
     target.write_text("value = 1\n", encoding="utf-8")
 
-    with patch("tools.muscle.code_review.mutation_runner.MutationRunner") as mock_cls:
+    with patch("muscle.code_review.mutation_runner.MutationRunner") as mock_cls:
         mock_runner = MagicMock()
         mock_runner.run.return_value = {
             "killed": 1,
@@ -52,9 +52,9 @@ def test_lifeline_attaches_history_forensics(tmp_path: Path) -> None:
             assert "Git history forensics" in messages[1]["content"]
             return "ok", MagicMock(total=42)
 
-    with patch("tools.muscle.m27_client.M27Client", _FakeClient):
-        with patch("tools.muscle.cli._resolve_project_context", return_value=(tmp_path, None)):
-            with patch("tools.muscle.git_history_forensics.GitHistoryForensics") as mock_cls:
+    with patch("muscle.m27_client.M27Client", _FakeClient):
+        with patch("muscle.cli._resolve_project_context", return_value=(tmp_path, None)):
+            with patch("muscle.git_history_forensics.GitHistoryForensics") as mock_cls:
                 mock_forensics = MagicMock()
                 mock_forensics.analyze.return_value = {
                     "available": True,

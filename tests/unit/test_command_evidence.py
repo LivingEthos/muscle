@@ -7,13 +7,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tools.muscle.command_evidence import (
+from muscle.command_evidence import (
     ParserTier,
     build_command_evidence,
     estimate_tokens,
     iter_command_evidence,
 )
-from tools.muscle.output_filters import (
+from muscle.output_filters import (
     apply_output_filters,
     project_filters_trusted,
     trust_project_filters,

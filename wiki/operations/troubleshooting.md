@@ -4,7 +4,7 @@
 |---|---|
 | Audience | Operators, support agents, and maintainers |
 | Status | Practical current-runbook guide |
-| Source of truth | [`tools/muscle/doctor.py`](../../tools/muscle/doctor.py), [`tools/muscle/host_runtime.py`](../../tools/muscle/host_runtime.py), [`docs/release-notes-2026-05-01-plugin-readiness.md`](../../docs/release-notes-2026-05-01-plugin-readiness.md), [`tests/unit/test_plugin_docs.py`](../../tests/unit/test_plugin_docs.py) |
+| Source of truth | [`src/muscle/doctor.py`](../../src/muscle/doctor.py), [`src/muscle/host_runtime.py`](../../src/muscle/host_runtime.py), [`docs/release-notes-2026-05-01-plugin-readiness.md`](../../docs/release-notes-2026-05-01-plugin-readiness.md), [`tests/unit/test_plugin_docs.py`](../../tests/unit/test_plugin_docs.py) |
 
 Start with `doctor`. It checks project initialization, enablement, platform,
 CLI path, API key presence, manifests, hooks, command-doc parity, assets,
@@ -43,14 +43,14 @@ For local plugin development:
 
 ```bash
 uv sync --extra dev
-claude --plugin-dir ./tools/muscle/plugin
+claude --plugin-dir ./src/muscle/plugin
 ```
 
 Validate with:
 
 ```bash
-claude plugin validate tools/muscle/plugin/.claude-plugin/plugin.json
-claude plugin validate tools/muscle/plugin/.claude-plugin/marketplace.json
+claude plugin validate src/muscle/plugin/.claude-plugin/plugin.json
+claude plugin validate src/muscle/plugin/.claude-plugin/marketplace.json
 claude plugin validate .claude-plugin/marketplace.json
 ```
 

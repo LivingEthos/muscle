@@ -15,12 +15,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.muscle.code_review.code_reviewer import CodeReviewer
-from tools.muscle.code_review.fix_generator import FixGenerator, FixResult, GeneratedFix
-from tools.muscle.code_review.handoff_generator import HandoffGenerator
-from tools.muscle.code_review.review_controller import ReviewContext, ReviewController
-from tools.muscle.code_review.static_analyzer import StaticAnalyzer
-from tools.muscle.code_review.types import (
+from muscle.code_review.code_reviewer import CodeReviewer
+from muscle.code_review.fix_generator import FixGenerator, FixResult, GeneratedFix
+from muscle.code_review.handoff_generator import HandoffGenerator
+from muscle.code_review.review_controller import ReviewContext, ReviewController
+from muscle.code_review.static_analyzer import StaticAnalyzer
+from muscle.code_review.types import (
     HandoffPlan,
     IssueCategory,
     ReviewConfig,
@@ -32,10 +32,10 @@ from tools.muscle.code_review.types import (
     StaticAnalysisResult,
     StaticIssue,
 )
-from tools.muscle.code_review.verification_loop import VerificationResult
-from tools.muscle.m27_client import M27Client
-from tools.muscle.project_memory import ProjectMemory
-from tools.muscle.tui.project_manager import ProjectConfig, ProjectManager
+from muscle.code_review.verification_loop import VerificationResult
+from muscle.m27_client import M27Client
+from muscle.project_memory import ProjectMemory
+from muscle.tui.project_manager import ProjectConfig, ProjectManager
 
 
 class MockM27Client(M27Client):
@@ -762,13 +762,13 @@ class TestRC02WorktreeCleanupFailureCounter:
         assert controller._worktree_cleanup_failures == 0
 
         # Simulate a cleanup failure by patching GitWorktreeManager
-        from tools.muscle.code_review.worktree_manager import WorktreeSession
+        from muscle.code_review.worktree_manager import WorktreeSession
 
         fake_session = MagicMock(spec=WorktreeSession)
         fake_session.worktree_path = str(tmp_path / "wt")
         fake_session.base_branch = "main"
 
-        with patch("tools.muscle.code_review.review_controller.GitWorktreeManager") as mock_mgr_cls:
+        with patch("muscle.code_review.review_controller.GitWorktreeManager") as mock_mgr_cls:
             mock_mgr = mock_mgr_cls.return_value
             mock_mgr.is_available.return_value = True
             mock_mgr.create.return_value = fake_session
@@ -784,7 +784,7 @@ class TestRC02WorktreeCleanupFailureCounter:
         """RC-02: A cleanup failure must not propagate as an exception."""
         controller = self._make_controller(tmp_path)
 
-        from tools.muscle.code_review.worktree_manager import WorktreeSession
+        from muscle.code_review.worktree_manager import WorktreeSession
 
         fake_session = MagicMock(spec=WorktreeSession)
         fake_session.worktree_path = str(tmp_path / "wt")
@@ -792,7 +792,7 @@ class TestRC02WorktreeCleanupFailureCounter:
 
         raised_exception: list[Exception] = []
 
-        with patch("tools.muscle.code_review.review_controller.GitWorktreeManager") as mock_mgr_cls:
+        with patch("muscle.code_review.review_controller.GitWorktreeManager") as mock_mgr_cls:
             mock_mgr = mock_mgr_cls.return_value
             mock_mgr.is_available.return_value = True
             mock_mgr.create.return_value = fake_session
@@ -881,7 +881,7 @@ class TestRC03FixLockReleasedOnException:
                 side_effect=RuntimeError("simulated exception in locked region"),
             ):
                 with patch(
-                    "tools.muscle.code_review.review_controller.Lock",
+                    "muscle.code_review.review_controller.Lock",
                     side_effect=capturing_lock,
                 ):
                     with patch.object(
@@ -1002,7 +1002,7 @@ class TestFixApplyCrossProcessLock:
 
         with (
             patch(
-                "tools.muscle.code_review.review_controller.advisory_file_lock",
+                "muscle.code_review.review_controller.advisory_file_lock",
                 spy_lock,
             ),
             patch.object(
@@ -1085,7 +1085,7 @@ class TestReviewDelegationTokenSplit:
     """COST#1/#2: review delegation events record the measured input/output split."""
 
     def test_record_delegation_event_uses_real_token_split(self, tmp_path):
-        from tools.muscle.delegation_metrics import estimate_m27_cents
+        from muscle.delegation_metrics import estimate_m27_cents
 
         config = ReviewConfig(target_path=str(tmp_path), mode=ReviewMode.REVIEW)
         controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
@@ -1099,7 +1099,7 @@ class TestReviewDelegationTokenSplit:
         fake_metrics = MagicMock()
         fake_metrics.record.side_effect = lambda event: recorded.append(event)
         with patch(
-            "tools.muscle.code_review.review_controller.DelegationMetrics",
+            "muscle.code_review.review_controller.DelegationMetrics",
             return_value=fake_metrics,
         ):
             controller._record_delegation_event(ctx)
@@ -1111,7 +1111,7 @@ class TestReviewDelegationTokenSplit:
         assert event.m27_usd_cents == estimate_m27_cents("MiniMax-M2.7", 900, 300)
 
     def test_record_delegation_event_attributes_legacy_remainder_to_input(self, tmp_path):
-        from tools.muscle.delegation_metrics import estimate_m27_cents
+        from muscle.delegation_metrics import estimate_m27_cents
 
         config = ReviewConfig(target_path=str(tmp_path), mode=ReviewMode.REVIEW)
         controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
@@ -1125,7 +1125,7 @@ class TestReviewDelegationTokenSplit:
         fake_metrics = MagicMock()
         fake_metrics.record.side_effect = lambda event: recorded.append(event)
         with patch(
-            "tools.muscle.code_review.review_controller.DelegationMetrics",
+            "muscle.code_review.review_controller.DelegationMetrics",
             return_value=fake_metrics,
         ):
             controller._record_delegation_event(ctx)

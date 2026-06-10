@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.muscle.m27_client import (
+from muscle.m27_client import (
     ANTHROPIC_BASE_URL_IO,
     DEFAULT_MODEL,
     OPENAI_BASE_URL_IO,
@@ -18,7 +18,7 @@ from tools.muscle.m27_client import (
     _detect_api_base,
     _max_output_tokens_for,
 )
-from tools.muscle.optimization.types import TelemetryContext
+from muscle.optimization.types import TelemetryContext
 
 
 class TestTokenUsage:
@@ -112,10 +112,10 @@ class TestM27Client:
             }.get(k, d),
         ):
             with patch(
-                "tools.muscle.m27_client._detect_api_base",
+                "muscle.m27_client._detect_api_base",
                 return_value="https://api.minimax.io/anthropic",
             ):
-                with patch("tools.muscle.m27_client._create_session"):
+                with patch("muscle.m27_client._create_session"):
                     return M27Client(api_key="test-key", model="MiniMax-M2.7")
 
     def test_init_defaults(self, client):
@@ -135,10 +135,10 @@ class TestM27Client:
             }.get(k, d),
         ):
             with patch(
-                "tools.muscle.m27_client._detect_api_base",
+                "muscle.m27_client._detect_api_base",
                 return_value="https://api.minimax.io/anthropic",
             ):
-                with patch("tools.muscle.m27_client._create_session"):
+                with patch("muscle.m27_client._create_session"):
                     client = M27Client(api_key="test-key")
         assert client.model == "MiniMax-M3"
 
@@ -256,7 +256,7 @@ def mock_client():
         clear=True,
     ):
         with patch(
-            "tools.muscle.m27_client._detect_api_base",
+            "muscle.m27_client._detect_api_base",
             return_value="https://api.minimax.io/anthropic",
         ):
             with patch.object(M27Client, "_session", mock_session):
@@ -992,7 +992,7 @@ class TestParseSseStream:
         # Fix: H3. A provider mid-stream error event must surface a sentinel-prefixed
         # payload (not a clean ("", None) end-of-stream) so chat_streaming records
         # success=False instead of treating the error as a successful empty finish.
-        from tools.muscle.m27_client import STREAM_ERROR_PREFIX
+        from muscle.m27_client import STREAM_ERROR_PREFIX
 
         assert chunks[-1][0].startswith(STREAM_ERROR_PREFIX)
         assert "Server error" in chunks[-1][0]
@@ -1189,7 +1189,7 @@ class TestRateLimiterWait:
                 limiter.lock.release()
             real_sleep(0)
 
-        with patch("tools.muscle.m27_client.time.sleep", side_effect=fake_sleep):
+        with patch("muscle.m27_client.time.sleep", side_effect=fake_sleep):
             limiter.wait()
 
         assert sleeping.is_set()
@@ -1267,7 +1267,7 @@ class TestStreamingResourceSafety:
         # Only one POST: no retry was attempted after partial output.
         assert mock_session.post.call_count == 1
         # The consumer received the partial chunk then an error sentinel.
-        from tools.muscle.m27_client import STREAM_ERROR_PREFIX
+        from muscle.m27_client import STREAM_ERROR_PREFIX
 
         assert any(text == "partial" for text, _ in chunks)
         assert chunks[-1][0].startswith(STREAM_ERROR_PREFIX)
@@ -1290,7 +1290,7 @@ class TestStreamingResourceSafety:
         )
         mock_session.post.return_value = mock_response
 
-        from tools.muscle.m27_client import STREAM_ERROR_PREFIX
+        from muscle.m27_client import STREAM_ERROR_PREFIX
 
         chunks = list(client.chat_streaming([{"role": "user", "content": "hi"}]))
         assert chunks[-1][0].startswith(STREAM_ERROR_PREFIX)
@@ -1373,7 +1373,7 @@ class TestChatStructuredTruncationAndKey:
         assert result.value == 1
         assert meta.truncated is True
 
-        from tools.muscle.response_cache import ResponseCache
+        from muscle.response_cache import ResponseCache
 
         cache = ResponseCache(tmp_path / "c.db")
         assert meta.cache_key is not None
@@ -1392,7 +1392,7 @@ class TestChatStructuredTruncationAndKey:
             )
         assert meta.truncated is False
 
-        from tools.muscle.response_cache import ResponseCache
+        from muscle.response_cache import ResponseCache
 
         cache = ResponseCache(tmp_path / "c.db")
         assert cache.get(meta.cache_key) == {"value": 7}

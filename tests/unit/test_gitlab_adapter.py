@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from tools.muscle.adapters.gitlab import GitLabAdapter
+from muscle.adapters.gitlab import GitLabAdapter
 
 
 class TestGitLabAdapter:

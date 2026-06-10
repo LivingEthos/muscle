@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from tools.muscle.migrations import CURRENT_SCHEMA_VERSION
-from tools.muscle.project_memory import ProjectMemory
+from muscle.migrations import CURRENT_SCHEMA_VERSION
+from muscle.project_memory import ProjectMemory
 
 
 @pytest.fixture

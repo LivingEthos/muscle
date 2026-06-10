@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from tools.muscle.code_review.source_context import (
+from muscle.code_review.source_context import (
     SourceContextBuilder,
     _normalize_package,
     _read_snippet,

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.muscle.code_review.types import (
+from muscle.code_review.types import (
     IssueCategory,
     ReviewIssue,
     ReviewResult,
@@ -54,7 +54,7 @@ class TestLearningPipelineCategorize:
     """Tests that _categorize_findings correctly splits high/critical from medium/low."""
 
     def test_high_issues_go_to_immediate(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -68,7 +68,7 @@ class TestLearningPipelineCategorize:
             assert immediate[0].severity == Severity.HIGH
 
     def test_critical_issues_go_to_immediate(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -81,7 +81,7 @@ class TestLearningPipelineCategorize:
             assert immediate[0].severity == Severity.CRITICAL
 
     def test_medium_issues_go_to_tracked(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -95,7 +95,7 @@ class TestLearningPipelineCategorize:
             assert tracked[0].severity == Severity.MEDIUM
 
     def test_low_issues_go_to_tracked(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -108,7 +108,7 @@ class TestLearningPipelineCategorize:
             assert len(tracked) == 1
 
     def test_info_issues_go_to_tracked(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -121,7 +121,7 @@ class TestLearningPipelineCategorize:
             assert len(tracked) == 1
 
     def test_mixed_severity_split(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -144,7 +144,7 @@ class TestLearningPipelineUpdateClaudeMd:
     """Tests that high/critical issues create rules in CLAUDE.md."""
 
     def test_high_issue_creates_dont_rule(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -165,7 +165,7 @@ class TestLearningPipelineUpdateClaudeMd:
             assert "SQL injection risk" in content
 
     def test_critical_issue_creates_rule_with_suggested_fix(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -185,7 +185,7 @@ class TestLearningPipelineUpdateClaudeMd:
             assert "Validate input length" in content
 
     def test_issue_without_suggested_fix_uses_file_path(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -206,7 +206,7 @@ class TestLearningPipelineUpdateClaudeMd:
             assert "src/handler.py" in content
 
     def test_medium_issue_does_not_create_rule(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -218,7 +218,7 @@ class TestLearningPipelineUpdateClaudeMd:
             assert actions["rules_added"] == 0
 
     def test_duplicate_rule_not_added_twice(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -237,7 +237,7 @@ class TestLearningPipelineUpdateClaudeMd:
             assert actions2["rules_added"] == 0
 
     def test_clean_review_persists_review_run(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -252,7 +252,7 @@ class TestLearningPipelineUpdateClaudeMd:
             assert stored["duration_ms"] == 250
 
     def test_decisions_link_to_inserted_finding_ids(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -274,7 +274,7 @@ class TestLearningPipelineValidation:
     """Tests for the validation loop: rules validated when pattern absent, confidence upgrades, stale rules archived."""
 
     def test_rule_validated_when_pattern_absent(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -299,7 +299,7 @@ class TestLearningPipelineValidation:
             assert rules[0]["validated_count"] == 1
 
     def test_confidence_upgrades_with_validations(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -321,7 +321,7 @@ class TestLearningPipelineValidation:
             assert rules[0]["confidence"] == "medium"
 
     def test_confidence_reaches_high(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -341,7 +341,7 @@ class TestLearningPipelineValidation:
             assert rules[0]["confidence"] == "high"
 
     def test_stale_rule_archived_after_threshold(self):
-        from tools.muscle.code_review.learning_pipeline import (
+        from muscle.code_review.learning_pipeline import (
             ARCHIVE_VALIDATED_THRESHOLD,
             LearningPipeline,
         )
@@ -371,7 +371,7 @@ class TestLearningPipelineValidation:
             assert "Obsolete pattern" in content
 
     def test_rule_not_validated_when_pattern_found(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -397,7 +397,7 @@ class TestLearningPipelineValidation:
                 assert rule["validated_count"] == 0
 
     def test_compute_confidence_boundaries(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -413,7 +413,7 @@ class TestLearningPipelineMemoryMd:
     """Tests for review session logging to MEMORY.md."""
 
     def test_session_logged_on_review(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -430,7 +430,7 @@ class TestLearningPipelineMemoryMd:
             assert "high=1" in content
 
     def test_session_logged_for_empty_review(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -441,7 +441,7 @@ class TestLearningPipelineMemoryMd:
             assert actions["session_logged"] is True
 
     def test_tracked_issues_logged_to_memory(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -461,7 +461,7 @@ class TestLearningPipelineMemoryMd:
             assert "Unused import" in content
 
     def test_actions_summary_logged(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -480,14 +480,14 @@ class TestLearningPipelineSkillGeneration:
     """Tests for skill detection and generation flow."""
 
     def test_skill_generation_handles_no_patterns(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
 
             # Mock PatternDetector to return no patterns
             with patch(
-                "tools.muscle.code_review.learning_pipeline.PatternDetector"
+                "muscle.code_review.learning_pipeline.PatternDetector"
             ) as mock_detector_cls:
                 mock_detector = MagicMock()
                 mock_detector.detect_patterns.return_value = []
@@ -501,13 +501,13 @@ class TestLearningPipelineSkillGeneration:
             assert agent_count == 0
 
     def test_skill_generation_catches_exceptions(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
 
             with patch(
-                "tools.muscle.code_review.learning_pipeline.PatternDetector"
+                "muscle.code_review.learning_pipeline.PatternDetector"
             ) as mock_detector_cls:
                 mock_detector_cls.side_effect = Exception("DB error")
 
@@ -517,7 +517,7 @@ class TestLearningPipelineSkillGeneration:
             assert agent_count == 0
 
     def test_learn_from_review_returns_complete_actions_dict(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -536,7 +536,7 @@ class TestLearningPipelineInit:
     """Tests for LearningPipeline initialization."""
 
     def test_init_creates_memory_manager(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
@@ -546,7 +546,7 @@ class TestLearningPipelineInit:
             assert pipeline.m27 is None
 
     def test_init_with_m27_client(self):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_m27 = MagicMock()
@@ -558,7 +558,7 @@ class TestLearningPipelineInit:
 class TestLearningPipelineEndToEnd:
     def test_full_cycle_learn_validate_archive(self, tmp_path):
         """Simulate: review with issues -> rules added -> clean review -> rules validated -> many clean reviews -> rule archived."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         pipeline = LearningPipeline(str(tmp_path))
 
@@ -591,7 +591,7 @@ class TestLearningPipelineEndToEnd:
         assert any(r["confidence"] == "medium" for r in rules)
 
     def test_memory_md_tracks_sessions(self, tmp_path):
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         pipeline = LearningPipeline(str(tmp_path))
         issues = [_make_issue(severity=Severity.HIGH)]
@@ -605,8 +605,8 @@ class TestLearningPipelineEndToEnd:
 
     def test_outside_markers_untouched(self, tmp_path):
         """Verify that content outside MUSCLE markers is never modified."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
-        from tools.muscle.code_review.memory_manager import RULES_END, RULES_START
+        from muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.memory_manager import RULES_END, RULES_START
 
         muscle_dir = tmp_path / ".muscle"
         muscle_dir.mkdir(parents=True, exist_ok=True)
@@ -631,7 +631,7 @@ class TestLearningPipelineEndToEnd:
 
     def test_multiple_reviews_compound_learning(self, tmp_path):
         """Multiple reviews with different issues should accumulate rules."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         pipeline = LearningPipeline(str(tmp_path))
 
@@ -658,9 +658,9 @@ class TestSkillLifecycleDB:
 
     def test_skill_creation_writes_to_db(self, tmp_path):
         """Skill generation writes skill metadata to project_memory.db."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
-        from tools.muscle.code_review.pattern_detector import PatternCluster
-        from tools.muscle.code_review.skill_generator import SkillGenerator
+        from muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.pattern_detector import PatternCluster
+        from muscle.code_review.skill_generator import SkillGenerator
 
         pipeline = LearningPipeline(str(tmp_path))
 
@@ -681,7 +681,7 @@ class TestSkillLifecycleDB:
 
         # Mock M27 to avoid actual API calls
         with patch.object(pipeline._publisher, "publish"):
-            with patch("tools.muscle.code_review.skill_generator.M27Client") as mock_m27:
+            with patch("muscle.code_review.skill_generator.M27Client") as mock_m27:
                 mock_instance = MagicMock()
                 mock_instance.chat.return_value = (
                     "---\nname: test\ndescription: test desc\ntriggers:\n---\n# Test\n",
@@ -707,9 +707,9 @@ class TestSkillLifecycleDB:
 
     def test_duplicate_skill_suppressed(self, tmp_path):
         """Skill with same trigger_pattern is suppressed if active skill exists."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
-        from tools.muscle.code_review.pattern_detector import PatternCluster
-        from tools.muscle.code_review.skill_generator import SkillGenerator
+        from muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.pattern_detector import PatternCluster
+        from muscle.code_review.skill_generator import SkillGenerator
 
         # Pre-create a skill in DB
         pipeline = LearningPipeline(str(tmp_path))
@@ -737,7 +737,7 @@ class TestSkillLifecycleDB:
             semantically_related_issues=[],
         )
 
-        with patch("tools.muscle.code_review.skill_generator.M27Client") as mock_m27:
+        with patch("muscle.code_review.skill_generator.M27Client") as mock_m27:
             mock_instance = MagicMock()
             mock_instance.chat.return_value = ("---\nname: new\n---\n# New\n", None)
             mock_m27.return_value = mock_instance
@@ -757,9 +757,9 @@ class TestSkillLifecycleDB:
 
     def test_skill_creation_records_decision(self, tmp_path):
         """Skill creation records CREATE_SKILL decision in memory_decisions with reasoning."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
-        from tools.muscle.code_review.pattern_detector import PatternCluster
-        from tools.muscle.code_review.skill_generator import SkillGenerator
+        from muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.pattern_detector import PatternCluster
+        from muscle.code_review.skill_generator import SkillGenerator
 
         pipeline = LearningPipeline(str(tmp_path))
 
@@ -777,7 +777,7 @@ class TestSkillLifecycleDB:
             semantically_related_issues=[],
         )
 
-        with patch("tools.muscle.code_review.skill_generator.M27Client") as mock_m27:
+        with patch("muscle.code_review.skill_generator.M27Client") as mock_m27:
             mock_instance = MagicMock()
             mock_instance.chat.return_value = (
                 "---\nname: resource\ndescription: close files\ntriggers:\n---\n# Resource\n",
@@ -801,8 +801,8 @@ class TestSkillLifecycleDB:
 
     def test_skill_revision_increments_on_update(self, tmp_path):
         """update_skill increments revision number, not just appending."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
-        from tools.muscle.code_review.skill_generator import SkillGenerator
+        from muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.skill_generator import SkillGenerator
 
         pipeline = LearningPipeline(str(tmp_path))
 
@@ -833,8 +833,8 @@ class TestSkillLifecycleDB:
 
     def test_archive_skill_updates_db_and_file(self, tmp_path):
         """archive_skill marks DB record as archived and moves file."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
-        from tools.muscle.code_review.skill_generator import SkillGenerator
+        from muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.skill_generator import SkillGenerator
 
         pipeline = LearningPipeline(str(tmp_path))
 
@@ -867,7 +867,7 @@ class TestSkillLifecycleDB:
 
     def test_stale_skills_archived_by_pipeline(self, tmp_path):
         """_archive_stale_skills archives active skills with low evidence_count."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         pipeline = LearningPipeline(str(tmp_path))
 
@@ -909,8 +909,8 @@ class TestSkillLifecycleDB:
 
     def test_pattern_detector_queries_memory_decisions(self, tmp_path):
         """PatternDetector uses memory_decisions for evidence_count when project_memory provided."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
-        from tools.muscle.code_review.pattern_detector import PatternDetector
+        from muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.pattern_detector import PatternDetector
 
         pipeline = LearningPipeline(str(tmp_path))
 
@@ -938,7 +938,7 @@ class TestSkillGeneratorDBMethods:
 
     def test_insert_skill_writes_all_fields(self, tmp_path):
         """insert_skill stores all provided fields in DB."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         pipeline = LearningPipeline(str(tmp_path))
         pm = pipeline._pm
@@ -960,7 +960,7 @@ class TestSkillGeneratorDBMethods:
 
     def test_update_skill_evidence_count(self, tmp_path):
         """update_skill_evidence_count correctly updates evidence_count."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         pipeline = LearningPipeline(str(tmp_path))
         pm = pipeline._pm
@@ -984,7 +984,7 @@ class TestSkillGeneratorDBMethods:
 
     def test_skill_similar_exists_suppresses_dupes(self, tmp_path):
         """skill_similar_exists returns existing skill for same trigger_pattern, suppresses creation."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         pipeline = LearningPipeline(str(tmp_path))
         pm = pipeline._pm
@@ -1010,7 +1010,7 @@ class TestSkillGeneratorDBMethods:
 
     def test_get_stale_skills_returns_low_evidence(self, tmp_path):
         """get_stale_skills returns active skills with evidence_count below threshold."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         pipeline = LearningPipeline(str(tmp_path))
         pm = pipeline._pm
@@ -1058,8 +1058,8 @@ class TestAgentLifecycleDB:
 
     def test_agent_creation_records_decision(self, tmp_path):
         """Agent creation records CREATE_AGENT decision in memory_decisions with reasoning."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
-        from tools.muscle.code_review.pattern_detector import PatternCluster
+        from muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.pattern_detector import PatternCluster
 
         pipeline = LearningPipeline(str(tmp_path))
 
@@ -1077,7 +1077,7 @@ class TestAgentLifecycleDB:
             semantically_related_issues=[],
         )
 
-        with patch("tools.muscle.code_review.agent_generator.M27Client") as mock_m27:
+        with patch("muscle.code_review.agent_generator.M27Client") as mock_m27:
             mock_instance = MagicMock()
             mock_instance.chat.return_value = (
                 "---\nname: auth\ndescription: Auth agent\ntriggers:\n---\n# Auth Agent\n",
@@ -1096,7 +1096,7 @@ class TestAgentLifecycleDB:
                     evidence_json=f'{{"occurrences": {i + 1}}}',
                 )
 
-            from tools.muscle.code_review.agent_generator import AgentGenerator
+            from muscle.code_review.agent_generator import AgentGenerator
 
             agent_gen = AgentGenerator(
                 str(tmp_path),
@@ -1115,7 +1115,7 @@ class TestAgentLifecycleDB:
 
     def test_can_create_agent_checks_cap(self, tmp_path):
         """can_create_agent returns False when MAX_ACTIVE_AGENTS is reached."""
-        from tools.muscle.code_review.agent_generator import MAX_ACTIVE_AGENTS, AgentGenerator
+        from muscle.code_review.agent_generator import MAX_ACTIVE_AGENTS, AgentGenerator
 
         mock_m27 = MagicMock()
         pm = MagicMock()
@@ -1130,7 +1130,7 @@ class TestAgentLifecycleDB:
 
     def test_can_create_agent_checks_evidence_threshold(self, tmp_path):
         """can_create_agent returns False when evidence threshold not met."""
-        from tools.muscle.code_review.agent_generator import MIN_EVIDENCE_COUNT, AgentGenerator
+        from muscle.code_review.agent_generator import MIN_EVIDENCE_COUNT, AgentGenerator
 
         mock_m27 = MagicMock()
         pm = MagicMock()
@@ -1145,7 +1145,7 @@ class TestAgentLifecycleDB:
 
     def test_can_create_agent_returns_true_when_checks_pass(self, tmp_path):
         """can_create_agent returns True when cap and evidence checks both pass."""
-        from tools.muscle.code_review.agent_generator import MIN_EVIDENCE_COUNT, AgentGenerator
+        from muscle.code_review.agent_generator import MIN_EVIDENCE_COUNT, AgentGenerator
 
         mock_m27 = MagicMock()
         pm = MagicMock()
@@ -1170,7 +1170,7 @@ class TestAgentLifecycleDB:
 
     def test_record_agent_decision_in_project_memory(self, tmp_path):
         """project_memory.record_agent_decision stores decision in memory_decisions table."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         pipeline = LearningPipeline(str(tmp_path))
         pm = pipeline._pm
@@ -1195,12 +1195,12 @@ class TestLearningPipelineSpecializations:
 
     def test_detect_and_generate_specializations_returns_both_counts(self, tmp_path):
         """_detect_and_generate_specializations returns (skill_count, agent_count)."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         pipeline = LearningPipeline(str(tmp_path))
 
         with patch(
-            "tools.muscle.code_review.learning_pipeline.PatternDetector"
+            "muscle.code_review.learning_pipeline.PatternDetector"
         ) as mock_detector_cls:
             mock_detector = MagicMock()
             mock_detector.detect_patterns.return_value = []
@@ -1215,12 +1215,12 @@ class TestLearningPipelineSpecializations:
 
     def test_learn_from_review_tracks_agents_generated(self, tmp_path):
         """learn_from_review actions dict includes agents_generated."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         pipeline = LearningPipeline(str(tmp_path))
 
         with patch(
-            "tools.muscle.code_review.learning_pipeline.PatternDetector"
+            "muscle.code_review.learning_pipeline.PatternDetector"
         ) as mock_detector_cls:
             mock_detector = MagicMock()
             mock_detector.detect_patterns.return_value = []
@@ -1236,7 +1236,7 @@ class TestLearningPipelineSpecializations:
 
     def test_publish_active_specializations_calls_publisher(self, tmp_path):
         """_publish_active_specializations calls _publisher.publish with skills and agents."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.learning_pipeline import LearningPipeline
 
         pipeline = LearningPipeline(str(tmp_path))
 
@@ -1267,8 +1267,8 @@ class TestLearningPipelineSpecializations:
 
     def test_decision_recording_for_skill_promotion(self, tmp_path):
         """Skill promotion records decision in memory_decisions."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
-        from tools.muscle.code_review.pattern_detector import PatternCluster
+        from muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.pattern_detector import PatternCluster
 
         pipeline = LearningPipeline(str(tmp_path))
 
@@ -1297,8 +1297,8 @@ class TestLearningPipelineSpecializations:
 
     def test_decision_recording_for_agent_rejection(self, tmp_path):
         """Agent rejection records decision with reason in memory_decisions."""
-        from tools.muscle.code_review.learning_pipeline import LearningPipeline
-        from tools.muscle.code_review.pattern_detector import PatternCluster
+        from muscle.code_review.learning_pipeline import LearningPipeline
+        from muscle.code_review.pattern_detector import PatternCluster
 
         pipeline = LearningPipeline(str(tmp_path))
 

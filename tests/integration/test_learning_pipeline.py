@@ -11,14 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from tools.muscle.code_review.learning_pipeline import LearningPipeline
-from tools.muscle.code_review.memory_manager import MemoryManager
-from tools.muscle.code_review.pattern_detector import PatternCluster, PatternDetector
-from tools.muscle.code_review.skill_generator import SkillGenerator
-from tools.muscle.code_review.types import (
+from muscle.code_review.learning_pipeline import LearningPipeline
+from muscle.code_review.memory_manager import MemoryManager
+from muscle.code_review.pattern_detector import PatternCluster, PatternDetector
+from muscle.code_review.skill_generator import SkillGenerator
+from muscle.code_review.types import (
     Severity,
 )
-from tools.muscle.project_memory import ProjectMemory
+from muscle.project_memory import ProjectMemory
 
 from .conftest import MockM27Client, make_review_issue, make_review_result
 
@@ -71,7 +71,7 @@ class TestLearningPipelineFullCycle:
         self, project_with_muscle_dir: Path
     ):
         """learn_from_review passes review_mode, token_cost, duration_ms to DB and returns review_run_id."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         pipeline = LearningPipeline(str(project_with_muscle_dir))
         issues = [
@@ -421,7 +421,7 @@ class TestPatternDetectorIntegration:
 
     def test_detect_patterns_from_review_history(self, project_with_muscle_dir: Path):
         """PatternDetector should find patterns from accumulated review data."""
-        from tools.muscle.code_review.review_kb import ReviewKB
+        from muscle.code_review.review_kb import ReviewKB
 
         kb_path = str(project_with_muscle_dir / ".muscle" / "review_kb")
         kb = ReviewKB(kb_path)
@@ -449,7 +449,7 @@ class TestPatternDetectorIntegration:
 
     def test_skill_candidates_filter(self, project_with_muscle_dir: Path):
         """get_skill_candidates should filter by confidence threshold."""
-        from tools.muscle.code_review.review_kb import ReviewKB
+        from muscle.code_review.review_kb import ReviewKB
 
         kb_path = str(project_with_muscle_dir / ".muscle" / "review_kb")
         kb = ReviewKB(kb_path)
@@ -476,7 +476,7 @@ class TestPatternDetectorIntegration:
 
     def test_agent_candidates_complex_categories(self, project_with_muscle_dir: Path):
         """get_agent_candidates should only include complex categories."""
-        from tools.muscle.code_review.review_kb import ReviewKB
+        from muscle.code_review.review_kb import ReviewKB
 
         kb_path = str(project_with_muscle_dir / ".muscle" / "review_kb")
         kb = ReviewKB(kb_path)
@@ -522,7 +522,7 @@ class TestPatternDetectorIntegration:
         self, project_with_muscle_dir: Path, mock_m27: MockM27Client
     ):
         """Pattern detection with M2.7 should use semantic clustering."""
-        from tools.muscle.code_review.review_kb import ReviewKB
+        from muscle.code_review.review_kb import ReviewKB
 
         kb_path = str(project_with_muscle_dir / ".muscle" / "review_kb")
         kb = ReviewKB(kb_path)
@@ -640,8 +640,8 @@ class TestClaudePublisherIntegration:
         DB-FIRST: update_markers() queries project_memory.db directly for rules.
         Rules are NOT read from internal markdown (.muscle/CLAUDE.md).
         """
-        from tools.muscle.claude_publisher import ClaudePublisher
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.claude_publisher import ClaudePublisher
+        from muscle.project_memory import ProjectMemory
 
         root_claude = project_with_muscle_dir / "CLAUDE.md"
         root_claude.write_text("# CLAUDE.md\n\n## Project Info\n\nSome content\n")
@@ -673,7 +673,7 @@ class TestClaudePublisherIntegration:
 
     def test_ensure_root_markers(self, project_with_muscle_dir: Path):
         """Test that ensure_root_claude_md_markers inserts markers if missing."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         root_claude = project_with_muscle_dir / "CLAUDE.md"
         root_claude.write_text("# CLAUDE.md\n\nUser content\n")
@@ -689,7 +689,7 @@ class TestClaudePublisherIntegration:
 
     def test_publish_preserves_user_content(self, project_with_muscle_dir: Path):
         """Test that publishing preserves user content outside markers."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         root_claude = project_with_muscle_dir / "CLAUDE.md"
         root_claude.write_text(
@@ -720,8 +720,8 @@ class TestClaudePublisherIntegration:
 
         This test verifies the fallback path works with DB-backed data.
         """
-        from tools.muscle.code_review.memory_manager import MemoryManager
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.code_review.memory_manager import MemoryManager
+        from muscle.project_memory import ProjectMemory
 
         # Create root CLAUDE.md
         root_claude = project_with_muscle_dir / "CLAUDE.md"
@@ -748,7 +748,7 @@ class TestClaudePublisherIntegration:
 
     def test_publish_with_empty_sections_skips_section_headers(self, project_with_muscle_dir: Path):
         """Test that publishing with no data for a section omits that section."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         root_claude = project_with_muscle_dir / "CLAUDE.md"
         root_claude.write_text("# CLAUDE.md\n")
@@ -772,9 +772,9 @@ class TestClaudePublisherIntegration:
 
     def test_backup_created_before_publish(self, project_with_muscle_dir: Path):
         """Test that a backup is created before publishing."""
-        from tools.muscle.backup_manager import BackupManager
-        from tools.muscle.claude_publisher import ClaudePublisher
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.backup_manager import BackupManager
+        from muscle.claude_publisher import ClaudePublisher
+        from muscle.project_memory import ProjectMemory
 
         root_claude = project_with_muscle_dir / "CLAUDE.md"
         root_claude.write_text("# CLAUDE.md\n")
@@ -927,8 +927,8 @@ class TestSkillAgentIntegration:
                 evidence_json=f'{{"occurrences": {i + 1}}}',
             )
 
-        from tools.muscle.code_review.agent_generator import AgentGenerator
-        from tools.muscle.code_review.pattern_detector import PatternCluster
+        from muscle.code_review.agent_generator import AgentGenerator
+        from muscle.code_review.pattern_detector import PatternCluster
 
         pattern = PatternCluster(
             pattern_id="security_1",
@@ -967,7 +967,7 @@ class TestSkillAgentIntegration:
 
         pipeline = LearningPipeline(str(project_with_muscle_dir), m27_client=mock_m27)
 
-        from tools.muscle.code_review.pattern_detector import PatternCluster
+        from muscle.code_review.pattern_detector import PatternCluster
 
         pattern = PatternCluster(
             pattern_id="null_check_1",
@@ -1011,7 +1011,7 @@ class TestSkillAgentIntegration:
 
         pipeline = LearningPipeline(str(project_with_muscle_dir), m27_client=mock_m27)
 
-        from tools.muscle.code_review.pattern_detector import PatternCluster
+        from muscle.code_review.pattern_detector import PatternCluster
 
         pattern = PatternCluster(
             pattern_id="complex_1",

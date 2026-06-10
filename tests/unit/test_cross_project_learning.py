@@ -10,34 +10,34 @@ from pathlib import Path
 
 import pytest
 
-from tools.muscle.audit_presenter import format_action_log_entry
-from tools.muscle.lesson_resolver import LessonRenderBudget, LessonResolver
-from tools.muscle.model_identity import ModelIdentityResolver
-from tools.muscle.model_pack_standard import (
+from muscle.audit_presenter import format_action_log_entry
+from muscle.lesson_resolver import LessonRenderBudget, LessonResolver
+from muscle.model_identity import ModelIdentityResolver
+from muscle.model_pack_standard import (
     PACK_LESSONS_SCHEMA_VERSION,
     PACK_MANIFEST_SCHEMA_VERSION,
     PACK_REPO_LAYOUT_VERSION,
 )
-from tools.muscle.model_packs import ModelPackManager
-from tools.muscle.project_fingerprint import (
+from muscle.model_packs import ModelPackManager
+from muscle.project_fingerprint import (
     build_project_fingerprint,
     explain_relatedness,
     score_relatedness,
 )
-from tools.muscle.project_memory import ProjectMemory
-from tools.muscle.project_memory_types import ModelPackLesson, ModelPackMetadata
-from tools.muscle.system_db import SystemDatabase
-from tools.muscle.transferable_lesson_scrubber import (
+from muscle.project_memory import ProjectMemory
+from muscle.project_memory_types import ModelPackLesson, ModelPackMetadata
+from muscle.system_db import SystemDatabase
+from muscle.transferable_lesson_scrubber import (
     TransferScrubContext,
     scrub_transferable_lesson,
 )
-from tools.muscle.tui.project_manager import ProjectConfig, ProjectManager
+from muscle.tui.project_manager import ProjectConfig, ProjectManager
 
 
 @pytest.fixture
 def isolated_system_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "home" / ".muscle" / "system.db"
-    monkeypatch.setattr("tools.muscle.system_db.DEFAULT_SYSTEM_DB_PATH", db_path)
+    monkeypatch.setattr("muscle.system_db.DEFAULT_SYSTEM_DB_PATH", db_path)
     return db_path
 
 
@@ -505,7 +505,7 @@ def test_model_pack_export_and_install_scrubs_project_specific_content(
     )
 
     manager = ModelPackManager(str(project))
-    with caplog.at_level("INFO", logger="tools.muscle.model_packs"):
+    with caplog.at_level("INFO", logger="muscle.model_packs"):
         result = manager.export_candidate_bundle(
             canonical_model_key="minimax/m2.7@1",
             output_dir=str(tmp_path / "exports"),
@@ -911,7 +911,7 @@ def test_transferred_lessons_only_publish_after_promotion_into_local_rules(
     tmp_path: Path,
     isolated_system_db: Path,
 ) -> None:
-    from tools.muscle.claude_publisher import ClaudePublisher
+    from muscle.claude_publisher import ClaudePublisher
 
     current = tmp_path / "current"
     source = tmp_path / "source"
@@ -1140,7 +1140,7 @@ def test_model_pack_submit_records_draft_pr(
         str(project),
         github_adapter_cls=StubGitHubAdapter,  # type: ignore[arg-type]
     )
-    with caplog.at_level("INFO", logger="tools.muscle.model_packs"):
+    with caplog.at_level("INFO", logger="muscle.model_packs"):
         result = submit_manager.submit_draft_pr(export_result.bundle_dir)
     assert result["status"] == "draft_opened"
     assert sorted(committed_paths) == [
@@ -1407,8 +1407,8 @@ def test_remote_model_pack_install_populates_local_cache_and_storage(
         github_adapter_cls=StubGitHubAdapter,  # type: ignore[arg-type]
     )
     with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr("tools.muscle.model_packs.REMOTE_CACHE_DIR", cache_root)
-        with caplog.at_level("INFO", logger="tools.muscle.model_packs"):
+        monkeypatch.setattr("muscle.model_packs.REMOTE_CACHE_DIR", cache_root)
+        with caplog.at_level("INFO", logger="muscle.model_packs"):
             metadata = manager.install_remote_bundle(
                 "minimax/m2.7@1",
                 repo="LivingEthos/muscle-model-packs",
@@ -1504,14 +1504,14 @@ def test_remote_model_pack_update_is_idempotent_when_version_matches(
         github_adapter_cls=StubGitHubAdapter,  # type: ignore[arg-type]
     )
     with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr("tools.muscle.model_packs.REMOTE_CACHE_DIR", cache_root)
+        monkeypatch.setattr("muscle.model_packs.REMOTE_CACHE_DIR", cache_root)
         first = manager.install_remote_bundle(
             "minimax/m2.7@1",
             repo="LivingEthos/muscle-model-packs",
             ref="main",
             expected_canonical_model_key="minimax/m2.7@1",
         )
-        with caplog.at_level("INFO", logger="tools.muscle.model_packs"):
+        with caplog.at_level("INFO", logger="muscle.model_packs"):
             second = manager.update_bundle("minimax/m2.7@1")
 
     assert first.version == second.version == "1.2.3"
@@ -1569,7 +1569,7 @@ def test_lesson_resolver_uses_remote_installed_pack_without_fetch(
             raise AssertionError("Remote fetch should not be reachable from prompt resolution")
 
     with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr("tools.muscle.model_packs.GitHubAdapter", FailingGitHubAdapter)
+        monkeypatch.setattr("muscle.model_packs.GitHubAdapter", FailingGitHubAdapter)
         resolver = LessonResolver(
             project_path=str(project),
             project_memory=pm,

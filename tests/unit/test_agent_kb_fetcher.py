@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.muscle.code_review.agent_kb_fetcher import (
+from muscle.code_review.agent_kb_fetcher import (
     AGENT_REPOS,
     AgentKBFetcher,
     PinnedKBSource,

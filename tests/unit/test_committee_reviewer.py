@@ -3,13 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from threading import Thread
 
-from tools.muscle.code_review.code_reviewer import CodeReviewer
-from tools.muscle.code_review.committee_reviewer import (
+from muscle.code_review.code_reviewer import CodeReviewer
+from muscle.code_review.committee_reviewer import (
     AGENT_CORRECTNESS,
     CommitteeReviewer,
     _split_from_summary,
 )
-from tools.muscle.code_review.types import IssueCategory, ReviewIssue, ReviewScope, Severity
+from muscle.code_review.types import IssueCategory, ReviewIssue, ReviewScope, Severity
 
 
 class DummyM27:

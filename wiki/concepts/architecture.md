@@ -4,24 +4,24 @@
 |---|---|
 | Audience | Maintainers and technical users |
 | Status | Current runtime overview |
-| Source of truth | [`docs/architecture.md`](../../docs/architecture.md), [`tools/muscle/cli.py`](../../tools/muscle/cli.py), [`tools/muscle/plugin/`](../../tools/muscle/plugin/) |
+| Source of truth | [`docs/architecture.md`](../../docs/architecture.md), [`src/muscle/cli.py`](../../src/muscle/cli.py), [`src/muscle/plugin/`](../../src/muscle/plugin/) |
 
 MUSCLE has two main layers:
 
 1. Plugin hosts: Claude Code and Codex bundle files expose commands, hooks,
    skills, agents, and assets.
-2. CLI runtime: `tools/muscle/cli.py` dispatches all real behavior.
+2. CLI runtime: `src/muscle/cli.py` dispatches all real behavior.
 
 The plugin should be treated as a user interface and lifecycle integration
-layer. The CLI and `tools/muscle/` modules are the implementation boundary.
+layer. The CLI and `src/muscle/` modules are the implementation boundary.
 
 ## Top-Level Flow
 
 ```mermaid
 flowchart TD
     Host["Claude Code / Codex / Terminal"]
-    Plugin["tools/muscle/plugin"]
-    CLI["tools/muscle/cli.py"]
+    Plugin["src/muscle/plugin"]
+    CLI["src/muscle/cli.py"]
     Review["ReviewController"]
     Run["LoopController"]
     Memory["ProjectMemory"]
@@ -51,9 +51,9 @@ flowchart TD
 
 ## Current Package Boundary
 
-- Active implementation: [`tools/muscle/`](../../tools/muscle/).
+- Active implementation: [`src/muscle/`](../../src/muscle/).
 - Legacy implementation: `tools/scle/`.
-- Installed script: `muscle = "tools.muscle.cli:main"` in
+- Installed script: `muscle = "muscle.cli:main"` in
   [`pyproject.toml`](../../pyproject.toml).
 
 Do not use `tools/scle/` to document current plugin behavior unless the task is

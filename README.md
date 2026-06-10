@@ -591,8 +591,8 @@ settings, backups, audit activity, optimization data, and notes.
 The same plugin source ships a Codex manifest and root hook file:
 
 ```text
-tools/muscle/plugin/.codex-plugin/plugin.json
-tools/muscle/plugin/hooks.json
+src/muscle/plugin/.codex-plugin/plugin.json
+src/muscle/plugin/hooks.json
 ```
 
 The bundle reuses the same commands, skills, assets, and lifecycle
@@ -671,7 +671,7 @@ Read more:
 git clone https://github.com/LivingEthos/muscle.git
 cd muscle
 uv sync --extra dev
-claude --plugin-dir ./tools/muscle/plugin
+claude --plugin-dir ./src/muscle/plugin
 ```
 
 ### Quality gates
@@ -680,9 +680,9 @@ All of these must pass before merging:
 
 ```bash
 uv sync --frozen --extra dev               # reproducible install
-uv run mypy tools/muscle/                  # type check
-uv run ruff check tools/muscle/            # lint
-uv run ruff format --check tools/muscle/   # format
+uv run mypy src/muscle/                  # type check
+uv run ruff check src/muscle/            # lint
+uv run ruff format --check src/muscle/   # format
 uv run pytest tests/ -v                    # tests
 ```
 

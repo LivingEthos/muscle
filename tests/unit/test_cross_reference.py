@@ -5,12 +5,12 @@ Unit tests for cross-reference analyzer.
 import tempfile
 from pathlib import Path
 
-from tools.muscle.analysis.cross_reference import (
+from muscle.analysis.cross_reference import (
     CrossReferenceAnalyzer,
     CrossReferenceFinding,
     ImportGraph,
 )
-from tools.muscle.analysis.types import Severity
+from muscle.analysis.types import Severity
 
 
 class TestImportGraph:

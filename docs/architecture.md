@@ -3,7 +3,7 @@
 Last updated: 2026-04-16
 
 This document explains how the active MUSCLE application works today based on the
-implemented `tools/muscle/` package. It is intended to be the source-of-truth
+implemented `src/muscle/` package. It is intended to be the source-of-truth
 architecture explainer for contributors and users who want to understand the
 runtime flow, storage model, and subsystem boundaries.
 
@@ -37,7 +37,7 @@ MUSCLE is now explicitly project-first:
 - model-pack lessons are optional canonical-model overlays
 - shared global state is stored separately from project-owned state
 
-`tools/muscle/` is the active package tree.
+`src/muscle/` is the active package tree.
 
 `tools/scle/` is a legacy predecessor that still exists in the repo, but it is
 not the package installed by `pyproject.toml` and it is excluded from coverage.
@@ -47,7 +47,7 @@ not the package installed by `pyproject.toml` and it is excluded from coverage.
 ```mermaid
 flowchart TD
     User["User or plugin command"]
-    CLI["tools/muscle/cli.py"]
+    CLI["src/muscle/cli.py"]
     Init["muscle init"]
     ProjectCtl["status/settings/memory/model"]
     Run["muscle run"]
@@ -55,7 +55,7 @@ flowchart TD
     Check["muscle check"]
     TUI["muscle tui"]
     Bench["long-eval benchmark"]
-    Plugin["tools/muscle/plugin"]
+    Plugin["src/muscle/plugin"]
 
     User --> CLI
     Plugin --> CLI
@@ -138,7 +138,7 @@ M3 semantic review, optional fix application, and post-review learning.
 
 ### `muscle tui` 🚧
 
-`muscle tui` launches the Rich-based terminal UI scaffold in `tools/muscle/tui/`.
+`muscle tui` launches the Rich-based terminal UI scaffold in `src/muscle/tui/`.
 It is a real entry point and navigation shell. The `History` view now shows live
 review runs, model identity history, and lesson-usage history, and the
 knowledge/audit surfaces reflect transferred-lesson provenance. Some screens are
@@ -507,8 +507,8 @@ These files and directories live under the target project:
 - escalations and pack provenance
 - automation state (gate decision memory, persistent flags)
 
-The current schema is defined in `tools/muscle/project_memory_schema.py` and
-incrementally evolved by the migrations under `tools/muscle/migrations/`.
+The current schema is defined in `src/muscle/project_memory_schema.py` and
+incrementally evolved by the migrations under `src/muscle/migrations/`.
 
 Older adjacent stores such as `knowledge/strategies.db` and
 `review_kb/review_kb.db` still exist, but the project-first learning surfaces
@@ -585,7 +585,7 @@ self-improving automation loop without collapsing everything into one monolith.
 
 ## Host Memory Contract (Plugin → Host CLI)
 
-MUSCLE's plugin publishes structured content to the **host CLI**'s memory files (Claude Code → `CLAUDE.md`, Codex/cross-tool → `AGENTS.md`) at the root of every reviewed project. The publisher (`tools/muscle/claude_publisher.py`) writes identical content to both files inside the `MUSCLE_PUBLISHED_START` / `MUSCLE_PUBLISHED_END` marker region.
+MUSCLE's plugin publishes structured content to the **host CLI**'s memory files (Claude Code → `CLAUDE.md`, Codex/cross-tool → `AGENTS.md`) at the root of every reviewed project. The publisher (`src/muscle/claude_publisher.py`) writes identical content to both files inside the `MUSCLE_PUBLISHED_START` / `MUSCLE_PUBLISHED_END` marker region.
 
 ### Section types
 
@@ -594,17 +594,17 @@ MUSCLE's plugin publishes structured content to the **host CLI**'s memory files 
 - `### Delegation Protocol` — plan-then-hand-off posture directing the host model to delegate bulk execution to MUSCLE's M3 agents.
 - `### Effort & Tool Guidance` — Opus 4.8 effort hints (`xhigh` for coding) and auto-mode guidance.
 
-All pinned content is sourced from `tools/muscle/code_review/host_memory_templates.py` (constant strings; no dynamic rendering).
+All pinned content is sourced from `src/muscle/code_review/host_memory_templates.py` (constant strings; no dynamic rendering).
 
 **Dynamic** — populated from `project_memory.db` via `LearningPipeline` → `MemoryDecisionEngine` → `ClaudePublisher.publish()`. Subject to the 50-line section cap and M3 consolidation when caps are exceeded:
 - `### Critical Rules`, `### Frequent Mistakes`, `### Active Agent Calls`, `### Active Skill Calls`, `### Tooling Notes`.
 
 ### Optimizer flow
 
-`tools/muscle/code_review/host_memory_optimizer.py` provides a non-destructive rewriter for pre-existing `CLAUDE.md` / `AGENTS.md` files that predate the MUSCLE plugin. Exposed as `muscle optimize-host-docs`. It wraps user content in `MUSCLE_PUBLISHED` markers (if absent) and injects the pinned block. Content outside the markers is never reordered, rewritten, or deleted. Pure and deterministic — no M3 calls.
+`src/muscle/code_review/host_memory_optimizer.py` provides a non-destructive rewriter for pre-existing `CLAUDE.md` / `AGENTS.md` files that predate the MUSCLE plugin. Exposed as `muscle optimize-host-docs`. It wraps user content in `MUSCLE_PUBLISHED` markers (if absent) and injects the pinned block. Content outside the markers is never reordered, rewritten, or deleted. Pure and deterministic — no M3 calls.
 
 ### File map
 
-- `tools/muscle/code_review/host_memory_templates.py` — pinned content constants.
-- `tools/muscle/code_review/host_memory_optimizer.py` — non-destructive optimizer.
-- `tools/muscle/claude_publisher.py` — marker-bounded dynamic publisher (now multi-target).
+- `src/muscle/code_review/host_memory_templates.py` — pinned content constants.
+- `src/muscle/code_review/host_memory_optimizer.py` — non-destructive optimizer.
+- `src/muscle/claude_publisher.py` — marker-bounded dynamic publisher (now multi-target).

@@ -9,8 +9,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.muscle.code_review.mutation_runner import MutationRunner
-from tools.muscle.project_memory import ProjectMemory
+from muscle.code_review.mutation_runner import MutationRunner
+from muscle.project_memory import ProjectMemory
 
 
 def _write_project(project: Path, source: str, test_body: str) -> None:
@@ -84,7 +84,7 @@ def test_mutation_runner_cleans_up_disposable_workspaces(tmp_path: Path) -> None
 
     runner = MutationRunner(str(tmp_path))
     with patch(
-        "tools.muscle.code_review.mutation_runner.tempfile.TemporaryDirectory", TrackingTempDir
+        "muscle.code_review.mutation_runner.tempfile.TemporaryDirectory", TrackingTempDir
     ):
         runner.run(
             str(tmp_path / "sample.py"),

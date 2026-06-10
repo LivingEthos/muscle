@@ -6,11 +6,11 @@ import hashlib
 import threading
 from unittest.mock import MagicMock, Mock, patch
 
-from tools.muscle.interactive import InteractiveChoice
-from tools.muscle.loop_controller import LoopContext, LoopController, LoopEvent
-from tools.muscle.project_memory import ProjectMemory
-from tools.muscle.tui.project_manager import ProjectConfig, ProjectManager
-from tools.muscle.types import (
+from muscle.interactive import InteractiveChoice
+from muscle.loop_controller import LoopContext, LoopController, LoopEvent
+from muscle.project_memory import ProjectMemory
+from muscle.tui.project_manager import ProjectConfig, ProjectManager
+from muscle.types import (
     BudgetMode,
     EvalMode,
     EvaluationResult,
@@ -640,7 +640,7 @@ def test_loop_controller_auto_commit_tracks_untracked_files_and_persists_commit(
         git_repo_path=str(tmp_path),
     )
 
-    with patch("tools.muscle.loop_controller.GitAdapter", return_value=mock_git):
+    with patch("muscle.loop_controller.GitAdapter", return_value=mock_git):
         controller.run()
 
     mock_git.get_changed_files.assert_called_once()
@@ -811,7 +811,7 @@ def test_lc02_concurrent_run_raises_runtime_error():
 
     # Patch signal.signal to be a no-op so threads can call run() without crashing
     # on Python's "signal only works in main thread" restriction.
-    with patch("tools.muscle.loop_controller.signal.signal", return_value=None):
+    with patch("muscle.loop_controller.signal.signal", return_value=None):
 
         def first_run() -> None:
             # Monkeypatch _emit to signal that the first run() is inside the loop
@@ -874,7 +874,7 @@ def test_lc04_sigterm_handler_sets_abort_flag_even_on_exception():
     assert controller._abort_requested is False
 
     # Make logger.info raise to simulate an error inside the handler body.
-    with patch("tools.muscle.loop_controller.logger") as mock_logger:
+    with patch("muscle.loop_controller.logger") as mock_logger:
         mock_logger.info.side_effect = RuntimeError("logger blew up")
         try:
             controller._sigterm_handler(15, None)
@@ -910,7 +910,7 @@ def test_lc05_loop_stats_start_time_uses_factory_not_call():
 def test_record_delegation_event_uses_real_token_split():
     """COST#1/#2: the delegation event records the measured input/output split,
     not the retired 0.25 heuristic."""
-    from tools.muscle.delegation_metrics import estimate_m27_cents
+    from muscle.delegation_metrics import estimate_m27_cents
 
     config = RunConfig(task="Build a thing", max_iterations=5)
     controller = LoopController(
@@ -932,7 +932,7 @@ def test_record_delegation_event_uses_real_token_split():
     recorded = []
     fake_metrics = Mock()
     fake_metrics.record.side_effect = lambda event: recorded.append(event)
-    with patch("tools.muscle.loop_controller.DelegationMetrics", return_value=fake_metrics):
+    with patch("muscle.loop_controller.DelegationMetrics", return_value=fake_metrics):
         controller._record_delegation_event(ctx)
 
     assert len(recorded) == 1
@@ -945,7 +945,7 @@ def test_record_delegation_event_uses_real_token_split():
 def test_record_delegation_event_attributes_legacy_remainder_to_input():
     """Resumed legacy session: split fields are 0 but total_tokens is positive,
     so the whole combined total is priced as input rather than dropped."""
-    from tools.muscle.delegation_metrics import estimate_m27_cents
+    from muscle.delegation_metrics import estimate_m27_cents
 
     config = RunConfig(task="Build a thing", max_iterations=5)
     controller = LoopController(
@@ -967,7 +967,7 @@ def test_record_delegation_event_attributes_legacy_remainder_to_input():
     recorded = []
     fake_metrics = Mock()
     fake_metrics.record.side_effect = lambda event: recorded.append(event)
-    with patch("tools.muscle.loop_controller.DelegationMetrics", return_value=fake_metrics):
+    with patch("muscle.loop_controller.DelegationMetrics", return_value=fake_metrics):
         controller._record_delegation_event(ctx)
 
     assert recorded[0].m27_tokens_in == 1200

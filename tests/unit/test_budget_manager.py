@@ -6,8 +6,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.muscle.budget_manager import BudgetManager
-from tools.muscle.types import BudgetMode
+from muscle.budget_manager import BudgetManager
+from muscle.types import BudgetMode
 
 
 def test_budget_manager_unlimited():
@@ -83,7 +83,7 @@ def test_budget_manager_save_state():
 
 def test_budget_info_usage_percent_zero_total():
     """Test usage_percent returns 0.0 when total_tokens is 0."""
-    from tools.muscle.budget_manager import BudgetInfo
+    from muscle.budget_manager import BudgetInfo
 
     info = BudgetInfo(
         total_tokens=0,
@@ -96,7 +96,7 @@ def test_budget_info_usage_percent_zero_total():
 
 def test_budget_info_usage_percent_normal():
     """Test usage_percent calculation."""
-    from tools.muscle.budget_manager import BudgetInfo
+    from muscle.budget_manager import BudgetInfo
 
     info = BudgetInfo(
         total_tokens=100,

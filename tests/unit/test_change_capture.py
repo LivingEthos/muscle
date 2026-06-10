@@ -4,7 +4,7 @@ Unit tests for change_capture.py (MUS-021).
 
 from unittest.mock import Mock
 
-from tools.muscle.change_capture import ChangeCapture
+from muscle.change_capture import ChangeCapture
 
 
 class TestChangeCapture:

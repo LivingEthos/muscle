@@ -10,12 +10,12 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.muscle.code_review.code_reviewer import CodeReviewer
-from tools.muscle.code_review.fix_generator import FixGenerator, FixResult
-from tools.muscle.code_review.handoff_generator import HandoffGenerator
-from tools.muscle.code_review.review_controller import ReviewController
-from tools.muscle.code_review.static_analyzer import StaticAnalyzer
-from tools.muscle.code_review.types import (
+from muscle.code_review.code_reviewer import CodeReviewer
+from muscle.code_review.fix_generator import FixGenerator, FixResult
+from muscle.code_review.handoff_generator import HandoffGenerator
+from muscle.code_review.review_controller import ReviewController
+from muscle.code_review.static_analyzer import StaticAnalyzer
+from muscle.code_review.types import (
     HandoffPlan,
     IssueCategory,
     ReviewConfig,

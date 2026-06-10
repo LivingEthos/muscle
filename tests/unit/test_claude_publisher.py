@@ -11,7 +11,7 @@ class TestClaudePublisher:
 
     def test_publisher_init(self):
         """Test ClaudePublisher initialization."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             publisher = ClaudePublisher(tmpdir)
@@ -20,9 +20,9 @@ class TestClaudePublisher:
 
     def test_publish_creates_backup(self):
         """Test that publish creates a backup before writing via shared BackupManager."""
-        from tools.muscle.backup_manager import BackupManager
-        from tools.muscle.claude_publisher import ClaudePublisher
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.backup_manager import BackupManager
+        from muscle.claude_publisher import ClaudePublisher
+        from muscle.project_memory import ProjectMemory
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -44,7 +44,7 @@ class TestClaudePublisher:
 
     def test_publish_inserts_markers(self):
         """Test that publish inserts markers when they don't exist."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -65,7 +65,7 @@ class TestClaudePublisher:
 
     def test_publish_updates_existing_markers(self):
         """Test that publish updates content between existing markers."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -91,7 +91,7 @@ class TestClaudePublisher:
 
     def test_publish_preserves_user_content(self):
         """Test that publish preserves user content outside markers."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -116,7 +116,7 @@ class TestClaudePublisher:
 
     def test_publish_enforces_size_cap(self):
         """Test that publish enforces max 50 lines per section."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -146,7 +146,7 @@ class TestClaudePublisher:
 
     def test_publish_deduplicates_entries(self):
         """Test that duplicate entries are suppressed."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -171,7 +171,7 @@ class TestClaudePublisher:
 
     def test_publish_empty_sections(self):
         """Test publishing with empty sections."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -191,7 +191,7 @@ class TestClaudePublisher:
 
     def test_insert_markers_if_missing(self):
         """Test inserting markers when they don't exist."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -208,7 +208,7 @@ class TestClaudePublisher:
 
     def test_insert_markers_if_missing_already_exists(self):
         """Test that insert_markers_if_missing returns True if markers exist."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -227,8 +227,8 @@ class TestClaudePublisher:
 
     def test_update_markers(self):
         """Test update_markers fetches rules from DB (source of truth) and publishes."""
-        from tools.muscle.claude_publisher import ClaudePublisher
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.claude_publisher import ClaudePublisher
+        from muscle.project_memory import ProjectMemory
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -255,7 +255,7 @@ class TestClaudePublisher:
 
     def test_publish_without_claude_md(self):
         """Test that publish fails gracefully when CLAUDE.md doesn't exist."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             publisher = ClaudePublisher(tmpdir)
@@ -265,7 +265,7 @@ class TestClaudePublisher:
 
     def test_publish_sorts_by_score(self):
         """Test that critical rules are sorted by score (highest first)."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -290,7 +290,7 @@ class TestClaudePublisher:
 
     def test_publish_sections_order(self):
         """Test that sections appear in correct order."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -323,7 +323,7 @@ class TestMultiTargetPublish:
 
     def test_publish_writes_to_agents_md_when_present(self):
         """Both CLAUDE.md and AGENTS.md should receive identical published content."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -348,7 +348,7 @@ class TestMultiTargetPublish:
 
     def test_publish_skips_agents_md_when_absent(self):
         """If AGENTS.md is absent, publish() still succeeds for CLAUDE.md only."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -369,8 +369,8 @@ class TestMultiTargetPublish:
         """_m27_summarize_entries must NOT invoke the M2.7 client for pinned sections."""
         from unittest.mock import MagicMock
 
-        from tools.muscle.claude_publisher import ClaudePublisher
-        from tools.muscle.code_review.host_memory_templates import SECTION_METHODOLOGY
+        from muscle.claude_publisher import ClaudePublisher
+        from muscle.code_review.host_memory_templates import SECTION_METHODOLOGY
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_m27 = MagicMock()
@@ -386,7 +386,7 @@ class TestMultiTargetPublish:
 
     def test_publish_idempotent(self):
         """Publishing twice with identical inputs yields byte-identical output."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -408,7 +408,7 @@ class TestMultiTargetPublish:
 
     def test_render_preview_compacts_host_memory_lines(self):
         """Preview rendering should compact verbose dynamic host-memory prose."""
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             publisher = ClaudePublisher(tmpdir)
@@ -449,8 +449,8 @@ class TestClaudePublisherAtomicWrite:
     def test_publish_uses_atomic_write(self):
         from unittest.mock import patch
 
-        from tools.muscle import claude_publisher as cp_module
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle import claude_publisher as cp_module
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -469,7 +469,7 @@ class TestClaudePublisherAtomicWrite:
     def test_publish_rolls_back_file_on_action_log_failure(self):
         from unittest.mock import patch
 
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -493,8 +493,8 @@ class TestClaudePublisherAtomicWrite:
     def test_insert_markers_uses_atomic_write(self):
         from unittest.mock import patch
 
-        from tools.muscle import claude_publisher as cp_module
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle import claude_publisher as cp_module
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -512,8 +512,8 @@ class TestClaudePublisherTwoPhase:
 
     def test_happy_path_stages_swaps_and_commits(self):
         """Successful publish leaves the revision 'committed' and the file updated."""
-        from tools.muscle.claude_publisher import ClaudePublisher
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.claude_publisher import ClaudePublisher
+        from muscle.project_memory import ProjectMemory
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -545,8 +545,8 @@ class TestClaudePublisherTwoPhase:
         """If commit-mark is lost after the swap, next publish marks it committed."""
         from unittest.mock import patch
 
-        from tools.muscle.claude_publisher import ClaudePublisher
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.claude_publisher import ClaudePublisher
+        from muscle.project_memory import ProjectMemory
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -586,8 +586,8 @@ class TestClaudePublisherTwoPhase:
 
     def test_crash_before_swap_reconciles_to_aborted(self):
         """If the swap never happened, next publish marks the revision aborted."""
-        from tools.muscle.claude_publisher import ClaudePublisher
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.claude_publisher import ClaudePublisher
+        from muscle.project_memory import ProjectMemory
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -621,8 +621,8 @@ class TestClaudePublisherTwoPhase:
         """A rolled-back publish must also abort its staged revision, not leave it pending."""
         from unittest.mock import patch
 
-        from tools.muscle.claude_publisher import ClaudePublisher
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.claude_publisher import ClaudePublisher
+        from muscle.project_memory import ProjectMemory
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -648,8 +648,8 @@ class TestClaudePublisherTwoPhase:
 
     def test_migration_applies_on_existing_db(self):
         """Migration 0018 creates published_revisions on an already-populated DB."""
-        from tools.muscle.migrations import MigrationRunner
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.migrations import MigrationRunner
+        from muscle.project_memory import ProjectMemory
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Build a DB and roll the published_revisions migration back to emulate
@@ -689,7 +689,7 @@ class TestClaudePublisherTwoPhase:
 
     def test_prune_keeps_newest_resolved_and_all_pending(self):
         """Retention bounds resolved rows per target but never deletes pending."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pm = ProjectMemory(tmpdir)
@@ -721,8 +721,8 @@ class TestClaudePublisherTwoPhase:
 
     def test_reconcile_prunes_resolved_revisions(self):
         """Publisher init (reconcile) applies retention so the table stays bounded."""
-        from tools.muscle.claude_publisher import ClaudePublisher
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.claude_publisher import ClaudePublisher
+        from muscle.project_memory import ProjectMemory
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -746,7 +746,7 @@ class TestClaudePublisherTwoPhase:
         import logging
         from unittest.mock import patch
 
-        from tools.muscle.claude_publisher import ClaudePublisher
+        from muscle.claude_publisher import ClaudePublisher
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -754,7 +754,7 @@ class TestClaudePublisherTwoPhase:
 
             publisher = ClaudePublisher(tmpdir, target_files=["CLAUDE.md"])
             with patch.object(publisher._pm, "commit_published_revision", return_value=False):
-                with caplog.at_level(logging.WARNING, logger="tools.muscle.claude_publisher"):
+                with caplog.at_level(logging.WARNING, logger="muscle.claude_publisher"):
                     result = publisher.publish(
                         critical_rules=[
                             {"text": "Use type hints", "score": 0.8, "validated_count": 3}
@@ -765,7 +765,7 @@ class TestClaudePublisherTwoPhase:
 
     def test_host_doc_lock_sentinel_stable_and_under_muscle_locks(self):
         """Both writers derive the same sentinel for a target, under .muscle/locks."""
-        from tools.muscle.claude_publisher import host_doc_lock_sentinel
+        from muscle.claude_publisher import host_doc_lock_sentinel
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -785,7 +785,7 @@ class TestClaudePublisherTwoPhase:
         from contextlib import contextmanager
         from unittest.mock import patch
 
-        from tools.muscle.claude_publisher import ClaudePublisher, host_doc_lock_sentinel
+        from muscle.claude_publisher import ClaudePublisher, host_doc_lock_sentinel
 
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir)
@@ -800,7 +800,7 @@ class TestClaudePublisherTwoPhase:
                 locked_paths.append(Path(path))
                 yield
 
-            with patch("tools.muscle.claude_publisher.advisory_file_lock", spy_lock):
+            with patch("muscle.claude_publisher.advisory_file_lock", spy_lock):
                 result = publisher.publish(
                     critical_rules=[{"text": "Use type hints", "score": 0.8, "validated_count": 3}],
                 )

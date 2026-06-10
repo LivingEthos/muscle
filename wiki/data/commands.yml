@@ -1,256 +1,256 @@
 version: 1
-source_glob: tools/muscle/plugin/commands/*.md
-manifest: tools/muscle/plugin/.claude-plugin/plugin.json
+source_glob: src/muscle/plugin/commands/*.md
+manifest: src/muscle/plugin/.claude-plugin/plugin.json
 commands:
   - slash: /muscle:review
     category: review
     cli: muscle review --target . --mode review --severity low
     requires_api_key: yes
     writes_state: yes
-    source: tools/muscle/plugin/commands/review.md
+    source: src/muscle/plugin/commands/review.md
     summary: Run standard self-learning code review on a target path; pass --no-db for a no-write run.
   - slash: /muscle:pressure
     category: review
     cli: muscle review --target . --mode pressure --intensity intensive
     requires_api_key: yes
     writes_state: yes
-    source: tools/muscle/plugin/commands/pressure.md
+    source: src/muscle/plugin/commands/pressure.md
     summary: Run adversarial review focused on design decisions and failure modes.
   - slash: /muscle:rescue
     category: investigation
     cli: muscle lifeline --target . --prompt "$ARGUMENTS" --intensity moderate
     requires_api_key: yes
     writes_state: no
-    source: tools/muscle/plugin/commands/rescue.md
+    source: src/muscle/plugin/commands/rescue.md
     summary: Delegate a focused deep investigation through the lifeline command.
   - slash: /muscle:lifeline
     category: investigation
     cli: muscle lifeline --target . --prompt "$ARGUMENTS" --intensity moderate
     requires_api_key: yes
     writes_state: no
-    source: tools/muscle/plugin/commands/lifeline.md
+    source: src/muscle/plugin/commands/lifeline.md
     summary: Ask M2.7 to investigate a specific bug, failure, or improvement question.
   - slash: /muscle:check
     category: validation
     cli: muscle check --target .
     requires_api_key: no
     writes_state: no
-    source: tools/muscle/plugin/commands/check.md
+    source: src/muscle/plugin/commands/check.md
     summary: Run compiler, linter, and test checks without full semantic review.
   - slash: /muscle:setup
     category: lifecycle
     cli: muscle init
     requires_api_key: no
     writes_state: yes
-    source: tools/muscle/plugin/commands/setup.md
+    source: src/muscle/plugin/commands/setup.md
     summary: Initialize, enable, disable, inspect, or configure MUSCLE project setup.
   - slash: /muscle:doctor
     category: lifecycle
     cli: muscle doctor
     requires_api_key: no
     writes_state: optional-refresh
-    source: tools/muscle/plugin/commands/doctor.md
+    source: src/muscle/plugin/commands/doctor.md
     summary: Diagnose project initialization, plugin bundle health, hooks, assets, and active review state.
   - slash: /muscle:status
     category: lifecycle
     cli: muscle status
     requires_api_key: no
     writes_state: optional-refresh
-    source: tools/muscle/plugin/commands/status.md
+    source: src/muscle/plugin/commands/status.md
     summary: Show MUSCLE project status and recent active-review information.
   - slash: /muscle:visualize
     category: lifecycle
     cli: muscle visualize
     requires_api_key: no
     writes_state: yes
-    source: tools/muscle/plugin/commands/visualize.md
+    source: src/muscle/plugin/commands/visualize.md
     summary: Open Visual DevFlow and stream MUSCLE lifecycle events into the dashboard.
   - slash: /muscle:settings-show
     category: settings
     cli: muscle settings show
     requires_api_key: no
     writes_state: no
-    source: tools/muscle/plugin/commands/settings-show.md
+    source: src/muscle/plugin/commands/settings-show.md
     summary: Show current MUSCLE settings and configuration.
   - slash: /muscle:settings-api-key
     category: settings
     cli: muscle settings api-key
     requires_api_key: no
     writes_state: optional
-    source: tools/muscle/plugin/commands/settings-api-key.md
+    source: src/muscle/plugin/commands/settings-api-key.md
     summary: Inspect or configure API key source.
   - slash: /muscle:settings-review
     category: settings
     cli: muscle settings review
     requires_api_key: no
     writes_state: optional
-    source: tools/muscle/plugin/commands/settings-review.md
+    source: src/muscle/plugin/commands/settings-review.md
     summary: Configure local or worktree review execution.
   - slash: /muscle:settings-model
     category: settings
     cli: muscle settings model
     requires_api_key: no
     writes_state: optional
-    source: tools/muscle/plugin/commands/settings-model.md
+    source: src/muscle/plugin/commands/settings-model.md
     summary: Configure canonical model selection and overlay policies.
   - slash: /muscle:savings
     category: evidence
     cli: muscle savings
     requires_api_key: no
     writes_state: no
-    source: tools/muscle/plugin/commands/savings.md
+    source: src/muscle/plugin/commands/savings.md
     summary: Show token, cache, parser, and command-output savings evidence.
   - slash: /muscle:discover
     category: evidence
     cli: muscle discover
     requires_api_key: no
     writes_state: no
-    source: tools/muscle/plugin/commands/discover.md
+    source: src/muscle/plugin/commands/discover.md
     summary: Report missed MUSCLE opportunities from imported host sessions without writing memory.
   - slash: /muscle:filters
     category: evidence
     cli: muscle filters verify
     requires_api_key: no
     writes_state: optional
-    source: tools/muscle/plugin/commands/filters.md
+    source: src/muscle/plugin/commands/filters.md
     summary: Verify, trust, or untrust declarative command-output filters.
   - slash: /muscle:optimize-host-docs
     category: evidence
     cli: muscle optimize-host-docs --yes
     requires_api_key: no
     writes_state: yes
-    source: tools/muscle/plugin/commands/optimize-host-docs.md
+    source: src/muscle/plugin/commands/optimize-host-docs.md
     summary: Non-destructively optimize root CLAUDE.md and AGENTS.md into MUSCLE-preferred sections.
   - slash: /muscle:pack
     category: context
     cli: muscle pack --task "<task>" --scope <path>
     requires_api_key: no
     writes_state: yes
-    source: tools/muscle/plugin/commands/pack.md
+    source: src/muscle/plugin/commands/pack.md
     summary: Build a content-addressed context pack for repeated subtasks.
   - slash: /muscle:route
     category: context
     cli: muscle route --task "$ARGUMENTS" --json
     requires_api_key: optional
     writes_state: no
-    source: tools/muscle/plugin/commands/route.md
+    source: src/muscle/plugin/commands/route.md
     summary: Classify a task and decide whether it belongs on M2.7 or the host model.
   - slash: /muscle:memory-related
     category: memory
     cli: muscle memory related
     requires_api_key: no
     writes_state: optional-refresh
-    source: tools/muscle/plugin/commands/memory-related.md
+    source: src/muscle/plugin/commands/memory-related.md
     summary: Show related MUSCLE projects that can share provisional lessons.
   - slash: /muscle:memory-import-project
     category: memory
     cli: muscle memory import-project --project /path/to/other/project --mode snapshot
     requires_api_key: no
     writes_state: yes
-    source: tools/muscle/plugin/commands/memory-import-project.md
+    source: src/muscle/plugin/commands/memory-import-project.md
     summary: Import or attach provisional lessons from another MUSCLE project.
   - slash: /muscle:memory-history
     category: memory
     cli: muscle memory history
     requires_api_key: no
     writes_state: no
-    source: tools/muscle/plugin/commands/memory-history.md
+    source: src/muscle/plugin/commands/memory-history.md
     summary: Show recent lesson usage and validation history.
   - slash: /muscle:model-status
     category: model
     cli: muscle model status
     requires_api_key: no
     writes_state: no
-    source: tools/muscle/plugin/commands/model-status.md
+    source: src/muscle/plugin/commands/model-status.md
     summary: Show resolved model identity and active model-pack overlays.
   - slash: /muscle:model-history
     category: model
     cli: muscle model history
     requires_api_key: no
     writes_state: no
-    source: tools/muscle/plugin/commands/model-history.md
+    source: src/muscle/plugin/commands/model-history.md
     summary: Show recent model identity resolution events.
   - slash: /muscle:model-select
     category: model
     cli: muscle model select --canonical-model minimax/m2.7@1
     requires_api_key: no
     writes_state: yes
-    source: tools/muscle/plugin/commands/model-select.md
+    source: src/muscle/plugin/commands/model-select.md
     summary: Manually select or clear the canonical model for this project.
   - slash: /muscle:model-pack-install
     category: model
     cli: muscle model packs install --canonical-model minimax/m2.7@1
     requires_api_key: no
     writes_state: yes
-    source: tools/muscle/plugin/commands/model-pack-install.md
+    source: src/muscle/plugin/commands/model-pack-install.md
     summary: Install, list, or update optional model-pack overlays.
   - slash: /muscle:model-pack-submit
     category: model
     cli: muscle model packs submit --bundle-path /path/to/bundle --draft
     requires_api_key: no
     writes_state: yes
-    source: tools/muscle/plugin/commands/model-pack-submit.md
+    source: src/muscle/plugin/commands/model-pack-submit.md
     summary: Export and submit a model-pack candidate bundle as a draft PR.
   - slash: /muscle:probe
     category: background
     cli: muscle probe
     requires_api_key: no
     writes_state: no
-    source: tools/muscle/plugin/commands/probe.md
+    source: src/muscle/plugin/commands/probe.md
     summary: Check the status of shadow review jobs.
   - slash: /muscle:diagnosis
     category: background
     cli: muscle diagnosis
     requires_api_key: no
     writes_state: optional-refresh
-    source: tools/muscle/plugin/commands/diagnosis.md
+    source: src/muscle/plugin/commands/diagnosis.md
     summary: Get final diagnosis and detailed results from completed shadow jobs.
   - slash: /muscle:result
     category: background
     cli: muscle diagnosis
     requires_api_key: no
     writes_state: optional-refresh
-    source: tools/muscle/plugin/commands/result.md
+    source: src/muscle/plugin/commands/result.md
     summary: Compatibility wrapper for shadow job results.
   - slash: /muscle:long-eval-reports
     category: evaluation
     cli: muscle long-eval reports
     requires_api_key: no
     writes_state: no
-    source: tools/muscle/plugin/commands/long-eval-reports.md
+    source: src/muscle/plugin/commands/long-eval-reports.md
     summary: List recent long evaluation reports.
   - slash: /muscle:long-eval-benchmark
     category: evaluation
     cli: muscle long-eval benchmark
     requires_api_key: no
     writes_state: yes
-    source: tools/muscle/plugin/commands/long-eval-benchmark.md
+    source: src/muscle/plugin/commands/long-eval-benchmark.md
     summary: Run benchmark comparisons across review strategies.
   - slash: /muscle:history
     category: maintenance
     cli: muscle history
     requires_api_key: no
     writes_state: no
-    source: tools/muscle/plugin/commands/history.md
+    source: src/muscle/plugin/commands/history.md
     summary: List all MUSCLE sessions.
   - slash: /muscle:kb-stats
     category: maintenance
     cli: muscle kb stats
     requires_api_key: no
     writes_state: no
-    source: tools/muscle/plugin/commands/kb-stats.md
+    source: src/muscle/plugin/commands/kb-stats.md
     summary: Show knowledge base statistics.
   - slash: /muscle:cancel
     category: compatibility
     cli: muscle abort
     requires_api_key: no
     writes_state: optional
-    source: tools/muscle/plugin/commands/cancel.md
+    source: src/muscle/plugin/commands/cancel.md
     summary: Explain how to stop MUSCLE work when no dedicated cancel subcommand exists.
   - slash: /muscle:nightly-status
     category: compatibility
     cli: muscle long-eval reports
     requires_api_key: no
     writes_state: no
-    source: tools/muscle/plugin/commands/nightly-status.md
+    source: src/muscle/plugin/commands/nightly-status.md
     summary: Deprecated compatibility surface replaced by long-eval reports.

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.muscle.code_review.types import IssueCategory, ReviewIssue, Severity
-from tools.muscle.code_review.verification_loop import VerificationLoop
-from tools.muscle.m27_client import TokenUsage
+from muscle.code_review.types import IssueCategory, ReviewIssue, Severity
+from muscle.code_review.verification_loop import VerificationLoop
+from muscle.m27_client import TokenUsage
 
 
 def _issue(file_path: Path) -> ReviewIssue:

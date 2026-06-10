@@ -8,11 +8,11 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from tools.muscle.code_review.code_reviewer import CodeReviewer
-from tools.muscle.code_review.review_artifacts import ReviewArtifactStore
-from tools.muscle.code_review.types import IssueCategory, PressureFocus, ReviewConfig, Severity
-from tools.muscle.m27_client import M27StructuredError, StructuredCallMetadata, TokenUsage
-from tools.muscle.structured_io import ReviewFindings
+from muscle.code_review.code_reviewer import CodeReviewer
+from muscle.code_review.review_artifacts import ReviewArtifactStore
+from muscle.code_review.types import IssueCategory, PressureFocus, ReviewConfig, Severity
+from muscle.m27_client import M27StructuredError, StructuredCallMetadata, TokenUsage
+from muscle.structured_io import ReviewFindings
 
 
 def _structured_metadata(
@@ -710,7 +710,7 @@ class TestPromptInjectionHardening:
     """Untrusted source code / paths / issues must be treated as data, not commands."""
 
     def test_system_prompt_marks_inputs_as_untrusted_data(self):
-        from tools.muscle.code_review.code_reviewer import SYSTEM_PROMPT
+        from muscle.code_review.code_reviewer import SYSTEM_PROMPT
 
         normalized = " ".join(SYSTEM_PROMPT.lower().split())
         assert "untrusted" in normalized
@@ -776,7 +776,7 @@ class TestSecretRedaction:
     """Model-echoed finding fields must have secrets scrubbed at the choke point."""
 
     def test_redact_aws_key(self):
-        from tools.muscle.code_review.code_reviewer import redact_secrets
+        from muscle.code_review.code_reviewer import redact_secrets
 
         out = redact_secrets("key is AKIAIOSFODNN7EXAMPLE here")
         assert "AKIAIOSFODNN7EXAMPLE" not in out
@@ -784,14 +784,14 @@ class TestSecretRedaction:
         assert "AKIA" in out  # prefix preserved
 
     def test_redact_assignment_styles(self):
-        from tools.muscle.code_review.code_reviewer import redact_secrets
+        from muscle.code_review.code_reviewer import redact_secrets
 
         out = redact_secrets('api_key = "abcd1234efgh5678"')
         assert "abcd1234efgh5678" not in out
         assert "[REDACTED:16]" in out
 
     def test_redact_unquoted_assignment_with_digit(self):
-        from tools.muscle.code_review.code_reviewer import redact_secrets
+        from muscle.code_review.code_reviewer import redact_secrets
 
         out = redact_secrets("password=hunter2secret9")
         assert "hunter2secret9" not in out
@@ -804,7 +804,7 @@ class TestSecretRedaction:
         digit-bearing tokens that are not function calls, so these identifiers
         (no digit / followed by ``(``) are left untouched.
         """
-        from tools.muscle.code_review.code_reviewer import redact_secrets
+        from muscle.code_review.code_reviewer import redact_secrets
 
         for code in (
             "token = get_token()",
@@ -815,7 +815,7 @@ class TestSecretRedaction:
             assert redact_secrets(code) == code
 
     def test_redact_bearer_and_pat_and_pem(self):
-        from tools.muscle.code_review.code_reviewer import redact_secrets
+        from muscle.code_review.code_reviewer import redact_secrets
 
         bearer = redact_secrets("Authorization: Bearer abcdef0123456789xyz")
         assert "abcdef0123456789xyz" not in bearer
@@ -828,7 +828,7 @@ class TestSecretRedaction:
         assert "PRIVATE_KEY" in pem
 
     def test_redact_preserves_clean_text(self):
-        from tools.muscle.code_review.code_reviewer import redact_secrets
+        from muscle.code_review.code_reviewer import redact_secrets
 
         clean = "def add(a, b): return a + b"
         assert redact_secrets(clean) == clean
@@ -841,7 +841,7 @@ class TestSecretRedaction:
         the assignment pass would re-match the already-redacted quoted marker and
         re-redact it (wrong length, malformed nested marker).
         """
-        from tools.muscle.code_review.code_reviewer import redact_secrets
+        from muscle.code_review.code_reviewer import redact_secrets
 
         out = redact_secrets('api_key = "AKIAIOSFODNN7EXAMPLE"')
         assert "AKIAIOSFODNN7EXAMPLE" not in out
@@ -861,7 +861,7 @@ class TestSecretRedaction:
         loop because its marker is a fixed sentinel with no length field, but it
         is independently idempotent and checked separately below.
         """
-        from tools.muscle.code_review.code_reviewer import redact_secrets
+        from muscle.code_review.code_reviewer import redact_secrets
 
         cases = [
             'api_key = "AKIAIOSFODNN7EXAMPLE"',  # AWS shape inside quoted assignment

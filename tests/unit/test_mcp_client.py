@@ -13,7 +13,7 @@ class TestMCPClient:
     def mock_popen(self):
         with (
             patch("subprocess.Popen") as mock,
-            patch("tools.muscle.adapters.mcp_client.select.select") as mock_select,
+            patch("muscle.adapters.mcp_client.select.select") as mock_select,
         ):
             process_mock = MagicMock()
             process_mock.stdin = MagicMock()
@@ -27,20 +27,20 @@ class TestMCPClient:
             yield mock, process_mock
 
     def test_start_server_success(self, mock_popen):
-        from tools.muscle.adapters.mcp_client import MCPClient
+        from muscle.adapters.mcp_client import MCPClient
 
         mock, process_mock = mock_popen
         client = MCPClient(api_key="test-key")
         assert client.start_server() is True
 
     def test_start_server_no_key(self, mock_popen):
-        from tools.muscle.adapters.mcp_client import MCPClient
+        from muscle.adapters.mcp_client import MCPClient
 
         client = MCPClient(api_key=None)
         assert client.api_key is None
 
     def test_stop_server(self, mock_popen):
-        from tools.muscle.adapters.mcp_client import MCPClient
+        from muscle.adapters.mcp_client import MCPClient
 
         mock, process_mock = mock_popen
         client = MCPClient(api_key="test-key")
@@ -49,7 +49,7 @@ class TestMCPClient:
         process_mock.terminate.assert_called_once()
 
     def test_send_request_success(self, mock_popen):
-        from tools.muscle.adapters.mcp_client import MCPClient
+        from muscle.adapters.mcp_client import MCPClient
 
         mock, process_mock = mock_popen
         process_mock.stdin.read.return_value = ""
@@ -63,7 +63,7 @@ class TestMCPClient:
         assert result == {"content": [{"text": "response"}]}
 
     def test_context_manager(self, mock_popen):
-        from tools.muscle.adapters.mcp_client import MCPClient
+        from muscle.adapters.mcp_client import MCPClient
 
         mock, process_mock = mock_popen
         client = MCPClient(api_key="test-key")
@@ -72,7 +72,7 @@ class TestMCPClient:
         process_mock.terminate.assert_called_once()
 
     def test_text_to_speech(self, mock_popen):
-        from tools.muscle.adapters.mcp_client import MCPClient
+        from muscle.adapters.mcp_client import MCPClient
 
         mock, process_mock = mock_popen
         process_mock.stdin.read.return_value = ""
@@ -86,7 +86,7 @@ class TestMCPClient:
         assert result == "audio_id"
 
     def test_generate_image(self, mock_popen):
-        from tools.muscle.adapters.mcp_client import MCPClient
+        from muscle.adapters.mcp_client import MCPClient
 
         mock, process_mock = mock_popen
         process_mock.stdin.read.return_value = ""
@@ -100,7 +100,7 @@ class TestMCPClient:
         assert result == "image_id"
 
     def test_list_voices(self, mock_popen):
-        from tools.muscle.adapters.mcp_client import MCPClient
+        from muscle.adapters.mcp_client import MCPClient
 
         mock, process_mock = mock_popen
         process_mock.stdin.read.return_value = ""
@@ -118,11 +118,11 @@ class TestMCPClient:
         assert isinstance(voices, list)
 
     def test_send_request_raises_on_timeout(self, mock_popen, monkeypatch):
-        from tools.muscle.adapters.mcp_client import MCPClient
+        from muscle.adapters.mcp_client import MCPClient
 
         _, process_mock = mock_popen
         monkeypatch.setattr(
-            "tools.muscle.adapters.mcp_client.select.select",
+            "muscle.adapters.mcp_client.select.select",
             lambda *args, **kwargs: ([], [], []),
         )
 
