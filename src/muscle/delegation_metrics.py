@@ -247,14 +247,14 @@ class DelegationMetrics:
             f"=== MUSCLE Delegation Report (since {rpt.since.date()}) ===",
             f"Total delegated tasks: {rpt.total_events}",
             "",
-            "M2.7 tokens by tier:",
+            "M3 tokens by tier:",
         ]
         for tier, tokens in sorted(rpt.m27_tokens_by_tier.items()):
             lines.append(f"  {tier:20s} {tokens:>10,} tokens")
         lines.extend(
             [
                 "",
-                f"M2.7 spend:                  ${rpt.m27_usd_cents / 100:.2f}",
+                f"M3 spend:                    ${rpt.m27_usd_cents / 100:.2f}",
                 f"Cache hit rate:              {rpt.cache_hit_rate:.1%}",
                 f"Cache tokens saved:          {rpt.cache_tokens_saved:,}",
                 f"Escalation rate:             {rpt.escalation_rate:.1%}",

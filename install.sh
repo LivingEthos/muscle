@@ -208,13 +208,28 @@ run_init() {
     fi
 }
 
+# Read the version from a local pyproject.toml if one sits next to this script
+# (e.g. when run from a checkout). Prints nothing when unavailable, e.g. when the
+# installer is piped from curl before the repo is cloned.
+read_local_version() {
+    _script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
+    _pyproject="${_script_dir}/pyproject.toml"
+    [ -f "$_pyproject" ] || return 0
+    sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$_pyproject" | head -n1
+}
+
 main() {
     printf "${BOLD}${CYAN}"
     printf "  __  __  __  __  ____  ____ \n"
     printf " |  \\/  |/ _|/ _|| ___||  _ \\ \n"
     printf " | |\\/| | |_| |_ | |__ | |_) |\n"
     printf " | |  | |  _|  _||  __||  _ < \n"
-    printf " |_|  |_|_| |_|  |____||_| \\_\\   v0.1.0\n"
+    _version="$(read_local_version)"
+    if [ -n "$_version" ]; then
+        printf " |_|  |_|_| |_|  |____||_| \\_\\   v%s\n" "$_version"
+    else
+        printf " |_|  |_|_| |_|  |____||_| \\_\\ \n"
+    fi
     printf "${RESET}\n"
     printf "  MiniMax Unified Self-Correcting Learning Engine\n"
     printf "\n"

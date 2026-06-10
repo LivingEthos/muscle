@@ -82,8 +82,23 @@ MAX_TASK_LENGTH = 10000
 MAX_TIMEOUT_SECONDS = 86400
 MAX_TASK_PREVIEW_LENGTH = 60
 
+
+def _resolve_log_level() -> int:
+    """Resolve the root log level from MUSCLE_LOG_LEVEL, defaulting to WARNING.
+
+    Accepts standard level names (case-insensitive). Falls back to WARNING for
+    unset or unrecognized values so first runs stay quiet by default.
+    """
+    raw = os.environ.get("MUSCLE_LOG_LEVEL")
+    if raw:
+        resolved = logging.getLevelName(raw.strip().upper())
+        if isinstance(resolved, int):
+            return resolved
+    return logging.WARNING
+
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=_resolve_log_level(),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -587,11 +602,11 @@ def _create_event_handler(
 
 
 @click.group()
-@click.version_option(version="0.1.0")
+@click.version_option(package_name="muscle-cli")
 def cli() -> None:
     """MUSCLE - MiniMax Unified Self-Correcting Learning Engine
 
-    Project-first review, memory, and iterative generation using MiniMax M2.7.
+    Project-first review, memory, and iterative generation using MiniMax M3.
     """
     pass
 
@@ -3551,7 +3566,7 @@ def lifeline(
     bisect_cmd: str | None,
     intensity: str,
 ) -> None:
-    """Throw a lifeline to M2.7 to investigate issues, propose fixes, or debug problems.
+    """Throw a lifeline to MiniMax M3 to investigate issues, propose fixes, or debug problems.
 
     Unlike review which focuses on finding issues, lifeline is for:
     - Investigating a specific bug or error
@@ -3615,7 +3630,7 @@ Please investigate this thoroughly and provide your findings and proposed soluti
         )
 
     try:
-        console.print("[cyan]Throwing lifeline to M2.7...[/cyan]")
+        console.print("[cyan]Throwing lifeline to MiniMax M3...[/cyan]")
         console.print(f"[dim]Target: {target}[/dim]")
         console.print(f"[dim]Intensity: {intensity}[/dim]")
         if history_artifact:
@@ -5697,7 +5712,7 @@ def cache_group() -> None:
     "--older-than", default=None, help="Only clear entries older than this (e.g. '7d', '30d')"
 )
 def cache_clear_cmd(older_than: str | None) -> None:
-    """Clear cached M2.7 responses."""
+    """Clear cached MiniMax M3 responses."""
     from .response_cache import ResponseCache
 
     cache = ResponseCache()
@@ -5796,10 +5811,10 @@ def pack_gc_cmd(older_than: str) -> None:
 @click.option("--scope", type=click.Path(exists=True, path_type=Path), default=None)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON output.")
 def route_cmd(task: str, scope: Path | None, as_json: bool) -> None:
-    """Classify a task and decide where it should run (M2.7 vs host).
+    """Classify a task and decide where it should run (MiniMax M3 vs host).
 
     Falls back to a deterministic heuristic when ``MINIMAX_API_KEY`` is not set
-    or the M2.7 classifier is unreachable, so the slash-command always returns
+    or the MiniMax M3 classifier is unreachable, so the slash-command always returns
     a usable decision without raising.
     """
     from .routing import ROUTING_PROFILE_CURRENT, TaskRouter, offline_route
@@ -5813,7 +5828,7 @@ def route_cmd(task: str, scope: Path | None, as_json: bool) -> None:
             router = TaskRouter(client)
             decision = router.route(task, scope=scope)
         except Exception as exc:
-            fallback_reason = f"M2.7 classifier unavailable: {exc}"
+            fallback_reason = f"MiniMax M3 classifier unavailable: {exc}"
     else:
         fallback_reason = "MINIMAX_API_KEY not set"
 
