@@ -12,10 +12,12 @@ Architecture Decision Record (ADR):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
 import urllib.request
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -25,12 +27,58 @@ from ..io_safety import atomic_write_text
 logger = logging.getLogger(__name__)
 
 AGENT_KB_CACHE_DIR = ".muscle/agent_kb"
-# TODO(hardening): pin these to specific commit SHAs and verify a content hash
-# of each fetched README before parsing. The "/main" ref below is a MUTABLE
-# upstream branch, so fetched content is UNTRUSTED — see _sanitize_field.
-AGENT_REPOS = [
-    "https://github.com/VoltAgent/awesome-claude-code-subagents",
-    "https://github.com/travisvn/awesome-claude-skills",
+
+# Placeholder constant used when a real upstream commit hash has not yet been
+# vendored. A source pinned to this sentinel will ALWAYS fail the content-hash
+# check (fail closed) so that fetched content is never parsed or cached until a
+# real hash is recorded via a controlled release process.
+_UNPINNED_SHA256 = "0" * 64
+
+
+@dataclass(frozen=True)
+class PinnedKBSource:
+    """A single upstream KB source pinned to an immutable commit + content hash.
+
+    Hardening (commit-SHA pinning + content-hash verification): the upstream
+    READMEs are fetched from a pinned commit SHA (NOT the mutable ``main``
+    branch) and the raw fetched bytes are hashed and compared against
+    ``expected_sha256`` before any parsing or caching happens. A mismatch is
+    treated as untrusted/tampered content and rejected (fail closed).
+
+    ``pinned_sha`` and ``expected_sha256`` are clearly-labeled constants that
+    MUST be refreshed together via a controlled release process whenever the
+    vendored upstream revision is bumped. They are intentionally NOT derived
+    from a mutable ref so that drift is impossible without an explicit change.
+    """
+
+    repo_url: str
+    pinned_sha: str
+    expected_sha256: str
+    kind: str  # "subagents" or "skills"
+
+    def readme_url(self) -> str:
+        """Raw README URL pinned to the immutable commit SHA (not /main)."""
+        raw = self.repo_url.replace("github.com", "raw.githubusercontent.com")
+        return f"{raw}/{self.pinned_sha}/README.md"
+
+
+# Pinned upstream sources. The SHA and content hash below are PLACEHOLDERS and
+# must be replaced with the real vendored commit SHA + its README SHA-256 via a
+# controlled release process. Until then they hash-mismatch and fail closed, so
+# no untrusted upstream content is ever parsed or cached.
+AGENT_REPOS: list[PinnedKBSource] = [
+    PinnedKBSource(
+        repo_url="https://github.com/VoltAgent/awesome-claude-code-subagents",
+        pinned_sha="PLACEHOLDER_PIN_UPDATE_VIA_RELEASE",
+        expected_sha256=_UNPINNED_SHA256,
+        kind="subagents",
+    ),
+    PinnedKBSource(
+        repo_url="https://github.com/travisvn/awesome-claude-skills",
+        pinned_sha="PLACEHOLDER_PIN_UPDATE_VIA_RELEASE",
+        expected_sha256=_UNPINNED_SHA256,
+        kind="skills",
+    ),
 ]
 
 # Cap on embedded free-text fields sourced from upstream READMEs.
@@ -70,11 +118,20 @@ def _sanitize_field(value: str) -> str:
 
 
 class AgentKBFetcher:
-    def __init__(self, project_path: str | None = None, cache_ttl_hours: int = 24):
+    def __init__(
+        self,
+        project_path: str | None = None,
+        cache_ttl_hours: int = 24,
+        sources: list[PinnedKBSource] | None = None,
+    ):
         self.project_path = Path(project_path) if project_path else Path.cwd()
         self.cache_dir = self.project_path / AGENT_KB_CACHE_DIR
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.cache_ttl = timedelta(hours=cache_ttl_hours)
+        # Sources are pinned commit SHAs with expected content hashes. Tests may
+        # inject their own pins (with hashes computed from fixtures) so that the
+        # happy path and the fail-closed path are both exercisable offline.
+        self.sources = sources if sources is not None else AGENT_REPOS
         self._agents: list[dict[str, Any]] = []
         self._skills: list[dict[str, Any]] = []
 
@@ -83,45 +140,65 @@ class AgentKBFetcher:
         self._agents = []
         self._skills = []
 
-        for repo_url in AGENT_REPOS:
-            if "subagents" in repo_url:
-                self._fetch_subagents(repo_url)
-            elif "skills" in repo_url:
-                self._fetch_skills(repo_url)
+        for source in self.sources:
+            if source.kind == "subagents":
+                self._fetch_subagents(source)
+            elif source.kind == "skills":
+                self._fetch_skills(source)
 
         self._save_cache()
         return self._agents, self._skills
 
-    def _fetch_subagents(self, repo_url: str) -> None:
-        """Fetch subagent patterns from VoltAgent repo."""
-        try:
-            readme_url = (
-                repo_url.replace("github.com", "raw.githubusercontent.com") + "/main/README.md"
+    @staticmethod
+    def _verify_content_hash(content: str, source: PinnedKBSource) -> bool:
+        """Fail closed: only accept content whose SHA-256 matches the pin.
+
+        The README is fetched from a pinned commit SHA, but a hash check still
+        guards against an upstream force-push to that SHA, a poisoned mirror, or
+        an on-path tamper. A mismatch means the content is UNTRUSTED and must
+        not be parsed or cached.
+        """
+        actual = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if actual != source.expected_sha256:
+            logger.error(
+                "Agent KB content hash mismatch for %s @ %s: expected %s, got %s; "
+                "rejecting untrusted content (no parse, no cache write)",
+                source.repo_url,
+                source.pinned_sha,
+                source.expected_sha256,
+                actual,
             )
-            content = self._fetch_url(readme_url)
+            return False
+        return True
+
+    def _fetch_subagents(self, source: PinnedKBSource) -> None:
+        """Fetch subagent patterns from a pinned, hash-verified source."""
+        try:
+            content = self._fetch_url(source.readme_url())
 
             if content:
+                if not self._verify_content_hash(content, source):
+                    return
                 agents = self._parse_subagents_from_readme(content)
                 self._agents.extend(agents)
                 logger.info(f"Fetched {len(agents)} subagent patterns")
         except Exception as e:
-            logger.warning(f"Failed to fetch subagents from {repo_url}: {e}")
+            logger.warning(f"Failed to fetch subagents from {source.repo_url}: {e}")
             self._load_from_cache()
 
-    def _fetch_skills(self, repo_url: str) -> None:
-        """Fetch skill patterns from travisvn repo."""
+    def _fetch_skills(self, source: PinnedKBSource) -> None:
+        """Fetch skill patterns from a pinned, hash-verified source."""
         try:
-            readme_url = (
-                repo_url.replace("github.com", "raw.githubusercontent.com") + "/main/README.md"
-            )
-            content = self._fetch_url(readme_url)
+            content = self._fetch_url(source.readme_url())
 
             if content:
+                if not self._verify_content_hash(content, source):
+                    return
                 skills = self._parse_skills_from_readme(content)
                 self._skills.extend(skills)
                 logger.info(f"Fetched {len(skills)} skill patterns")
         except Exception as e:
-            logger.warning(f"Failed to fetch skills from {repo_url}: {e}")
+            logger.warning(f"Failed to fetch skills from {source.repo_url}: {e}")
             self._load_from_cache()
 
     def _fetch_url(self, url: str) -> str | None:

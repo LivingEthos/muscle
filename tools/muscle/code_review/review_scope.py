@@ -140,9 +140,11 @@ class ReviewScopeClassifier:
         )
 
     def _discover_files(self, target: Path) -> list[Path]:
+        # ``target`` is already canonicalized once at the trust boundary in
+        # classify(); re-resolving here would reopen a TOCTOU window, so reuse
+        # the resolved path directly.
         if target.is_file():
-            resolved = target.resolve()
-            return [resolved] if self._should_include_path(target, resolved) else []
+            return [target] if self._should_include_path(target, target) else []
         if not target.exists():
             return []
 

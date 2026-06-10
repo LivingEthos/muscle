@@ -770,3 +770,98 @@ class TestPromptInjectionHardening:
 
         assert "BEGIN UNTRUSTED FILE PATH" in user_prompt
         assert "END UNTRUSTED FILE PATH" in user_prompt
+
+
+class TestSecretRedaction:
+    """Model-echoed finding fields must have secrets scrubbed at the choke point."""
+
+    def test_redact_aws_key(self):
+        from tools.muscle.code_review.code_reviewer import redact_secrets
+
+        out = redact_secrets("key is AKIAIOSFODNN7EXAMPLE here")
+        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert "[REDACTED:20]" in out
+        assert "AKIA" in out  # prefix preserved
+
+    def test_redact_assignment_styles(self):
+        from tools.muscle.code_review.code_reviewer import redact_secrets
+
+        out = redact_secrets('api_key = "abcd1234efgh5678"')
+        assert "abcd1234efgh5678" not in out
+        assert "[REDACTED:16]" in out
+
+    def test_redact_bearer_and_pat_and_pem(self):
+        from tools.muscle.code_review.code_reviewer import redact_secrets
+
+        bearer = redact_secrets("Authorization: Bearer abcdef0123456789xyz")
+        assert "abcdef0123456789xyz" not in bearer
+        pat = redact_secrets("token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")
+        assert "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345" not in pat
+        pem = redact_secrets(
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIBsecret\n-----END RSA PRIVATE KEY-----"
+        )
+        assert "MIIBsecret" not in pem
+        assert "PRIVATE_KEY" in pem
+
+    def test_redact_preserves_clean_text(self):
+        from tools.muscle.code_review.code_reviewer import redact_secrets
+
+        clean = "def add(a, b): return a + b"
+        assert redact_secrets(clean) == clean
+
+    def test_structured_parse_redacts_code_snippet(self):
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        findings = ReviewFindings.model_validate(
+            {
+                "reviews": [
+                    {
+                        "file_path": "cfg.py",
+                        "line_number": 3,
+                        "severity": "critical",
+                        "category": "security",
+                        "title": f"Hardcoded key {secret}",
+                        "description": f"Found {secret} in source",
+                        "code_snippet": f'KEY = "{secret}"',
+                        "valid": True,
+                        "suggested_fix": f"# was {secret}",
+                    }
+                ],
+                "summary": {},
+            }
+        )
+        issues = CodeReviewer._reviews_from_structured(findings, "cfg.py")
+        assert len(issues) == 1
+        issue = issues[0]
+        assert secret not in issue.code_snippet
+        assert secret not in issue.title
+        assert secret not in issue.description
+        assert secret not in (issue.suggested_fix or "")
+
+    def test_payload_parse_redacts_code_snippet(self):
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        payload = {
+            "reviews": [
+                {
+                    "valid": True,
+                    "file_path": "cfg.py",
+                    "line_number": 1,
+                    "severity": "HIGH",
+                    "category": "security",
+                    "title": "secret",
+                    "description": "d",
+                    "code_snippet": f'token = "{secret}"',
+                    "suggested_fix": None,
+                }
+            ]
+        }
+        issues = CodeReviewer._reviews_from_payload(payload, "cfg.py")
+        assert len(issues) == 1
+        assert secret not in issues[0].code_snippet
+
+    def test_text_parse_redacts_description(self):
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        text = f"Line 5: HIGH security Hardcoded {secret} found in config"
+        issues = CodeReviewer._parse_text_review(text, "cfg.py")
+        assert issues
+        assert all(secret not in i.description for i in issues)
+        assert all(secret not in i.title for i in issues)

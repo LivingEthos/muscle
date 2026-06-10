@@ -17,6 +17,7 @@ import logging
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from fnmatch import fnmatch
 from functools import lru_cache
 from pathlib import Path
@@ -43,6 +44,72 @@ MAX_PARALLEL_FILE_REVIEWS = 5
 FILE_CONTENT_CACHE_SIZE = 100
 _PRESSURE_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW"}
 FRAGILITY_CHALLENGE = "fragility"
+
+
+# --- Secret redaction for model-echoed finding fields -----------------------
+# The model can echo source text (e.g. ``code_snippet``) verbatim into a
+# finding. If that text contains a real credential, the finding would persist
+# and surface the secret across trust boundaries. We scrub known secret shapes
+# from EVERY free-text finding field at the single construction choke point
+# (see _redact_issue), replacing the value with a marker that preserves a short
+# prefix + length so recurring detection still works without storing the secret.
+_PEM_RE = re.compile(
+    r"-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----.*?-----END (?:[A-Z ]+ )?PRIVATE KEY-----", re.DOTALL
+)
+_AWS_KEY_RE = re.compile(r"\b((?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA)[A-Z0-9]{16})\b")
+_BEARER_RE = re.compile(r"(?i)(bearer\s+)([A-Za-z0-9\-._~+/=]{12,})")
+_GH_PAT_RE = re.compile(r"\b((?:ghp|gho|ghu|ghs|ghr|glpat)_[A-Za-z0-9]{20,})\b")
+_OPENAI_KEY_RE = re.compile(r"\b(sk-[A-Za-z0-9]{20,})\b")
+# key = "value" / token: value style assignments (quotes optional).
+_ASSIGNMENT_RE = re.compile(
+    r"(?i)((?:api[_-]?key|secret|token|password|passwd|pwd|access[_-]?token)\s*[:=]\s*)"
+    r"(['\"]?)([A-Za-z0-9\-._~+/=]{8,})(\2)"
+)
+
+
+def _redact_secret_value(value: str) -> str:
+    """Replace ``value`` with a prefix+length-preserving redaction marker."""
+    prefix = value[:4]
+    return f"{prefix}…[REDACTED:{len(value)}]"
+
+
+def redact_secrets(text: str | None) -> str:
+    """Scrub known secret patterns out of an untrusted, model-echoed string.
+
+    Each detected secret value is replaced by a marker preserving a short
+    prefix and the original length so recurring patterns remain detectable
+    without persisting the secret itself.
+    """
+    if not text:
+        return text or ""
+    cleaned = _PEM_RE.sub("[REDACTED:PRIVATE_KEY]", text)
+    cleaned = _AWS_KEY_RE.sub(lambda m: _redact_secret_value(m.group(1)), cleaned)
+    cleaned = _GH_PAT_RE.sub(lambda m: _redact_secret_value(m.group(1)), cleaned)
+    cleaned = _OPENAI_KEY_RE.sub(lambda m: _redact_secret_value(m.group(1)), cleaned)
+    cleaned = _BEARER_RE.sub(lambda m: f"{m.group(1)}{_redact_secret_value(m.group(2))}", cleaned)
+    cleaned = _ASSIGNMENT_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}{_redact_secret_value(m.group(3))}{m.group(4)}",
+        cleaned,
+    )
+    return cleaned
+
+
+def _redact_issue(issue: ReviewIssue) -> ReviewIssue:
+    """Scrub secrets from every free-text field of a finding before it is
+    persisted or returned. Single choke point for all parse paths.
+
+    ``ReviewIssue`` is frozen, so a redacted copy is returned via
+    ``dataclasses.replace`` rather than mutating in place.
+    """
+    return replace(
+        issue,
+        title=redact_secrets(issue.title),
+        description=redact_secrets(issue.description),
+        code_snippet=redact_secrets(issue.code_snippet),
+        suggested_fix=(
+            redact_secrets(issue.suggested_fix) if issue.suggested_fix is not None else None
+        ),
+    )
 
 
 @lru_cache(maxsize=FILE_CONTENT_CACHE_SIZE)
@@ -1073,17 +1140,19 @@ description, and line number. Format as a simple list."""
             title_desc = match.group(4).strip()
             title = title_desc.split(".")[0].strip()[:100] or "Code issue"
             issues.append(
-                ReviewIssue(
-                    file_path=default_file_path,
-                    line_number=int(match.group(1)) if match.group(1) else 0,
-                    severity=cls._parse_severity(match.group(2) or "MEDIUM"),
-                    category=cls._parse_category(match.group(3) or "best_practice"),
-                    cwe_id=None,
-                    title=title,
-                    description=title_desc,
-                    code_snippet="",
-                    suggested_fix=None,
-                    auto_fixable=False,
+                _redact_issue(
+                    ReviewIssue(
+                        file_path=default_file_path,
+                        line_number=int(match.group(1)) if match.group(1) else 0,
+                        severity=cls._parse_severity(match.group(2) or "MEDIUM"),
+                        category=cls._parse_category(match.group(3) or "best_practice"),
+                        cwe_id=None,
+                        title=title,
+                        description=title_desc,
+                        code_snippet="",
+                        suggested_fix=None,
+                        auto_fixable=False,
+                    )
                 )
             )
         return issues
@@ -1104,17 +1173,19 @@ description, and line number. Format as a simple list."""
             if suggested_fix and not auto_fixable:
                 auto_fixable = True
             reviews.append(
-                ReviewIssue(
-                    file_path=item.file_path or default_file_path,
-                    line_number=item.line_number,
-                    severity=cls._parse_severity(item.severity),
-                    category=cls._parse_category(item.category),
-                    cwe_id=item.cwe_id,
-                    title=item.title or "Code issue",
-                    description=item.description,
-                    code_snippet=item.code_snippet,
-                    suggested_fix=suggested_fix,
-                    auto_fixable=auto_fixable,
+                _redact_issue(
+                    ReviewIssue(
+                        file_path=item.file_path or default_file_path,
+                        line_number=item.line_number,
+                        severity=cls._parse_severity(item.severity),
+                        category=cls._parse_category(item.category),
+                        cwe_id=item.cwe_id,
+                        title=item.title or "Code issue",
+                        description=item.description,
+                        code_snippet=item.code_snippet,
+                        suggested_fix=suggested_fix,
+                        auto_fixable=auto_fixable,
+                    )
                 )
             )
         return reviews
@@ -1177,17 +1248,19 @@ description, and line number. Format as a simple list."""
             if suggested_fix and not auto_fixable:
                 auto_fixable = True
             reviews.append(
-                ReviewIssue(
-                    file_path=item.get("file_path", default_file_path),
-                    line_number=item.get("line_number", 0),
-                    severity=cls._parse_severity(item.get("severity", "MEDIUM")),
-                    category=cls._parse_category(item.get("category", "best_practice")),
-                    cwe_id=item.get("cwe_id"),
-                    title=item.get("title", "Code issue"),
-                    description=item.get("description", ""),
-                    code_snippet=item.get("code_snippet", ""),
-                    suggested_fix=suggested_fix,
-                    auto_fixable=auto_fixable,
+                _redact_issue(
+                    ReviewIssue(
+                        file_path=item.get("file_path", default_file_path),
+                        line_number=item.get("line_number", 0),
+                        severity=cls._parse_severity(item.get("severity", "MEDIUM")),
+                        category=cls._parse_category(item.get("category", "best_practice")),
+                        cwe_id=item.get("cwe_id"),
+                        title=item.get("title", "Code issue"),
+                        description=item.get("description", ""),
+                        code_snippet=item.get("code_snippet", ""),
+                        suggested_fix=suggested_fix,
+                        auto_fixable=auto_fixable,
+                    )
                 )
             )
         return reviews

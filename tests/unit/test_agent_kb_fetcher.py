@@ -2,13 +2,18 @@
 Unit tests for code_review/agent_kb_fetcher.py
 """
 
+import hashlib
 import json
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
 
-from tools.muscle.code_review.agent_kb_fetcher import AgentKBFetcher
+from tools.muscle.code_review.agent_kb_fetcher import (
+    AGENT_REPOS,
+    AgentKBFetcher,
+    PinnedKBSource,
+)
 
 
 class TestAgentKBFetcher:
@@ -258,3 +263,90 @@ class TestAgentKBSecurity:
         agents = fetcher._parse_subagents_from_readme(readme)
         assert agents
         assert len(agents[0]["description"]) <= 301
+
+
+class TestAgentKBPinning:
+    """Commit-SHA pinning + content-hash verification (fail-closed)."""
+
+    _SUBAGENT_README = "- [Auth Agent](agents/auth.md) - Handles auth flows\n"
+    _SKILL_README = "- [Py Skill](skills/py.md) - Python best practices\n"
+
+    @staticmethod
+    def _pin(content: str, kind: str, *, good_hash: bool = True) -> PinnedKBSource:
+        expected = hashlib.sha256(content.encode("utf-8")).hexdigest() if good_hash else "f" * 64
+        return PinnedKBSource(
+            repo_url=f"https://github.com/example/awesome-{kind}",
+            pinned_sha="a" * 40,
+            expected_sha256=expected,
+            kind=kind,
+        )
+
+    def test_readme_url_uses_pinned_sha_not_main(self):
+        source = PinnedKBSource(
+            repo_url="https://github.com/Vendor/repo",
+            pinned_sha="deadbeef" * 5,
+            expected_sha256="0" * 64,
+            kind="subagents",
+        )
+        url = source.readme_url()
+        assert "raw.githubusercontent.com" in url
+        assert "deadbeef" * 5 in url
+        assert "/main/" not in url
+
+    def test_default_pins_fail_closed(self):
+        # The shipped pins are placeholders: their expected hash cannot match
+        # any real content, so nothing is ever parsed or cached.
+        for source in AGENT_REPOS:
+            assert source.expected_sha256 == "0" * 64
+            assert "/main/" not in source.readme_url()
+
+    def test_happy_path_with_injected_pin(self, tmp_path):
+        sources = [
+            self._pin(self._SUBAGENT_README, "subagents"),
+            self._pin(self._SKILL_README, "skills"),
+        ]
+        fetcher = AgentKBFetcher(project_path=str(tmp_path), sources=sources)
+
+        def fake_fetch(url):
+            return self._SUBAGENT_README if "subagents" in url else self._SKILL_README
+
+        with patch.object(fetcher, "_fetch_url", side_effect=fake_fetch):
+            agents, skills = fetcher.fetch_all()
+
+        assert len(agents) == 1
+        assert agents[0]["name"] == "Auth Agent"
+        assert len(skills) == 1
+        assert skills[0]["name"] == "Py Skill"
+        # Cache was written on the happy path.
+        cache_file = fetcher.cache_dir / "agent_kb_cache.json"
+        assert cache_file.exists()
+
+    def test_hash_mismatch_rejects_and_skips_cache_write(self, tmp_path):
+        sources = [self._pin(self._SUBAGENT_README, "subagents", good_hash=False)]
+        fetcher = AgentKBFetcher(project_path=str(tmp_path), sources=sources)
+        cache_file = fetcher.cache_dir / "agent_kb_cache.json"
+
+        with patch.object(fetcher, "_fetch_url", return_value=self._SUBAGENT_README):
+            with patch.object(fetcher, "_parse_subagents_from_readme") as parse_mock:
+                agents, skills = fetcher.fetch_all()
+
+        # Fail closed: content was NOT parsed and no agents were accepted.
+        parse_mock.assert_not_called()
+        assert agents == []
+        assert skills == []
+        # An empty cache is written (no untrusted entries leaked into it).
+        assert cache_file.exists()
+        data = json.loads(cache_file.read_text())
+        assert data["agents"] == []
+
+    def test_tampered_content_after_pin_is_rejected(self, tmp_path):
+        # SHA matches the *expected* content, but the fetched bytes differ
+        # (e.g. an upstream force-push to the pinned SHA / poisoned mirror).
+        sources = [self._pin(self._SUBAGENT_README, "subagents")]
+        fetcher = AgentKBFetcher(project_path=str(tmp_path), sources=sources)
+        tampered = self._SUBAGENT_README + "- [Evil](evil.md) - rm -rf /\n"
+
+        with patch.object(fetcher, "_fetch_url", return_value=tampered):
+            agents, _ = fetcher.fetch_all()
+
+        assert agents == []
