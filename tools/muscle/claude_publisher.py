@@ -109,6 +109,58 @@ class ClaudePublisher:
             pm = ProjectMemory(str(self.project_path))
             self._backup_manager = BackupManager(pm, str(self.project_path))
 
+        # Reconcile any revision left in 'pending' by a crash between the file
+        # swap and the commit-mark (check-on-next-use; no background daemon).
+        self._reconcile_pending_revisions()
+
+    @property
+    def _pm(self) -> Any:
+        """The ProjectMemory backing the shared BackupManager (source of truth)."""
+        return self._backup_manager._pm
+
+    def _reconcile_pending_revisions(self) -> None:
+        """Resolve revisions stuck in 'pending' from an earlier interrupted publish.
+
+        For each pending revision we compare the on-disk file's sha256 to the
+        staged content's sha256:
+        - match  -> the swap happened but the commit-mark was lost; mark committed.
+        - differ -> the swap never happened (or has since been superseded); mark
+          aborted so the next publish proceeds cleanly.
+        Missing/unreadable files are treated as 'swap did not happen' -> aborted.
+        """
+        try:
+            pending = self._pm.list_pending_published_revisions(str(self.project_path))
+        except Exception as exc:  # pragma: no cover - defensive, DB unavailable
+            logger.debug(f"Could not list pending published revisions: {exc}")
+            return
+
+        for revision in pending:
+            revision_id = revision.get("id")
+            target_path = Path(revision.get("target_path", ""))
+            staged_sha = revision.get("content_sha256", "")
+            on_disk_sha: str | None = None
+            try:
+                if target_path.exists():
+                    on_disk_sha = self._pm.published_content_sha256(target_path.read_text())
+            except Exception as exc:
+                logger.warning(f"Failed to read {target_path} during reconcile: {exc}")
+                on_disk_sha = None
+
+            if on_disk_sha is not None and on_disk_sha == staged_sha:
+                self._pm.commit_published_revision(revision_id)
+                logger.warning(
+                    f"Reconciled pending publish revision {revision_id} for "
+                    f"{target_path}: on-disk content matched staged content; "
+                    "marked committed (commit-mark was lost after a successful swap)."
+                )
+            else:
+                self._pm.abort_published_revision(revision_id)
+                logger.warning(
+                    f"Reconciled pending publish revision {revision_id} for "
+                    f"{target_path}: on-disk content did not match staged content; "
+                    "marked aborted (swap never completed; superseded by next publish)."
+                )
+
     @property
     def backup_manager(self) -> BackupManager:
         """Access the backup manager (for backwards compatibility)."""
@@ -429,8 +481,20 @@ Return ONLY the JSON array, nothing else."""
                     skill_calls=skill_calls or [],
                     tooling_notes=tooling_notes or [],
                 )
-                # Atomic swap (temp + fsync + os.replace) so a crash mid-write
-                # never leaves the user's authoritative file truncated.
+
+                # Two-phase publish:
+                #   Phase 1: stage the new content as a 'pending' revision in the
+                #            DB. If we crash after the swap but before the
+                #            commit-mark, the next publisher init reconciles this
+                #            row by comparing the on-disk hash to the staged hash.
+                revision_id = self._pm.stage_published_revision(
+                    project_path=str(self.project_path),
+                    target_path=str(target_path),
+                    content=updated_content,
+                )
+
+                #   Phase 2: atomic swap (temp + fsync + os.replace) so a crash
+                #            mid-write never leaves the file truncated.
                 atomic_write_text(target_path, updated_content)
                 logger.info(f"Successfully published to {filename}")
                 any_written = True
@@ -440,20 +504,27 @@ Return ONLY the JSON array, nothing else."""
                         project_path=str(self.project_path),
                         action_type="publish",
                         entity_type=filename,
-                        entity_id=None,
+                        entity_id=revision_id,
                         details_json='{"sections": ["critical_rules", "mistake_corrections", "agent_calls", "skill_calls", "tooling_notes"]}',
                     )
                 except Exception as log_exc:
                     # The file is already written but the audit-log insert failed.
                     # Restore the pre-write content so the file and the DB stay
-                    # consistent (no published change without an audit record).
+                    # consistent (no published change without an audit record),
+                    # and abort the staged revision so it is not later mistaken
+                    # for an interrupted-but-successful swap.
                     logger.error(
                         f"Failed to record publish action for {filename}; "
                         f"rolling back file write: {log_exc}"
                     )
                     atomic_write_text(target_path, content)
+                    self._pm.abort_published_revision(revision_id)
                     any_written = False
                     continue
+
+                #   Phase 3: mark the staged revision committed now that the file
+                #            and the audit log are both in place.
+                self._pm.commit_published_revision(revision_id)
             except Exception as e:
                 logger.error(f"Failed to publish to {filename}: {e}")
                 continue

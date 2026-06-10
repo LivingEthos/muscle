@@ -505,3 +505,184 @@ class TestClaudePublisherAtomicWrite:
             ) as spy:
                 assert publisher.insert_markers_if_missing() is True
             assert spy.called
+
+
+class TestClaudePublisherTwoPhase:
+    """Two-phase publish: stage pending revision -> swap file -> mark committed."""
+
+    def test_happy_path_stages_swaps_and_commits(self):
+        """Successful publish leaves the revision 'committed' and the file updated."""
+        from tools.muscle.claude_publisher import ClaudePublisher
+        from tools.muscle.project_memory import ProjectMemory
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            claude_md = project / "CLAUDE.md"
+            claude_md.write_text("# CLAUDE.md\n")
+
+            publisher = ClaudePublisher(tmpdir, target_files=["CLAUDE.md"])
+            result = publisher.publish(
+                critical_rules=[{"text": "Use type hints", "score": 0.8, "validated_count": 3}],
+            )
+            assert result is True
+
+            content = claude_md.read_text()
+            assert "Use type hints" in content
+
+            pm = ProjectMemory(tmpdir)
+            # No pending revisions remain.
+            assert pm.list_pending_published_revisions(tmpdir) == []
+            # Exactly one committed revision recorded, matching the file content.
+            with pm.connection() as conn:
+                rows = conn.execute(
+                    "SELECT status, content_sha256 FROM published_revisions"
+                ).fetchall()
+            assert len(rows) == 1
+            assert rows[0]["status"] == "committed"
+            assert rows[0]["content_sha256"] == pm.published_content_sha256(content)
+
+    def test_crash_between_swap_and_commit_reconciles_to_committed(self):
+        """If commit-mark is lost after the swap, next publish marks it committed."""
+        from unittest.mock import patch
+
+        from tools.muscle.claude_publisher import ClaudePublisher
+        from tools.muscle.project_memory import ProjectMemory
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            claude_md = project / "CLAUDE.md"
+            claude_md.write_text("# CLAUDE.md\n")
+
+            publisher = ClaudePublisher(tmpdir, target_files=["CLAUDE.md"])
+            # Simulate a crash: the file is swapped but commit_published_revision
+            # never runs (raises before marking the row committed).
+            with patch.object(
+                publisher._pm,
+                "commit_published_revision",
+                side_effect=RuntimeError("crash before commit-mark"),
+            ):
+                publisher.publish(
+                    critical_rules=[{"text": "Staged rule", "score": 0.9, "validated_count": 5}],
+                )
+
+            # The file was written, but a pending revision remains.
+            pm = ProjectMemory(tmpdir)
+            pending = pm.list_pending_published_revisions(tmpdir)
+            assert len(pending) == 1
+            content_after_swap = claude_md.read_text()
+            assert "Staged rule" in content_after_swap
+
+            # Next publisher init reconciles: file matches staged -> committed.
+            ClaudePublisher(tmpdir, target_files=["CLAUDE.md"])
+            assert pm.list_pending_published_revisions(tmpdir) == []
+            with pm.connection() as conn:
+                row = conn.execute(
+                    "SELECT status FROM published_revisions WHERE id = ?",
+                    (pending[0]["id"],),
+                ).fetchone()
+            assert row["status"] == "committed"
+            # File is untouched by reconcile.
+            assert claude_md.read_text() == content_after_swap
+
+    def test_crash_before_swap_reconciles_to_aborted(self):
+        """If the swap never happened, next publish marks the revision aborted."""
+        from tools.muscle.claude_publisher import ClaudePublisher
+        from tools.muscle.project_memory import ProjectMemory
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            claude_md = project / "CLAUDE.md"
+            original = "# CLAUDE.md\n\nUntouched user content\n"
+            claude_md.write_text(original)
+
+            # Simulate a crash before the swap: a pending revision is staged whose
+            # content never reached disk (file still holds the original).
+            pm = ProjectMemory(tmpdir)
+            rev_id = pm.stage_published_revision(
+                project_path=tmpdir,
+                target_path=str(claude_md),
+                content="# CLAUDE.md\n\nThis content was never swapped in\n",
+            )
+            assert claude_md.read_text() == original
+
+            # Next publisher init reconciles: file differs from staged -> aborted.
+            ClaudePublisher(tmpdir, target_files=["CLAUDE.md"])
+            assert pm.list_pending_published_revisions(tmpdir) == []
+            with pm.connection() as conn:
+                row = conn.execute(
+                    "SELECT status FROM published_revisions WHERE id = ?",
+                    (rev_id,),
+                ).fetchone()
+            assert row["status"] == "aborted"
+            # The original file is left untouched by reconcile.
+            assert claude_md.read_text() == original
+
+    def test_action_log_failure_aborts_staged_revision(self):
+        """A rolled-back publish must also abort its staged revision, not leave it pending."""
+        from unittest.mock import patch
+
+        from tools.muscle.claude_publisher import ClaudePublisher
+        from tools.muscle.project_memory import ProjectMemory
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            claude_md = project / "CLAUDE.md"
+            original = "# CLAUDE.md\n\nOriginal user content\n"
+            claude_md.write_text(original)
+
+            publisher = ClaudePublisher(tmpdir, target_files=["CLAUDE.md"])
+            with patch.object(
+                publisher._backup_manager._pm,
+                "insert_action_log",
+                side_effect=RuntimeError("db down"),
+            ):
+                result = publisher.publish(
+                    critical_rules=[{"text": "Rule", "score": 0.8, "validated_count": 3}],
+                )
+            assert result is False
+            # File restored to pre-publish content.
+            assert claude_md.read_text() == original
+            # No pending revision left dangling; it is marked aborted.
+            pm = ProjectMemory(tmpdir)
+            assert pm.list_pending_published_revisions(tmpdir) == []
+
+    def test_migration_applies_on_existing_db(self):
+        """Migration 0018 creates published_revisions on an already-populated DB."""
+        from tools.muscle.migrations import MigrationRunner
+        from tools.muscle.project_memory import ProjectMemory
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Build a DB and roll the published_revisions migration back to emulate
+            # an older DB, then re-run migrations to confirm a clean apply.
+            pm = ProjectMemory(tmpdir)
+            pm.insert_learned_rule(
+                project_path=tmpdir,
+                rule_text="Existing rule",
+                trigger_pattern="trigger",
+                status="active",
+            )
+
+            runner = MigrationRunner(tmpdir)
+            assert runner.rollback_to("1.9.7") is True
+            with pm.connection() as conn:
+                tables = {
+                    row["name"]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+            assert "published_revisions" not in tables
+
+            applied = runner.run()
+            assert "1.9.8" in applied
+            with pm.connection() as conn:
+                tables = {
+                    row["name"]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+            assert "published_revisions" in tables
+            # Pre-existing data survived the migration.
+            rules = pm.list_learned_rules(project_path=tmpdir)
+            assert any(r["rule_text"] == "Existing rule" for r in rules)

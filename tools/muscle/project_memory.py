@@ -805,6 +805,110 @@ class ProjectMemory:
                 conn.close()
 
     # -------------------------------------------------------------------------
+    # Published-revision helpers (two-phase host-doc publish)
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def published_content_sha256(content: str) -> str:
+        """Compute the canonical sha256 used to match staged vs on-disk content."""
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    def stage_published_revision(
+        self,
+        project_path: str,
+        target_path: str,
+        content: str,
+    ) -> int:
+        """Stage a pending published revision before the file is swapped.
+
+        Phase 1 of the two-phase publish. Returns the revision row ID. The row
+        records the full staged content plus its sha256 so a later reconcile can
+        decide whether the on-disk swap happened.
+        """
+        content_sha = self.published_content_sha256(content)
+        conn = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO published_revisions
+                (project_path, created_at, target_path, content, content_sha256, status)
+                VALUES (?, ?, ?, ?, ?, 'pending')
+                """,
+                (
+                    project_path,
+                    datetime.now().isoformat(),
+                    target_path,
+                    content,
+                    content_sha,
+                ),
+            )
+            conn.commit()
+            return cursor.lastrowid or 0
+        finally:
+            if conn:
+                conn.close()
+
+    def commit_published_revision(self, revision_id: int) -> bool:
+        """Mark a staged revision 'committed' (phase 3). Returns True if updated."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE published_revisions SET status = 'committed', committed_at = ? "
+                "WHERE id = ? AND status = 'pending'",
+                (datetime.now().isoformat(), revision_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            if conn:
+                conn.close()
+
+    def abort_published_revision(self, revision_id: int) -> bool:
+        """Mark a staged revision 'aborted' (superseded). Returns True if updated."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE published_revisions SET status = 'aborted', committed_at = ? "
+                "WHERE id = ? AND status = 'pending'",
+                (datetime.now().isoformat(), revision_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            if conn:
+                conn.close()
+
+    def list_pending_published_revisions(
+        self,
+        project_path: str,
+        target_path: str | None = None,
+    ) -> list[dict]:
+        """List pending revisions, optionally scoped to a single target file."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            query = (
+                "SELECT * FROM published_revisions WHERE project_path = ? AND status = 'pending'"
+            )
+            params: list[Any] = [project_path]
+            if target_path is not None:
+                query += " AND target_path = ?"
+                params.append(target_path)
+            query += " ORDER BY id ASC"
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            if conn:
+                conn.close()
+
+    # -------------------------------------------------------------------------
     # Conversation event helpers
     # -------------------------------------------------------------------------
 
