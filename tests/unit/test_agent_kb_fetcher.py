@@ -355,3 +355,79 @@ class TestAgentKBPinning:
             agents, _ = fetcher.fetch_all()
 
         assert agents == []
+
+
+class TestAgentKBPerSourceIsolation:
+    """A per-source failure must not clobber other sources' fresh results."""
+
+    _SUBAGENT_README = "- [Auth Agent](agents/auth.md) - Handles auth flows\n"
+    _SKILL_README = "- [Py Skill](skills/py.md) - Python best practices\n"
+
+    @staticmethod
+    def _pin(content: str, kind: str) -> PinnedKBSource:
+        return PinnedKBSource(
+            repo_url=f"https://github.com/example/awesome-{kind}",
+            pinned_sha="a" * 40,
+            expected_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            kind=kind,
+        )
+
+    def test_failed_source_does_not_clobber_successful_source(self, tmp_path):
+        """Source A (subagents) succeeds; source B (skills) raises mid-fetch.
+
+        A's fresh results must survive, and B falls back to cache only for the
+        skills key (here empty, since the cache has no skills). The old
+        behavior reassigned ``self._agents`` from cache inside the failing
+        source's handler, wiping A's fresh results.
+        """
+        sources = [
+            self._pin(self._SUBAGENT_README, "subagents"),
+            self._pin(self._SKILL_README, "skills"),
+        ]
+        fetcher = AgentKBFetcher(project_path=str(tmp_path), sources=sources)
+
+        def flaky_fetch(url: str) -> str:
+            if "skills" in url:
+                raise RuntimeError("network down for skills source")
+            return self._SUBAGENT_README
+
+        with patch.object(fetcher, "_fetch_url", side_effect=flaky_fetch):
+            agents, skills = fetcher.fetch_all()
+
+        # A's fresh result survived B's failure (no global clobber).
+        assert len(agents) == 1
+        assert agents[0]["name"] == "Auth Agent"
+        # B failed and had no cache to fall back to → empty, not a clobber.
+        assert skills == []
+
+    def test_failed_source_falls_back_to_its_cache_only(self, tmp_path):
+        """B's failure falls back to *its own* cached entries, A keeps fresh."""
+        sources = [
+            self._pin(self._SUBAGENT_README, "subagents"),
+            self._pin(self._SKILL_README, "skills"),
+        ]
+        fetcher = AgentKBFetcher(project_path=str(tmp_path), sources=sources)
+        # Seed a fresh, valid cache holding a previously-validated skill.
+        cached_skill = {"name": "Cached Skill", "url": "c.md", "source": "x"}
+        cache_file = fetcher.cache_dir / "agent_kb_cache.json"
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "agents": [],
+                    "skills": [cached_skill],
+                    "cached_at": datetime.now().isoformat(),
+                }
+            )
+        )
+
+        def flaky_fetch(url: str) -> str:
+            if "skills" in url:
+                raise RuntimeError("network down for skills source")
+            return self._SUBAGENT_README
+
+        with patch.object(fetcher, "_fetch_url", side_effect=flaky_fetch):
+            agents, skills = fetcher.fetch_all()
+
+        assert len(agents) == 1  # fresh, untouched
+        assert agents[0]["name"] == "Auth Agent"
+        assert skills == [cached_skill]  # B fell back to its cache only

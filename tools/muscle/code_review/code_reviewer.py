@@ -78,10 +78,15 @@ _ASSIGNMENT_RE = re.compile(
 )
 
 
+# Token that marks an already-redacted value. Used to make redaction idempotent
+# (the assignment pass must not re-redact a marker produced by an earlier pass).
+_REDACTION_TOKEN = "[REDACTED:"
+
+
 def _redact_secret_value(value: str) -> str:
     """Replace ``value`` with a prefix+length-preserving redaction marker."""
     prefix = value[:4]
-    return f"{prefix}…[REDACTED:{len(value)}]"
+    return f"{prefix}…{_REDACTION_TOKEN}{len(value)}]"
 
 
 def redact_secrets(text: str | None) -> str:
@@ -112,8 +117,17 @@ def _redact_assignment(m: re.Match[str]) -> str:
     prefix = m.group(1)
     bare = m.group("bare")
     if bare is not None:
+        # An earlier secret-shape pass (AWS/GitHub/OpenAI/Bearer/PEM) may have
+        # already replaced the value with a ``…[REDACTED:N]`` marker. Re-redacting
+        # that marker would corrupt the preserved length and emit a malformed
+        # nested marker, so leave an already-redacted match untouched (idempotent).
+        if _REDACTION_TOKEN in bare:
+            return m.group(0)
         return f"{prefix}{_redact_secret_value(bare)}"
-    return f"{prefix}{m.group(2)}{_redact_secret_value(m.group(3))}{m.group(4)}"
+    quoted = m.group(3)
+    if _REDACTION_TOKEN in quoted:
+        return m.group(0)
+    return f"{prefix}{m.group(2)}{_redact_secret_value(quoted)}{m.group(4)}"
 
 
 def _redact_issue(issue: ReviewIssue) -> ReviewIssue:

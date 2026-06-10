@@ -833,6 +833,53 @@ class TestSecretRedaction:
         clean = "def add(a, b): return a + b"
         assert redact_secrets(clean) == clean
 
+    def test_known_shape_secret_in_quoted_assignment_redacts_once_correct_length(self):
+        """A known-shape secret inside a quoted assignment must redact exactly
+        once with the *original* length, not a corrupted nested length.
+
+        The AWS pass runs before the assignment pass; without the marker guard,
+        the assignment pass would re-match the already-redacted quoted marker and
+        re-redact it (wrong length, malformed nested marker).
+        """
+        from tools.muscle.code_review.code_reviewer import redact_secrets
+
+        out = redact_secrets('api_key = "AKIAIOSFODNN7EXAMPLE"')
+        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        # Original length (20) is preserved; no corrupted 18-length nested marker.
+        assert "AKIA…[REDACTED:20]" in out
+        assert "[REDACTED:18]" not in out
+        # Exactly one redaction marker (no nested double-redaction).
+        assert out.count("[REDACTED:") == 1
+        # The closing quote of the assignment is preserved.
+        assert out == 'api_key = "AKIA…[REDACTED:20]"'
+
+    def test_redact_secrets_is_idempotent(self):
+        """``redact_secrets(redact_secrets(s)) == redact_secrets(s)``.
+
+        Verified for the assignment + AWS cases (the double-redaction footgun)
+        and the other secret-shape patterns. PEM is excluded from the per-case
+        loop because its marker is a fixed sentinel with no length field, but it
+        is independently idempotent and checked separately below.
+        """
+        from tools.muscle.code_review.code_reviewer import redact_secrets
+
+        cases = [
+            'api_key = "AKIAIOSFODNN7EXAMPLE"',  # AWS shape inside quoted assignment
+            "key is AKIAIOSFODNN7EXAMPLE here",  # bare AWS key
+            'api_key = "abcd1234efgh5678"',  # quoted assignment
+            "password=hunter2secret9",  # unquoted digit-bearing assignment
+            "token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",  # GitHub PAT
+            "use sk-ABCDEFGHIJKLMNOPQRSTUV here",  # OpenAI key
+            "Authorization: Bearer abcdef0123456789xyz",  # Bearer token
+        ]
+        for raw in cases:
+            once = redact_secrets(raw)
+            twice = redact_secrets(once)
+            assert once == twice, f"non-idempotent for {raw!r}: {once!r} != {twice!r}"
+
+        pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIBsecret\n-----END RSA PRIVATE KEY-----"
+        assert redact_secrets(redact_secrets(pem)) == redact_secrets(pem)
+
     def test_structured_parse_redacts_code_snippet(self):
         secret = "AKIAIOSFODNN7EXAMPLE"
         findings = ReviewFindings.model_validate(

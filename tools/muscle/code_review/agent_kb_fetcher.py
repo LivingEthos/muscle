@@ -132,16 +132,34 @@ class AgentKBFetcher:
         self._skills: list[dict[str, Any]] = []
 
     def fetch_all(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Fetch and parse all agent KB sources."""
-        self._agents = []
-        self._skills = []
+        """Fetch and parse all agent KB sources with per-source isolation.
+
+        Each source is fetched independently into a local result; only at the
+        end are the per-source results merged into ``self._agents`` /
+        ``self._skills`` and written to the cache. A failure in one source
+        therefore never clobbers the fresh results of another (project critical
+        rule: per-source state isolation).
+
+        Fallback policy on a per-source failure:
+          - **Network / fetch / parse error** for a source: that source falls
+            back to whatever *previously-validated* cached entries exist for its
+            ``kind`` (the cache was schema-validated and written by us, so it is
+            safe to reuse), while every other source keeps its fresh results.
+          - **Hash mismatch** (tamper-suspicion): the source contributes
+            *nothing* — not even cache fallback — because the fetched bytes are
+            untrusted. Other sources are unaffected.
+        """
+        agents: list[dict[str, Any]] = []
+        skills: list[dict[str, Any]] = []
 
         for source in self.sources:
             if source.kind == "subagents":
-                self._fetch_subagents(source)
+                agents.extend(self._fetch_subagents(source))
             elif source.kind == "skills":
-                self._fetch_skills(source)
+                skills.extend(self._fetch_skills(source))
 
+        self._agents = agents
+        self._skills = skills
         self._save_cache()
         return self._agents, self._skills
 
@@ -167,35 +185,45 @@ class AgentKBFetcher:
             return False
         return True
 
-    def _fetch_subagents(self, source: PinnedKBSource) -> None:
-        """Fetch subagent patterns from a pinned, hash-verified source."""
+    def _fetch_subagents(self, source: PinnedKBSource) -> list[dict[str, Any]]:
+        """Fetch subagent patterns from a pinned, hash-verified source.
+
+        Returns this source's own results without touching shared state. On a
+        hash mismatch the source contributes nothing fresh (tamper-suspicion).
+        On a fetch/parse error it falls back to cached ``agents`` only.
+        """
         try:
             content = self._fetch_url(source.readme_url())
-
             if content:
                 if not self._verify_content_hash(content, source):
-                    return
+                    return []
                 agents = self._parse_subagents_from_readme(content)
-                self._agents.extend(agents)
                 logger.info(f"Fetched {len(agents)} subagent patterns")
+                return agents
+            return []
         except Exception as e:
             logger.warning(f"Failed to fetch subagents from {source.repo_url}: {e}")
-            self._load_from_cache()
+            return self._cached_entries("agents")
 
-    def _fetch_skills(self, source: PinnedKBSource) -> None:
-        """Fetch skill patterns from a pinned, hash-verified source."""
+    def _fetch_skills(self, source: PinnedKBSource) -> list[dict[str, Any]]:
+        """Fetch skill patterns from a pinned, hash-verified source.
+
+        Returns this source's own results without touching shared state. On a
+        hash mismatch the source contributes nothing fresh (tamper-suspicion).
+        On a fetch/parse error it falls back to cached ``skills`` only.
+        """
         try:
             content = self._fetch_url(source.readme_url())
-
             if content:
                 if not self._verify_content_hash(content, source):
-                    return
+                    return []
                 skills = self._parse_skills_from_readme(content)
-                self._skills.extend(skills)
                 logger.info(f"Fetched {len(skills)} skill patterns")
+                return skills
+            return []
         except Exception as e:
             logger.warning(f"Failed to fetch skills from {source.repo_url}: {e}")
-            self._load_from_cache()
+            return self._cached_entries("skills")
 
     def _fetch_url(self, url: str) -> str | None:
         """Fetch URL content using urllib."""
@@ -230,7 +258,7 @@ class AgentKBFetcher:
 
         return agents
 
-    def _parse_skills_from_readme(self, content: str) -> list[dict]:
+    def _parse_skills_from_readme(self, content: str) -> list[dict[str, Any]]:
         """Parse skill entries from README markdown."""
         skills = []
 
@@ -293,42 +321,65 @@ class AgentKBFetcher:
                 return False
         return True
 
-    def _load_from_cache(self) -> None:
-        """Load data from local cache if available, fresh, and well-formed."""
+    def _read_valid_cache(self) -> dict[str, Any] | None:
+        """Return the parsed, schema-validated, non-expired cache, or ``None``.
+
+        This is a pure read with no side effects on shared state; callers decide
+        how to use the result. Returns ``None`` on a cache miss, schema-validation
+        failure, expiry, or any read error.
+        """
         cache_file = self.cache_dir / "agent_kb_cache.json"
-
         if not cache_file.exists():
-            return
-
+            return None
         try:
             cache_data = json.loads(cache_file.read_text())
             if not self._validate_cache_data(cache_data):
                 logger.warning("Agent KB cache failed schema validation; ignoring")
-                return
+                return None
             cached_at = datetime.fromisoformat(cache_data["cached_at"])
-
             if datetime.now() - cached_at < self.cache_ttl:
-                self._agents = cache_data.get("agents", [])
-                self._skills = cache_data.get("skills", [])
-                logger.debug("Loaded agent KB from cache")
-            else:
-                logger.debug("Agent KB cache expired")
+                return cache_data  # type: ignore[no-any-return]
+            logger.debug("Agent KB cache expired")
+            return None
         except Exception as e:
             logger.warning(f"Failed to load agent KB cache: {e}")
+            return None
 
-    def get_agents(self, force_refresh: bool = False) -> list[dict]:
+    def _cached_entries(self, key: str) -> list[dict[str, Any]]:
+        """Return validated cached entries for ``key`` ("agents"/"skills") only.
+
+        Used as the per-source fallback on a fetch/parse failure so a failed
+        source can still contribute its previously-validated cache entries
+        without clobbering other sources' fresh results.
+        """
+        cache_data = self._read_valid_cache()
+        if cache_data is None:
+            return []
+        entries = cache_data.get(key, [])
+        return list(entries) if isinstance(entries, list) else []
+
+    def _load_from_cache(self) -> None:
+        """Load data from local cache if available, fresh, and well-formed."""
+        cache_data = self._read_valid_cache()
+        if cache_data is None:
+            return
+        self._agents = cache_data.get("agents", [])
+        self._skills = cache_data.get("skills", [])
+        logger.debug("Loaded agent KB from cache")
+
+    def get_agents(self, force_refresh: bool = False) -> list[dict[str, Any]]:
         """Get cached or freshly-fetched agents."""
         if force_refresh or not self._agents:
             self.fetch_all()
         return self._agents
 
-    def get_skills(self, force_refresh: bool = False) -> list[dict]:
+    def get_skills(self, force_refresh: bool = False) -> list[dict[str, Any]]:
         """Get cached or freshly-fetched skills."""
         if force_refresh or not self._skills:
             self.fetch_all()
         return self._skills
 
-    def search_agents(self, query: str) -> list[dict]:
+    def search_agents(self, query: str) -> list[dict[str, Any]]:
         """Search agents by name or description."""
         query_lower = query.lower()
         return [
@@ -338,7 +389,7 @@ class AgentKBFetcher:
             or query_lower in a.get("description", "").lower()
         ]
 
-    def search_skills(self, query: str) -> list[dict]:
+    def search_skills(self, query: str) -> list[dict[str, Any]]:
         """Search skills by name or description."""
         query_lower = query.lower()
         return [
