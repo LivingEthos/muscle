@@ -36,7 +36,15 @@ from ..strategy_kb import GlobalKnowledgeBase  # noqa: E402
 
 # Importing each command module registers its commands on ``cli`` and exposes
 # the command callables for re-export below.
-from . import cost, lifecycle, loop, memory, model, plumbing, review  # noqa: E402,F401
+from . import (  # noqa: E402,F401
+    cost,
+    lifecycle,
+    loop,
+    memory,
+    model,
+    plumbing,
+    review,
+)
 
 # Shared state, the root group, helpers, and constants.
 from ._shared import (
@@ -144,6 +152,13 @@ from .plumbing import (  # noqa: E402
     filters_group,
     route_cmd,
 )
+from .provider import (  # noqa: E402
+    provider,
+    provider_list,
+    provider_show,
+    provider_use,
+    setup,
+)
 
 
 def main() -> None:
@@ -248,10 +263,15 @@ __all__ = [
     "optimize_group",
     "optimize_host_docs",
     "probe",
+    "provider",
+    "provider_list",
+    "provider_show",
+    "provider_use",
     "resume",
     "route_cmd",
     "run",
     "savings",
+    "setup",
     "settings_group",
     "skills_group",
     "skills_list",
