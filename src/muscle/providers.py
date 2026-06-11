@@ -102,11 +102,13 @@ def _project_provider_name(project_path: Path | None) -> str | None:
         return None
     try:
         text = config_path.read_text(encoding="utf-8")
-        try:
+        if text.lstrip().startswith("{"):
+            # JSON-looking content must parse as JSON. Falling back to YAML
+            # here could silently mis-parse partial/corrupt JSON.
             data = json.loads(text)
-        except json.JSONDecodeError:
+        else:
             data = yaml.safe_load(text) or {}
-    except (OSError, yaml.YAMLError):
+    except (OSError, json.JSONDecodeError, yaml.YAMLError):
         logger.warning(
             "Unreadable project config at %s; ignoring for provider resolution", config_path
         )
@@ -199,18 +201,42 @@ def set_global_provider(name: str) -> None:
 
 
 def set_project_provider(project_path: Path, name: str) -> None:
-    """Persist the provider choice in <project>/.muscle/config.yaml (atomic, merged)."""
-    from .io_safety import update_json_file_locked
+    """Persist the provider choice in <project>/.muscle/config.yaml (atomic, merged).
+
+    The canonical on-disk format is JSON stored in a ``.yaml`` file (matching
+    ``ProjectManager._write_config``). Legacy genuine-YAML files are accepted on
+    read and migrated to JSON on the first provider write.
+    """
+    from .io_safety import advisory_file_lock, atomic_write_text
 
     _require(name, "set_project_provider")
     config_path = Path(project_path) / ".muscle" / "config.yaml"
     if not config_path.exists():
         raise ProviderError(f"No .muscle/config.yaml at {project_path} — run `muscle init` first.")
 
-    def _update(data: dict[str, object]) -> dict[str, object]:
+    with advisory_file_lock(config_path):
+        text = config_path.read_text(encoding="utf-8")
+        data: Any = {}
+        if text.strip():
+            if text.lstrip().startswith("{"):
+                # JSON-looking content must parse as JSON (no YAML fallback that
+                # could silently mis-parse partial JSON). Fail closed on corruption.
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError as exc:
+                    raise ProviderError(f"Corrupt project config at {config_path}: {exc}") from exc
+            else:
+                try:
+                    data = yaml.safe_load(text)
+                except yaml.YAMLError as exc:
+                    raise ProviderError(f"Corrupt project config at {config_path}: {exc}") from exc
+        if data is None:
+            data = {}
+        if not isinstance(data, dict):
+            raise ProviderError(
+                f"Project config at {config_path} is not a mapping; refusing to overwrite."
+            )
         project = data.setdefault("project", {})
         if isinstance(project, dict):
             project["provider"] = name
-        return data
-
-    update_json_file_locked(config_path, _update, default_factory=dict)
+        atomic_write_text(config_path, json.dumps(data, indent=2))

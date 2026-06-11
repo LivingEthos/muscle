@@ -1,4 +1,5 @@
 """Tests for provider profiles and resolution order."""
+
 import json
 from pathlib import Path
 from unittest import mock
@@ -15,7 +16,10 @@ from muscle.providers import (
 class TestRegistry:
     def test_exactly_four_providers(self):
         assert set(PROVIDERS) == {
-            "minimax-plan", "minimax-api", "claude-subscription", "anthropic-api",
+            "minimax-plan",
+            "minimax-api",
+            "claude-subscription",
+            "anthropic-api",
         }
 
     def test_profiles_shape(self):
@@ -36,8 +40,8 @@ class TestRegistry:
 class TestResolution:
     def test_default_when_nothing_configured(self, tmp_path, monkeypatch):
         monkeypatch.delenv("MUSCLE_PROVIDER", raising=False)
-        with mock.patch("muscle.providers.GLOBAL_CONFIG_PATH", tmp_path / "none.json"):
-            profile, source = resolve_provider(project_path=tmp_path)
+        monkeypatch.setattr("muscle.providers.GLOBAL_CONFIG_PATH", tmp_path / "none.json")
+        profile, source = resolve_provider(project_path=tmp_path)
         assert profile.name == DEFAULT_PROVIDER == "minimax-plan"
         assert source == "default"
 
@@ -46,8 +50,8 @@ class TestResolution:
         _write_project_provider(tmp_path, "minimax-api")
         gcfg = tmp_path / "g.json"
         gcfg.write_text(json.dumps({"provider": "claude-subscription"}))
-        with mock.patch("muscle.providers.GLOBAL_CONFIG_PATH", gcfg):
-            profile, source = resolve_provider(project_path=tmp_path)
+        monkeypatch.setattr("muscle.providers.GLOBAL_CONFIG_PATH", gcfg)
+        profile, source = resolve_provider(project_path=tmp_path)
         assert profile.name == "anthropic-api"
         assert source == "env"
 
@@ -56,8 +60,8 @@ class TestResolution:
         _write_project_provider(tmp_path, "minimax-api")
         gcfg = tmp_path / "g.json"
         gcfg.write_text(json.dumps({"provider": "claude-subscription"}))
-        with mock.patch("muscle.providers.GLOBAL_CONFIG_PATH", gcfg):
-            profile, source = resolve_provider(project_path=tmp_path)
+        monkeypatch.setattr("muscle.providers.GLOBAL_CONFIG_PATH", gcfg)
+        profile, source = resolve_provider(project_path=tmp_path)
         assert profile.name == "minimax-api"
         assert source == "project"
 
@@ -65,8 +69,8 @@ class TestResolution:
         monkeypatch.delenv("MUSCLE_PROVIDER", raising=False)
         gcfg = tmp_path / "g.json"
         gcfg.write_text(json.dumps({"provider": "claude-subscription"}))
-        with mock.patch("muscle.providers.GLOBAL_CONFIG_PATH", gcfg):
-            profile, source = resolve_provider(project_path=tmp_path)
+        monkeypatch.setattr("muscle.providers.GLOBAL_CONFIG_PATH", gcfg)
+        profile, source = resolve_provider(project_path=tmp_path)
         assert profile.name == "claude-subscription"
         assert source == "global"
 
@@ -87,31 +91,31 @@ class TestSetGlobalProvider:
     def test_writes_provider_key(self, tmp_path, monkeypatch):
         monkeypatch.delenv("MUSCLE_PROVIDER", raising=False)
         gcfg = tmp_path / "config.json"
-        with mock.patch("muscle.providers.GLOBAL_CONFIG_PATH", gcfg):
-            from muscle.providers import set_global_provider
+        monkeypatch.setattr("muscle.providers.GLOBAL_CONFIG_PATH", gcfg)
+        from muscle.providers import set_global_provider
 
-            set_global_provider("minimax-api")
+        set_global_provider("minimax-api")
         data = json.loads(gcfg.read_text())
         assert data["provider"] == "minimax-api"
 
-    def test_merges_into_existing_keys(self, tmp_path):
+    def test_merges_into_existing_keys(self, tmp_path, monkeypatch):
         gcfg = tmp_path / "config.json"
         gcfg.write_text(json.dumps({"other_key": "preserved", "provider": "minimax-plan"}))
-        with mock.patch("muscle.providers.GLOBAL_CONFIG_PATH", gcfg):
-            from muscle.providers import set_global_provider
+        monkeypatch.setattr("muscle.providers.GLOBAL_CONFIG_PATH", gcfg)
+        from muscle.providers import set_global_provider
 
-            set_global_provider("anthropic-api")
+        set_global_provider("anthropic-api")
         data = json.loads(gcfg.read_text())
         assert data["provider"] == "anthropic-api"
         assert data["other_key"] == "preserved"
 
-    def test_unknown_name_raises_before_write(self, tmp_path):
+    def test_unknown_name_raises_before_write(self, tmp_path, monkeypatch):
         gcfg = tmp_path / "config.json"
-        with mock.patch("muscle.providers.GLOBAL_CONFIG_PATH", gcfg):
-            from muscle.providers import set_global_provider
+        monkeypatch.setattr("muscle.providers.GLOBAL_CONFIG_PATH", gcfg)
+        from muscle.providers import set_global_provider
 
-            with pytest.raises(ValueError, match="bad-name"):
-                set_global_provider("bad-name")
+        with pytest.raises(ValueError, match="bad-name"):
+            set_global_provider("bad-name")
         assert not gcfg.exists()
 
 
@@ -120,9 +124,7 @@ class TestSetProjectProvider:
         muscle_dir = tmp_path / ".muscle"
         muscle_dir.mkdir()
         config_path = muscle_dir / "config.yaml"
-        config_path.write_text(
-            json.dumps({"project": {"name": "t", "path": str(tmp_path)}})
-        )
+        config_path.write_text(json.dumps({"project": {"name": "t", "path": str(tmp_path)}}))
         from muscle.providers import set_project_provider
 
         set_project_provider(tmp_path, "minimax-api")
@@ -134,6 +136,44 @@ class TestSetProjectProvider:
 
         with pytest.raises(ProviderError, match="muscle init"):
             set_project_provider(tmp_path, "minimax-api")
+
+    def test_yaml_config_migrated_to_json_and_stays_loadable(self, tmp_path, monkeypatch):
+        """A genuine-YAML config must not crash and must remain loadable after write."""
+        from muscle.providers import _project_provider_name, set_project_provider
+        from muscle.tui.project_manager import ProjectManager
+
+        monkeypatch.delenv("MUSCLE_PROVIDER", raising=False)
+        muscle_dir = tmp_path / ".muscle"
+        muscle_dir.mkdir()
+        config_path = muscle_dir / "config.yaml"
+        config_path.write_text(
+            f"project:\n  name: t\n  path: {tmp_path}\n  languages:\n    - python\n"
+        )
+
+        set_project_provider(tmp_path, "minimax-api")
+
+        # Migrated to the canonical JSON-in-.yaml format with merged keys.
+        data = json.loads(config_path.read_text())
+        assert data["project"]["provider"] == "minimax-api"
+        assert data["project"]["name"] == "t"
+        # Still loadable by both readers.
+        assert _project_provider_name(tmp_path) == "minimax-api"
+        loaded = ProjectManager(base_path=tmp_path).load_config(tmp_path)
+        assert loaded is not None
+        assert loaded.provider == "minimax-api"
+
+    def test_corrupt_json_config_fails_closed(self, tmp_path):
+        from muscle.providers import ProviderError, set_project_provider
+
+        muscle_dir = tmp_path / ".muscle"
+        muscle_dir.mkdir()
+        config_path = muscle_dir / "config.yaml"
+        config_path.write_text('{"project": ')
+
+        with pytest.raises(ProviderError, match="Corrupt project config"):
+            set_project_provider(tmp_path, "minimax-api")
+        # Original content untouched.
+        assert config_path.read_text() == '{"project": '
 
 
 class TestProjectConfigRoundTrip:
@@ -189,13 +229,35 @@ class TestYamlProjectConfig:
         monkeypatch.delenv("MUSCLE_PROVIDER", raising=False)
         muscle_dir = tmp_path / ".muscle"
         muscle_dir.mkdir()
-        (muscle_dir / "config.yaml").write_text(
-            "project:\n  name: t\n  provider: minimax-api\n"
-        )
-        with mock.patch("muscle.providers.GLOBAL_CONFIG_PATH", tmp_path / "none.json"):
-            profile, source = resolve_provider(project_path=tmp_path)
+        (muscle_dir / "config.yaml").write_text("project:\n  name: t\n  provider: minimax-api\n")
+        monkeypatch.setattr("muscle.providers.GLOBAL_CONFIG_PATH", tmp_path / "none.json")
+        profile, source = resolve_provider(project_path=tmp_path)
         assert profile.name == "minimax-api"
         assert source == "project"
+
+    def test_corrupt_json_config_warns_and_returns_none(self, tmp_path, monkeypatch, caplog):
+        """JSON-looking but corrupt text must not be silently mis-parsed as YAML."""
+        import logging
+
+        from muscle.providers import _project_provider_name
+
+        monkeypatch.delenv("MUSCLE_PROVIDER", raising=False)
+        muscle_dir = tmp_path / ".muscle"
+        muscle_dir.mkdir()
+        (muscle_dir / "config.yaml").write_text('{"project": ')
+        with caplog.at_level(logging.WARNING, logger="muscle.providers"):
+            assert _project_provider_name(tmp_path) is None
+        assert "Unreadable project config" in caplog.text
+
+    def test_yaml_config_still_parses_via_helper(self, tmp_path):
+        from muscle.providers import _project_provider_name
+
+        muscle_dir = tmp_path / ".muscle"
+        muscle_dir.mkdir()
+        (muscle_dir / "config.yaml").write_text(
+            "project:\n  name: t\n  provider: claude-subscription\n"
+        )
+        assert _project_provider_name(tmp_path) == "claude-subscription"
 
 
 def _write_project_provider(project_path: Path, name: str) -> None:
@@ -248,9 +310,7 @@ class TestFactory:
         from muscle.claude_cli_client import ClaudeCliClient
         from muscle.providers import create_client
 
-        with mock.patch(
-            "muscle.claude_cli_client.shutil.which", return_value="/usr/bin/claude"
-        ):
+        with mock.patch("muscle.claude_cli_client.shutil.which", return_value="/usr/bin/claude"):
             # api_key kwarg is filtered out without error on the CLI path.
             client = create_client(provider="claude-subscription", api_key="eyJminimax")
         assert isinstance(client, ClaudeCliClient)

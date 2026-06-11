@@ -1335,7 +1335,7 @@ class TestLifelineCommand:
         env["MINIMAX_API_KEY"] = "test-key"
 
         class _FakeClient:
-            def __init__(self, api_key: str | None = None):
+            def __init__(self, api_key: str | None = None, **kwargs: object):
                 self.api_key = api_key
 
             def chat(self, messages):
@@ -1783,3 +1783,47 @@ class TestCompletionCommand:
 
         result = runner.invoke(cli, ["completion", "powershell"])
         assert result.exit_code != 0
+
+
+class TestCreateM27ClientProviderAware:
+    """`_create_m27_client` must only require a MiniMax key for MiniMax providers."""
+
+    def test_claude_subscription_needs_no_minimax_key(self, monkeypatch):
+        from muscle.cli._shared import _create_m27_client
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.setenv("MUSCLE_PROVIDER", "claude-subscription")
+
+        fake_client = MagicMock()
+        with patch("muscle.cli._shared.create_client", return_value=fake_client) as factory:
+            assert _create_m27_client() is fake_client
+        factory.assert_called_once()
+
+    def test_minimax_without_key_exits_with_message(self, monkeypatch, capsys):
+        from muscle.cli._shared import _create_m27_client
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.setenv("MUSCLE_PROVIDER", "minimax-plan")
+
+        with pytest.raises(SystemExit) as excinfo:
+            _create_m27_client()
+        assert excinfo.value.code == 1
+        assert "MINIMAX_API_KEY not set" in capsys.readouterr().out
+
+    def test_factory_error_exits_with_message(self, monkeypatch, capsys):
+        from muscle.cli._shared import _create_m27_client
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.setenv("MUSCLE_PROVIDER", "claude-subscription")
+
+        with patch(
+            "muscle.cli._shared.create_client",
+            side_effect=ValueError("claude CLI not found"),
+        ):
+            with pytest.raises(SystemExit) as excinfo:
+                _create_m27_client()
+        assert excinfo.value.code == 1
+        assert "claude CLI not found" in capsys.readouterr().out

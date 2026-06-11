@@ -20,7 +20,7 @@ from ..optimization import (
     WorkflowOptimizer,
 )
 from ..project_memory import ProjectMemory
-from ..providers import create_client
+from ..providers import ProviderError, create_client, resolve_provider
 from ._shared import (
     _get_status_color,
     _parse_since,
@@ -309,14 +309,28 @@ def lifeline(
 
         muscle lifeline --target ./src/auth.py --prompt "suggest improvements to error handling"
     """
+    # Provider-aware credential guard: only MiniMax-backed providers require a
+    # MiniMax key env var. Other providers (claude-subscription, anthropic-api)
+    # enforce their own credentials inside their client constructors.
+    cwd = Path.cwd()
+    try:
+        provider_profile, _provider_source = resolve_provider(cwd)
+    except ValueError as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        sys.exit(1)
+
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("MINIMAX_API_KEY")
-    if not api_key:
+    if provider_profile.kind == "minimax-http" and not api_key:
         console.print("[red]Error: MINIMAX_API_KEY not set[/red]")
         console.print("Set it with: export MINIMAX_API_KEY='your-key'")
         console.print("Get a key at: https://platform.minimax.io")
         sys.exit(1)
 
-    m27_client = create_client(api_key=api_key)
+    try:
+        m27_client = create_client(api_key=api_key, project_path=cwd)
+    except (ValueError, ProviderError) as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        sys.exit(1)
     history_requested = history or bisect_cmd is not None
     history_summary = ""
     history_artifact = ""

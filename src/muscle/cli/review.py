@@ -21,7 +21,7 @@ from ..optimization import (
     WorkflowOptimizer,
 )
 from ..project_memory import ProjectMemory
-from ..providers import create_client
+from ..providers import ProviderError, create_client, resolve_provider
 from ..visual_devflow import VisualDevFlowBridge
 from ._shared import (
     _attach_optimization_runtime,
@@ -424,8 +424,20 @@ def review(
             if data.get("artifact_dir"):
                 console.print(f"[dim]Artifacts: {data['artifact_dir']}[/dim]")
 
+    # Provider-aware credential guard: only MiniMax-backed providers require a
+    # MiniMax key env var. Other providers (claude-subscription, anthropic-api)
+    # enforce their own credentials inside their client constructors.
+    try:
+        provider_profile, _provider_source = resolve_provider(Path(project_path))
+    except ValueError as exc:
+        if json_output:
+            _emit_json({"error": str(exc)})
+        else:
+            console.print(f"[red]Error: {exc}[/red]")
+        sys.exit(1)
+
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("MINIMAX_API_KEY")
-    if not api_key:
+    if provider_profile.kind == "minimax-http" and not api_key:
         if json_output:
             _emit_json(
                 {
@@ -439,7 +451,14 @@ def review(
             console.print("Get a key at: https://platform.minimax.io")
         sys.exit(1)
 
-    m27_client = create_client(api_key=api_key, project_path=Path(project_path))
+    try:
+        m27_client = create_client(api_key=api_key, project_path=Path(project_path))
+    except (ValueError, ProviderError) as exc:
+        if json_output:
+            _emit_json({"error": str(exc)})
+        else:
+            console.print(f"[red]Error: {exc}[/red]")
+        sys.exit(1)
     if no_db:
         pm = None
         optimizer = None

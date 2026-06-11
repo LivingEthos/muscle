@@ -87,6 +87,45 @@ class TestReviewCommand:
         assert "MINIMAX_API_KEY not set" in result.output
         build_foresight.assert_not_called()
 
+    def test_review_claude_subscription_needs_no_minimax_key(self, runner, mock_review_controller):
+        """Non-MiniMax providers must reach the client factory without a MiniMax key."""
+        env = os.environ.copy()
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("MINIMAX_API_KEY", None)
+        env["MUSCLE_PROVIDER"] = "claude-subscription"
+
+        with patch("muscle.cli.review.create_client") as mock_factory:
+            mock_factory.return_value = MagicMock()
+            result = runner.invoke(
+                cli,
+                ["review", "--target", "/tmp/test", "--language", "python"],
+                env=env,
+            )
+
+        assert "MINIMAX_API_KEY not set" not in result.output
+        mock_factory.assert_called_once()
+        assert result.exit_code == 0
+
+    def test_review_factory_error_exits_with_message(self, runner):
+        """Factory/constructor errors surface as a friendly CLI error, not a traceback."""
+        env = os.environ.copy()
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("MINIMAX_API_KEY", None)
+        env["MUSCLE_PROVIDER"] = "claude-subscription"
+
+        with patch(
+            "muscle.cli.review.create_client",
+            side_effect=ValueError("claude CLI not found"),
+        ):
+            result = runner.invoke(
+                cli,
+                ["review", "--target", "/tmp/test", "--language", "python"],
+                env=env,
+            )
+
+        assert result.exit_code == 1
+        assert "claude CLI not found" in result.output
+
     def test_review_with_minimax_api_key(self, runner, mock_review_controller):
         """Test that review command works with MINIMAX_API_KEY set."""
         env = os.environ.copy()

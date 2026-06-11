@@ -52,7 +52,7 @@ from ..project_fingerprint import (
     fingerprint_from_row,
 )
 from ..project_memory import ProjectMemory
-from ..providers import create_client
+from ..providers import ProviderError, create_client, resolve_provider
 from ..strategy_kb import GlobalKnowledgeBase
 from ..system_db import DEFAULT_SYSTEM_DB_PATH, SystemDatabase
 from ..types import BudgetMode, EvalMode, SessionReport, SessionStatus
@@ -150,8 +150,32 @@ def _resolve_review_execution_mode(
 
 
 def _create_m27_client() -> M27Client:
+    """Create the provider-routed execution client for loop commands.
+
+    Provider-aware: only MiniMax-backed providers require a MiniMax key env
+    var. Other providers (claude-subscription, anthropic-api) enforce their
+    own credentials inside their client constructors; their errors are
+    surfaced as a friendly CLI exit instead of a traceback.
+    """
+    cwd = Path.cwd()
+    try:
+        profile, _source = resolve_provider(cwd)
+    except ValueError as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        sys.exit(1)
+
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("MINIMAX_API_KEY")
-    return create_client(api_key=api_key, project_path=Path.cwd())
+    if profile.kind == "minimax-http" and not api_key:
+        console.print("[red]Error: MINIMAX_API_KEY not set[/red]")
+        console.print("Set it with: export MINIMAX_API_KEY='your-key'")
+        console.print("Get a key at: https://platform.minimax.io")
+        sys.exit(1)
+
+    try:
+        return create_client(api_key=api_key, project_path=cwd)
+    except (ValueError, ProviderError) as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        sys.exit(1)
 
 
 def _build_context_budgeter(settings: dict[str, str]) -> ContextBudgeter:

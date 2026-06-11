@@ -45,7 +45,7 @@ def test_lifeline_attaches_history_forensics(tmp_path: Path) -> None:
     env["MINIMAX_API_KEY"] = "test-key"
 
     class _FakeClient:
-        def __init__(self, api_key: str | None = None):
+        def __init__(self, api_key: str | None = None, **kwargs: object):
             self.api_key = api_key
 
         def chat(self, messages):
@@ -76,3 +76,54 @@ def test_lifeline_attaches_history_forensics(tmp_path: Path) -> None:
                 )
 
     assert result.exit_code == 0
+
+
+def test_lifeline_claude_subscription_needs_no_minimax_key(tmp_path: Path) -> None:
+    """Non-MiniMax providers must reach the client factory without a MiniMax key."""
+    runner = CliRunner()
+    target = tmp_path / "test.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    env = os.environ.copy()
+    env.pop("ANTHROPIC_API_KEY", None)
+    env.pop("MINIMAX_API_KEY", None)
+    env["MUSCLE_PROVIDER"] = "claude-subscription"
+
+    class _FakeClient:
+        def __init__(self, api_key: str | None = None, **kwargs: object):
+            self.api_key = api_key
+
+        def chat(self, messages):
+            return "ok", MagicMock(total=7)
+
+    with patch("muscle.cli.cost.create_client", _FakeClient):
+        result = runner.invoke(
+            lifeline,
+            ["--target", str(target), "--prompt", "investigate this"],
+            env=env,
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert "MINIMAX_API_KEY not set" not in result.output
+
+
+def test_lifeline_minimax_without_key_still_exits(tmp_path: Path) -> None:
+    """The MiniMax-backed default provider still requires a key with the same message."""
+    runner = CliRunner()
+    target = tmp_path / "test.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    env = os.environ.copy()
+    env.pop("ANTHROPIC_API_KEY", None)
+    env.pop("MINIMAX_API_KEY", None)
+    env.pop("MUSCLE_PROVIDER", None)
+
+    # Isolate cwd so the developer's own project config cannot pick a provider.
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        result = runner.invoke(
+            lifeline,
+            ["--target", str(target), "--prompt", "investigate this"],
+            env=env,
+        )
+
+    assert result.exit_code == 1
+    assert "MINIMAX_API_KEY not set" in result.output
