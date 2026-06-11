@@ -1555,8 +1555,7 @@ class TestCachePlan:
 
         assert result == "ok"
         assert mock_session.post.called
-        _, kwargs = mock_session.post.call_args
-        posted = kwargs.get("json") or mock_session.post.call_args[0][1] if not kwargs.get("json") else kwargs["json"]
+        posted = mock_session.post.call_args.kwargs["json"]
         # cache_control must be absent everywhere in the payload
         assert "cache_control" not in json_mod.dumps(posted)
         # temperature must be forwarded as-is
@@ -1628,11 +1627,11 @@ class TestCachePlan:
                 payload["_hook_marker"] = 1
                 return payload
 
-        # Wire the subclass instance to use the same mocked session / settings.
-        hooked = HookedClient.__new__(HookedClient)
-        # Copy all instance attributes from the fixture client.
-        hooked.__dict__.update(client.__dict__)
-        # The subclass overrides _prepare_payload; rest of the client is inherited.
+        # Construct HookedClient normally; the fixture's patches on M27Client._session,
+        # _rate_limiter and _concurrency_limiter are inherited by the subclass so no
+        # additional patching is needed here.
+        with patch.object(M27Client, "_session", mock_session):
+            hooked = HookedClient(api_key="test-key")
 
         plan = CachePlan(shared_prefix_chars=20, expected_reuse=3)
         hooked.chat(

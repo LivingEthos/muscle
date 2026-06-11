@@ -30,6 +30,7 @@ from urllib3.util.retry import Retry
 
 if TYPE_CHECKING:
     from .optimization.types import TelemetryContext
+    from .providers import ProviderProfile
 
 logger = logging.getLogger(__name__)
 
@@ -322,9 +323,8 @@ class M27Client:
     # Single consolidated init lock covers session + limiter configuration to
     # avoid lock-ordering deadlocks (fix: M27-08).
     _init_lock = threading.RLock()
-    # Set by muscle.providers.create_client; None = legacy/unrouted construction.
-    # Holds a muscle.providers.ProviderProfile at runtime; Any avoids circular import.
-    provider_profile: Any | None = None
+    # Set by the provider factory (muscle.providers.create_client, added with the provider system); None = legacy/unrouted construction (MiniMax default behavior).
+    provider_profile: ProviderProfile | None = None
 
     @classmethod
     def _get_session(cls) -> requests.Session:
