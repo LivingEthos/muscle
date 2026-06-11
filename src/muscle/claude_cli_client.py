@@ -56,8 +56,23 @@ _EFFORT_FOR_THINKING: dict[str | None, str] = {
 }
 
 # Lowercased substrings that classify a CLI failure (stderr/stdout/result text).
-_BILLING_MARKERS = ("usage limit", "credit", "out of credits", "extra usage")
-_AUTH_MARKERS = ("log in", "login", "logged in", "authenticate", "api key")
+# Fix 2: tightened to avoid false positives — bare "credit" over-matched proxy
+# errors; generic "api key"/"login" matched unrelated messages.  Billing is
+# checked before auth so the more specific class is raised first.
+_BILLING_MARKERS = (
+    "usage limit",
+    "out of credits",
+    "extra usage",
+    "agent sdk credit",
+    "monthly credit",
+)
+_AUTH_MARKERS = (
+    "not logged in",
+    "please log in",
+    "log in to",
+    "authenticate",
+    "not authenticated",
+)
 
 # Headless turns can run long (the CLI does its own multi-step reasoning).
 DEFAULT_CLI_TIMEOUT = 600
@@ -140,7 +155,9 @@ class ClaudeCliClient(M27Client):
             "--no-session-persistence",
         ]
         if system:
-            cmd.extend(["--system-prompt", system])
+            # Fix 1: pass as a single =‑joined token so a value starting with
+            # "-" is never mis‑parsed as a CLI flag by the option parser.
+            cmd.append(f"--system-prompt={system}")
 
         try:
             # COMPLIANCE: no env= kwarg — the environment passes through
@@ -213,7 +230,11 @@ class ClaudeCliClient(M27Client):
         thinking: str | None = None,
     ) -> Iterator[tuple[str, TokenUsage | None]]:
         """Parity shim: the CLI path has no token stream, so yield the single
-        final (text, usage) from one blocking chat() call."""
+        final (text, usage) from one blocking chat() call.
+
+        Fix 3: ``timeout`` is accepted for interface parity only; the
+        instance-level timeout always applies on the CLI path.
+        """
         text, usage = self.chat(
             messages,
             system=system,
@@ -244,6 +265,12 @@ class ClaudeCliClient(M27Client):
         Same invariant as the HTTP path: input_tokens is normalized to the
         FULL prompt size (fresh + cached) and cached_input_tokens is the
         cached subset, so cached_input_tokens <= input_tokens always holds.
+
+        Fix 4: the claude CLI's --output-format json usage block follows the
+        Anthropic wire shape (input_tokens = fresh only; cache tokens are
+        disjoint fields) — verified against claude CLI v2.1.163; the live
+        smoke validation re-checks this.  If the CLI ever emits an
+        OpenAI-shaped inclusive input_tokens, this fold would double-count.
         """
         if not isinstance(usage_payload, dict):
             return TokenUsage()
