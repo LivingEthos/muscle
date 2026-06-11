@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from ..m27_client import M27Client
-from ..providers import create_client
+from ..providers import ProviderError, create_client
 from .thinking_policy import thinking_for
 
 logger = logging.getLogger(__name__)
@@ -104,7 +104,10 @@ class SkillGenerator:
         if self._m27_client is None:
             try:
                 self._m27_client = create_client(project_path=self.project_path)
-            except ValueError:
+            except (ValueError, ProviderError):
+                # Skill generation is best-effort: a missing key (ValueError) or an
+                # unavailable provider (e.g. claude CLI not installed) skips it
+                # rather than aborting the host review run.
                 logger.debug("M27 client not available, skipping skill generation")
                 return None
 
