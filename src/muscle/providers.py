@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 
+import yaml
+
 logger = logging.getLogger("muscle.providers")
 
 DEFAULT_PROVIDER = "minimax-plan"
@@ -95,8 +97,12 @@ def _project_provider_name(project_path: Path | None) -> str | None:
     if not config_path.exists():
         return None
     try:
-        data = json.loads(config_path.read_text())
-    except (OSError, json.JSONDecodeError):
+        text = config_path.read_text(encoding="utf-8")
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = yaml.safe_load(text) or {}
+    except (OSError, yaml.YAMLError):
         logger.warning(
             "Unreadable project config at %s; ignoring for provider resolution", config_path
         )

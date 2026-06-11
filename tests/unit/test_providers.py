@@ -175,6 +175,29 @@ class TestProjectConfigRoundTrip:
         assert loaded.provider is None
 
 
+class TestProviderProfileFrozen:
+    def test_profile_is_frozen(self):
+        from dataclasses import FrozenInstanceError
+
+        with pytest.raises(FrozenInstanceError):
+            PROVIDERS["minimax-plan"].name = "tampered"  # type: ignore[misc]
+
+
+class TestYamlProjectConfig:
+    def test_yaml_format_config_resolves_provider(self, tmp_path, monkeypatch):
+        """A genuine-YAML config (not JSON) must resolve the provider correctly."""
+        monkeypatch.delenv("MUSCLE_PROVIDER", raising=False)
+        muscle_dir = tmp_path / ".muscle"
+        muscle_dir.mkdir()
+        (muscle_dir / "config.yaml").write_text(
+            "project:\n  name: t\n  provider: minimax-api\n"
+        )
+        with mock.patch("muscle.providers.GLOBAL_CONFIG_PATH", tmp_path / "none.json"):
+            profile, source = resolve_provider(project_path=tmp_path)
+        assert profile.name == "minimax-api"
+        assert source == "project"
+
+
 def _write_project_provider(project_path: Path, name: str) -> None:
     muscle_dir = project_path / ".muscle"
     muscle_dir.mkdir(exist_ok=True)
