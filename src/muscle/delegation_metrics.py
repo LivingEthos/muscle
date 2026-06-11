@@ -15,8 +15,31 @@ from .cost_optimizer import (
     estimate_host_request_cost,
     estimate_request_cost,
 )
+from .providers import PROVIDERS
 
 logger = logging.getLogger(__name__)
+
+# Legacy delegation events were written before per-event provider stamping, so
+# their metadata carries no "provider" key. MUSCLE's historical default execution
+# backend is the MiniMax subscription token-plan, so those events are attributed
+# to "minimax-plan" (plan quota, $0 marginal) rather than dropped.
+_LEGACY_PROVIDER = "minimax-plan"
+_LEGACY_EXECUTION_MODEL = "MiniMax-M3"
+_LEGACY_BILLING = "plan-quota"
+
+# Billing modes that consume quota/credit rather than billed dollars: their
+# marginal spend is $0, so usd_cents is reported as None (tokens consumed only).
+_NON_DOLLAR_BILLING = frozenset({"plan-quota", "agent-sdk-credit"})
+
+
+def _billing_label_for(provider: str, billing: str) -> str:
+    """Human-readable billing label, preferring the canonical provider registry."""
+    profile = PROVIDERS.get(provider)
+    if profile is not None:
+        return profile.billing_label
+    # Provider not in the registry (e.g. renamed/removed): fall back to the raw
+    # billing string so the report still reads sensibly.
+    return billing or "unknown billing"
 
 
 def resolve_m27_token_split(
@@ -39,6 +62,24 @@ def resolve_m27_token_split(
     if remainder > 0:
         tokens_in += remainder
     return tokens_in, tokens_out
+
+
+def provider_metadata(client: object) -> dict[str, object]:
+    """Extract provider-stamping metadata from an execution client.
+
+    Reads the client's ``provider_profile`` (set by ``providers.create_client``).
+    When absent (legacy/test clients constructed directly), returns an empty dict
+    so the keys are OMITTED — the report then defaults such events to the historic
+    minimax-plan backend rather than mislabeling them.
+    """
+    profile = getattr(client, "provider_profile", None)
+    if profile is None:
+        return {}
+    return {
+        "provider": profile.name,
+        "execution_model": profile.model,
+        "billing": profile.billing,
+    }
 
 
 def estimate_m27_cents(model: str | None, tokens_in: int, tokens_out: int) -> int:
@@ -84,6 +125,24 @@ class DelegationEvent:
 
 
 @dataclass
+class ProviderUsage:
+    """Per-provider rollup for the delegation report's "By provider" section.
+
+    ``usd_cents`` is ``None`` for quota/credit billing modes (plan-quota,
+    agent-sdk-credit): those consume a subscription allowance, not billed dollars,
+    so reporting "$0.00" would falsely imply a measured spend. For api-dollars
+    billing it holds the estimated marginal spend on the *execution* model.
+    """
+
+    events: int = 0
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cached_tokens_in: int = 0
+    usd_cents: int | None = None
+    billing_label: str = ""
+
+
+@dataclass
 class DelegationReport:
     since: datetime
     total_events: int
@@ -94,6 +153,7 @@ class DelegationReport:
     estimated_host_tokens_avoided: int = 0
     m27_usd_cents: int = 0
     route_breakdown: dict[str, dict[str, float | int]] = field(default_factory=dict)
+    provider_breakdown: dict[str, ProviderUsage] = field(default_factory=dict)
     host_model: str = DEFAULT_HOST_MODEL
     estimated_host_usd_avoided: float = 0.0
     estimated_net_savings_usd: float = 0.0
@@ -181,6 +241,14 @@ class DelegationMetrics:
         if not rows:
             return rpt
 
+        # api-dollars spend is accumulated as floating dollars per provider and
+        # only rounded to whole cents once at the end, so per-event rounding does
+        # not skew the total. quota/credit providers stay at usd None.
+        provider_usd: dict[str, float] = {}
+        # Track which providers ever carried a dollar-billed event so quota-only
+        # providers report None rather than a fabricated $0.00.
+        provider_has_dollars: set[str] = set()
+
         for r in rows:
             tier = r[0] or "unknown"
             rpt.m27_tokens_by_tier[tier] = rpt.m27_tokens_by_tier.get(tier, 0) + r[1] + r[2]
@@ -215,6 +283,26 @@ class DelegationMetrics:
                 route_bucket["avg_route_confidence"]
             ) + (_as_float(metadata.get("route_confidence", 0.0)))
 
+            # Provider rollup. Events written before provider stamping carry no
+            # "provider" key and are attributed to the historical default backend.
+            provider = str(metadata.get("provider") or _LEGACY_PROVIDER)
+            execution_model = str(metadata.get("execution_model") or _LEGACY_EXECUTION_MODEL)
+            billing = str(metadata.get("billing") or _LEGACY_BILLING)
+            tokens_in, tokens_out = r[1], r[2]
+            usage = rpt.provider_breakdown.setdefault(
+                provider,
+                ProviderUsage(billing_label=_billing_label_for(provider, billing)),
+            )
+            usage.events += 1
+            usage.tokens_in += tokens_in
+            usage.tokens_out += tokens_out
+            if billing not in _NON_DOLLAR_BILLING:
+                # api-dollars: real marginal spend on the execution model.
+                provider_has_dollars.add(provider)
+                provider_usd[provider] = provider_usd.get(provider, 0.0) + estimate_request_cost(
+                    execution_model, tokens_in, tokens_out
+                )
+
         total = rpt.total_events
         # cache_hit_rate is the *fraction of events that saw at least one cache
         # hit* — a true rate in [0, 1]. r[4] (cache_hits) is an unbounded per-event
@@ -231,6 +319,12 @@ class DelegationMetrics:
                 3,
             )
 
+        # Finalize per-provider dollars: round accumulated api-dollar spend to
+        # whole cents; quota/credit providers keep usd_cents=None.
+        for provider, usage in rpt.provider_breakdown.items():
+            if provider in provider_has_dollars:
+                usage.usd_cents = round(provider_usd.get(provider, 0.0) * 100)
+
         avg = HOST_TOKEN_ESTIMATES.get(host_model, 8000)
         rpt.estimated_host_tokens_avoided = total * avg
         avoided_output = int(rpt.estimated_host_tokens_avoided * HOST_AVOIDED_OUTPUT_SHARE)
@@ -238,7 +332,23 @@ class DelegationMetrics:
         rpt.estimated_host_usd_avoided = estimate_host_request_cost(
             host_model, avoided_input, avoided_output
         )
-        rpt.estimated_net_savings_usd = rpt.estimated_host_usd_avoided - rpt.m27_usd_cents / 100
+        # Net savings subtracts MUSCLE's own recorded spend (m27_usd_cents — the
+        # M3/MiniMax execution cost the runtime already accounted for) AND any real
+        # *host-model* (Claude) api-dollar execution cost. Only host-priced
+        # execution is added here: MiniMax api-dollar spend is already captured by
+        # m27_usd_cents, so adding provider_usd for MiniMax providers too would
+        # double-subtract. plan-quota and agent-sdk-credit contribute $0 — they
+        # consume quota/credit, not billed dollars. Without the host term, the
+        # report would claim dollar savings that ignore a Claude execution
+        # backend's real cost.
+        api_dollar_execution_usd = 0.0
+        for provider, usd in provider_usd.items():
+            profile = PROVIDERS.get(provider)
+            if profile is not None and profile.model in HOST_MODEL_PRICING:
+                api_dollar_execution_usd += usd
+        rpt.estimated_net_savings_usd = (
+            rpt.estimated_host_usd_avoided - rpt.m27_usd_cents / 100 - api_dollar_execution_usd
+        )
         return rpt
 
     def format_text(self, rpt: DelegationReport) -> str:
@@ -266,6 +376,22 @@ class DelegationMetrics:
                 "  (both estimated, NOT measured)",
             ]
         )
+        if rpt.provider_breakdown:
+            lines.extend(["", "By provider:"])
+            for provider_name, usage in sorted(rpt.provider_breakdown.items()):
+                tokens_total = usage.tokens_in + usage.tokens_out
+                if usage.usd_cents is None:
+                    # Quota/credit billing: report tokens consumed, never a
+                    # fabricated $0.00 that would read as measured spend.
+                    lines.append(
+                        f"  {provider_name:20s} {usage.billing_label}: "
+                        f"{tokens_total:,} tokens consumed ($0 marginal)"
+                    )
+                else:
+                    lines.append(
+                        f"  {provider_name:20s} {usage.billing_label}: "
+                        f"{tokens_total:,} tokens, ${usage.usd_cents / 100:.2f} (estimated)"
+                    )
         if rpt.route_breakdown:
             lines.extend(["", "Route outcomes:"])
             for route_name, route_stats in sorted(rpt.route_breakdown.items()):
@@ -294,6 +420,17 @@ class DelegationMetrics:
                 "estimated_host_usd_avoided": round(rpt.estimated_host_usd_avoided, 4),
                 "estimated_net_savings_usd": round(rpt.estimated_net_savings_usd, 4),
                 "route_breakdown": rpt.route_breakdown,
+                "provider_breakdown": {
+                    provider_name: {
+                        "events": usage.events,
+                        "tokens_in": usage.tokens_in,
+                        "tokens_out": usage.tokens_out,
+                        "cached_tokens_in": usage.cached_tokens_in,
+                        "usd_cents": usage.usd_cents,
+                        "billing_label": usage.billing_label,
+                    }
+                    for provider_name, usage in rpt.provider_breakdown.items()
+                },
             },
             indent=2,
         )

@@ -89,10 +89,15 @@ def estimate_request_cost(
 ) -> float:
     """Estimate the USD cost of one request under the model's pricing.
 
-    For MiniMax-M3 this applies the input-length tier (>512K input doubles both
-    input and output rates) and bills any cached-prefix input tokens at the
-    discounted cache-hit rate. Non-M3 models use a flat fallback rate.
+    Host models (Fable 5, Opus, Codex — anything in ``HOST_MODEL_PRICING``) are
+    routed to ``estimate_host_request_cost`` so a Claude *execution* provider is
+    priced with its real host rates. For MiniMax-M3 this applies the input-length
+    tier (>512K input doubles both input and output rates) and bills any
+    cached-prefix input tokens at the discounted cache-hit rate. Other non-M3
+    models use a flat fallback rate.
     """
+    if model in HOST_MODEL_PRICING:
+        return estimate_host_request_cost(model, input_tokens, output_tokens, cached_input_tokens)
     input_tokens = max(0, input_tokens)
     output_tokens = max(0, output_tokens)
     if "m3" not in (model or "").lower():

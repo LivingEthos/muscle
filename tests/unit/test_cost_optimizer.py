@@ -57,6 +57,32 @@ class TestM3Pricing:
         assert result["pricing_tier"] == "standard"
         assert result["estimated_cost_usd"] >= 0
 
+    def test_m3_unchanged_when_host_routing_added(self):
+        # Regression pin: routing host models through estimate_request_cost must
+        # leave the M3 path byte-identical. These exact figures must not drift.
+        assert estimate_request_cost("MiniMax-M3", 100_000, 100_000) == pytest.approx(
+            100_000 * 0.60e-6 + 100_000 * 2.40e-6
+        )
+        assert estimate_request_cost(
+            "MiniMax-M3", 10_000, 0, cached_input_tokens=10_000
+        ) == pytest.approx(10_000 * 0.12e-6)
+
+
+class TestHostModelRouting:
+    def test_host_model_routed_to_host_pricing(self):
+        # A host model passed to estimate_request_cost must price via the host
+        # table: fresh*5/M + cached*0.5/M + out*25/M for claude-opus-4-8.
+        cost = estimate_request_cost("claude-opus-4-8", 100_000, 20_000, cached_input_tokens=40_000)
+        fresh = 60_000  # 100_000 - 40_000 cached
+        expected = fresh * 5.00e-6 + 40_000 * 0.50e-6 + 20_000 * 25.00e-6
+        assert cost == pytest.approx(expected)
+
+    def test_host_routing_matches_estimate_host_request_cost(self):
+        # The host branch must defer to estimate_host_request_cost exactly.
+        assert estimate_request_cost("claude-fable-5", 1_000_000, 1_000_000) == pytest.approx(
+            estimate_host_request_cost("claude-fable-5", 1_000_000, 1_000_000)
+        )
+
 
 class TestHostPricing:
     def test_fable5_rates(self):

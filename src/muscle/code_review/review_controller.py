@@ -34,6 +34,7 @@ from ..delegation_metrics import (
     DelegationEvent,
     DelegationMetrics,
     estimate_m27_cents,
+    provider_metadata,
     resolve_m27_token_split,
 )
 from ..escalation import EscalationPolicy, EscalationRecord, EscalationRecorder
@@ -315,6 +316,9 @@ class ReviewController:
                             + (256 if route_cache_hit else 0)
                         ),
                         "benchmark_run": self.benchmark_run,
+                        # Provider stamping: keys omitted when the client carries
+                        # no provider_profile so the report defaults to minimax-plan.
+                        **provider_metadata(self.m27_client),
                     },
                 )
             )

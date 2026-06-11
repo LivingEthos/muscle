@@ -28,6 +28,7 @@ from .delegation_metrics import (
     DelegationEvent,
     DelegationMetrics,
     estimate_m27_cents,
+    provider_metadata,
     resolve_m27_token_split,
 )
 from .escalation import EscalationRecord, EscalationRecorder
@@ -221,6 +222,7 @@ class LoopController:
                             == Recommendation.ESCALATE_TO_HOST.value
                         )
                     ),
+                    metadata=provider_metadata(self._m27_client),
                 )
             )
         except Exception as exc:

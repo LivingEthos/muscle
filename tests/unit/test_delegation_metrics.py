@@ -337,6 +337,221 @@ class TestCacheHitRateBounded:
         assert rpt.cache_hit_rate == pytest.approx(0.5)
 
 
+def _insert_event_with_metadata(
+    db_path: Path,
+    *,
+    session_id: str,
+    metadata: dict | None,
+    m27_tokens_in: int = 1000,
+    m27_tokens_out: int = 500,
+    m27_usd_cents: int = 5,
+    created_at: str | None = None,
+) -> None:
+    """Insert an event with arbitrary metadata_json (for provider tests)."""
+    full_db = db_path / ".muscle" / "project_memory.db"
+    with sqlite3.connect(str(full_db)) as conn:
+        conn.execute(
+            """INSERT INTO delegation_events
+               (session_id, created_at, task_tier, entry_point,
+               m27_tokens_in, m27_tokens_out, m27_usd_cents,
+               verifications_run, verifications_failed,
+               escalations_emitted, cache_hits, cache_tokens_saved,
+                    pack_id, pack_reused, metadata_json)
+               VALUES (?, ?, NULL, 'review:review', ?, ?, ?, 0, 0, 0, 0, 0, NULL, 0, ?)""",
+            (
+                session_id,
+                created_at or datetime.now(timezone.utc).isoformat(),
+                m27_tokens_in,
+                m27_tokens_out,
+                m27_usd_cents,
+                json.dumps(metadata) if metadata is not None else "{}",
+            ),
+        )
+
+
+class TestProviderBreakdown:
+    def test_groups_events_by_provider(self, project_db: Path) -> None:
+        _insert_event_with_metadata(
+            project_db,
+            session_id="m1",
+            metadata={
+                "provider": "minimax-plan",
+                "execution_model": "MiniMax-M3",
+                "billing": "plan-quota",
+            },
+            m27_tokens_in=1000,
+            m27_tokens_out=400,
+        )
+        _insert_event_with_metadata(
+            project_db,
+            session_id="a1",
+            metadata={
+                "provider": "anthropic-api",
+                "execution_model": "claude-opus-4-8",
+                "billing": "api-dollars",
+            },
+            m27_tokens_in=2000,
+            m27_tokens_out=600,
+        )
+
+        metrics = DelegationMetrics(project_db)
+        rpt = metrics.report(since=timedelta(days=1))
+
+        assert set(rpt.provider_breakdown) == {"minimax-plan", "anthropic-api"}
+        mp = rpt.provider_breakdown["minimax-plan"]
+        assert mp.events == 1
+        assert mp.tokens_in == 1000
+        assert mp.tokens_out == 400
+        ap = rpt.provider_breakdown["anthropic-api"]
+        assert ap.events == 1
+        assert ap.tokens_in == 2000
+        assert ap.tokens_out == 600
+
+    def test_legacy_event_without_provider_buckets_as_minimax_plan(self, project_db: Path) -> None:
+        # An event written before provider stamping (metadata '{}') must bucket
+        # under minimax-plan rather than being dropped.
+        _insert_event(project_db, session_id="legacy", m27_tokens_in=300, m27_tokens_out=100)
+
+        metrics = DelegationMetrics(project_db)
+        rpt = metrics.report(since=timedelta(days=1))
+
+        assert "minimax-plan" in rpt.provider_breakdown
+        bucket = rpt.provider_breakdown["minimax-plan"]
+        assert bucket.events == 1
+        assert bucket.usd_cents is None  # plan quota: no marginal dollars
+
+    def test_plan_quota_provider_has_no_dollar_figure(self, project_db: Path) -> None:
+        _insert_event_with_metadata(
+            project_db,
+            session_id="m1",
+            metadata={
+                "provider": "minimax-plan",
+                "execution_model": "MiniMax-M3",
+                "billing": "plan-quota",
+            },
+        )
+
+        metrics = DelegationMetrics(project_db)
+        rpt = metrics.report(since=timedelta(days=1))
+        bucket = rpt.provider_breakdown["minimax-plan"]
+        assert bucket.usd_cents is None
+        assert "plan quota" in bucket.billing_label.lower()
+
+        text = metrics.format_text(rpt)
+        assert "By provider" in text
+        assert "tokens consumed" in text
+        # A quota provider must never print a fabricated spend figure.
+        assert "minimax-plan" in text
+
+    def test_agent_sdk_credit_label_for_claude_subscription(self, project_db: Path) -> None:
+        _insert_event_with_metadata(
+            project_db,
+            session_id="cs1",
+            metadata={
+                "provider": "claude-subscription",
+                "execution_model": "claude-opus-4-8",
+                "billing": "agent-sdk-credit",
+            },
+        )
+
+        metrics = DelegationMetrics(project_db)
+        rpt = metrics.report(since=timedelta(days=1))
+        bucket = rpt.provider_breakdown["claude-subscription"]
+        assert bucket.usd_cents is None
+        assert "agent sdk credit" in bucket.billing_label.lower()
+
+    def test_api_dollars_provider_computes_usd_from_opus_pricing(self, project_db: Path) -> None:
+        _insert_event_with_metadata(
+            project_db,
+            session_id="a1",
+            metadata={
+                "provider": "anthropic-api",
+                "execution_model": "claude-opus-4-8",
+                "billing": "api-dollars",
+            },
+            m27_tokens_in=100_000,
+            m27_tokens_out=20_000,
+        )
+
+        metrics = DelegationMetrics(project_db)
+        rpt = metrics.report(since=timedelta(days=1))
+        bucket = rpt.provider_breakdown["anthropic-api"]
+        expected_usd = estimate_request_cost("claude-opus-4-8", 100_000, 20_000)
+        assert bucket.usd_cents == round(expected_usd * 100)
+        assert "anthropic api dollars" in bucket.billing_label.lower()
+
+    def test_json_includes_provider_breakdown(self, project_db: Path) -> None:
+        _insert_event_with_metadata(
+            project_db,
+            session_id="a1",
+            metadata={
+                "provider": "anthropic-api",
+                "execution_model": "claude-opus-4-8",
+                "billing": "api-dollars",
+            },
+            m27_tokens_in=100_000,
+            m27_tokens_out=20_000,
+        )
+
+        metrics = DelegationMetrics(project_db)
+        rpt = metrics.report(since=timedelta(days=1))
+        parsed = json.loads(metrics.format_json(rpt))
+        assert "provider_breakdown" in parsed
+        assert "anthropic-api" in parsed["provider_breakdown"]
+        entry = parsed["provider_breakdown"]["anthropic-api"]
+        assert entry["events"] == 1
+        assert entry["usd_cents"] == round(
+            estimate_request_cost("claude-opus-4-8", 100_000, 20_000) * 100
+        )
+
+    def test_net_savings_subtracts_claude_execution_cost(self, project_db: Path) -> None:
+        # A Claude (anthropic-api) execution event must shrink net savings by the
+        # real host execution dollars, beyond MUSCLE's own recorded m27 spend.
+        _insert_event_with_metadata(
+            project_db,
+            session_id="a1",
+            metadata={
+                "provider": "anthropic-api",
+                "execution_model": "claude-opus-4-8",
+                "billing": "api-dollars",
+            },
+            m27_tokens_in=100_000,
+            m27_tokens_out=20_000,
+            m27_usd_cents=50,
+        )
+
+        metrics = DelegationMetrics(project_db)
+        rpt = metrics.report(since=timedelta(days=1))
+
+        host_exec = estimate_request_cost("claude-opus-4-8", 100_000, 20_000)
+        expected = rpt.estimated_host_usd_avoided - 0.50 - host_exec
+        assert rpt.estimated_net_savings_usd == pytest.approx(expected)
+
+    def test_minimax_api_execution_not_double_subtracted(self, project_db: Path) -> None:
+        # MiniMax api-dollar spend is already represented by m27_usd_cents, so it
+        # must NOT be subtracted a second time via provider_usd. Net savings here
+        # must match the legacy formula (gross avoided minus m27 spend only).
+        _insert_event_with_metadata(
+            project_db,
+            session_id="ma1",
+            metadata={
+                "provider": "minimax-api",
+                "execution_model": "MiniMax-M3",
+                "billing": "api-dollars",
+            },
+            m27_tokens_in=10_000,
+            m27_tokens_out=2_000,
+            m27_usd_cents=40,
+        )
+
+        metrics = DelegationMetrics(project_db)
+        rpt = metrics.report(since=timedelta(days=1))
+
+        assert rpt.estimated_net_savings_usd == pytest.approx(rpt.estimated_host_usd_avoided - 0.40)
+        # The provider bucket still reports its own estimated MiniMax dollars.
+        assert rpt.provider_breakdown["minimax-api"].usd_cents is not None
+
+
 class TestMissingDb:
     def test_graceful_when_no_db(self, tmp_path: Path) -> None:
         """DelegationMetrics should not raise when no DB exists."""
