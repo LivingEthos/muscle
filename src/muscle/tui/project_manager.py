@@ -53,6 +53,7 @@ class ProjectConfig:
     canonical_model_key: str | None = None
     model_identity_source: str = "unresolved"
     model_manual_override: str | None = None
+    provider: str | None = None
 
 
 class ProjectManager:
@@ -154,6 +155,7 @@ class ProjectManager:
                 "canonical_model_key": config.canonical_model_key,
                 "model_identity_source": config.model_identity_source,
                 "model_manual_override": config.model_manual_override,
+                "provider": config.provider,
             }
         }
         config_path.write_text(json.dumps(config_data, indent=2), encoding="utf-8")
@@ -265,6 +267,7 @@ class ProjectManager:
             canonical_model_key=data.get("canonical_model_key") or None,
             model_identity_source=data.get("model_identity_source", "unresolved"),
             model_manual_override=data.get("model_manual_override") or None,
+            provider=data.get("provider") or None,
         )
 
     def load_nearest_config(self, start_path: Path | None = None) -> ProjectConfig | None:
