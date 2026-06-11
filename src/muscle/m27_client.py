@@ -659,6 +659,35 @@ class M27Client:
         """
         return payload
 
+    @staticmethod
+    def _validate_messages(messages: list[dict]) -> bool:
+        """Validate chat message structure (shared by base chat() and subclasses).
+
+        Type errors are programming bugs, not recoverable conditions: a plain
+        string passed where a list is expected used to log and return an empty
+        ("", TokenUsage()) success, silently masking the caller's mistake. Raise
+        so the bug surfaces at the call site. (Check type before truthiness so a
+        non-list — e.g. "" — raises rather than being treated as "empty".)
+
+        Returns False for an empty list (callers log already happened here and
+        should return the empty-success shape), True when messages are usable.
+        """
+        if not isinstance(messages, list):
+            raise TypeError(f"messages must be a list, got {type(messages).__name__}")
+
+        if not messages:
+            logger.error("Empty messages list provided to chat()")
+            return False
+
+        for i, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                raise TypeError(f"messages[{i}] must be a dict, got {type(msg).__name__}")
+            if "role" not in msg or "content" not in msg:
+                raise ValueError(f"messages[{i}] missing 'role' or 'content'")
+            if not isinstance(msg.get("content", ""), str):
+                raise TypeError(f"messages[{i}]['content'] must be a string")
+        return True
+
     def chat(
         self,
         messages: list[dict],
@@ -672,25 +701,8 @@ class M27Client:
         _metadata_sink: dict[str, Any] | None = None,
         cache_plan: CachePlan | None = None,
     ) -> tuple[str, TokenUsage]:
-        # Type errors are programming bugs, not recoverable conditions: a plain
-        # string passed where a list is expected used to log and return an empty
-        # ("", TokenUsage()) success, silently masking the caller's mistake. Raise
-        # so the bug surfaces at the call site. (Check type before truthiness so a
-        # non-list — e.g. "" — raises rather than being treated as "empty".)
-        if not isinstance(messages, list):
-            raise TypeError(f"messages must be a list, got {type(messages).__name__}")
-
-        if not messages:
-            logger.error("Empty messages list provided to chat()")
+        if not self._validate_messages(messages):
             return "", TokenUsage()
-
-        for i, msg in enumerate(messages):
-            if not isinstance(msg, dict):
-                raise TypeError(f"messages[{i}] must be a dict, got {type(msg).__name__}")
-            if "role" not in msg or "content" not in msg:
-                raise ValueError(f"messages[{i}] missing 'role' or 'content'")
-            if not isinstance(msg.get("content", ""), str):
-                raise TypeError(f"messages[{i}]['content'] must be a string")
 
         has_system_in_messages = any(msg.get("role") == "system" for msg in messages)
         effective_system = (
