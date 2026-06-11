@@ -25,6 +25,7 @@ from ..backup_manager import BackupManager
 from ..io_safety import advisory_file_lock, atomic_write_text
 from ..m27_client import M27Client
 from ..project_memory import ProjectMemory
+from ..providers import create_client
 from .thinking_policy import thinking_for
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,7 @@ class AgentGenerator:
         self.project_path = Path(project_path)
         self.agents_dir = self.project_path / ".muscle" / "agents"
         self.agents_dir.mkdir(parents=True, exist_ok=True)
-        self.m27 = m27_client or M27Client()
+        self.m27 = m27_client or create_client(project_path=self.project_path)
         self._pm = project_memory
         self._generated_agents: list[str] = []
         self.max_agents = MAX_ACTIVE_AGENTS

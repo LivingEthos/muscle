@@ -14,7 +14,7 @@ from pathlib import Path
 import click
 from rich.table import Table
 
-from ..m27_client import M27Client
+from ..providers import create_client
 from ._shared import (
     _build_context_budgeter,
     _emit_json,
@@ -322,7 +322,7 @@ def route_cmd(task: str, scope: Path | None, as_json: bool) -> None:
     fallback_reason: str | None = None
     if api_key:
         try:
-            client = M27Client(api_key=api_key)
+            client = create_client(api_key=api_key)
             router = TaskRouter(client)
             decision = router.route(task, scope=scope)
         except Exception as exc:

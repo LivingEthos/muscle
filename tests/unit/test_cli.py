@@ -1342,7 +1342,7 @@ class TestLifelineCommand:
                 assert "Git history forensics" in messages[1]["content"]
                 return "ok", MagicMock(total=42)
 
-        with patch("muscle.cli.cost.M27Client", _FakeClient):
+        with patch("muscle.cli.cost.create_client", _FakeClient):
             with patch("muscle.cli.cost._resolve_project_context", return_value=(tmp_path, None)):
                 with patch("muscle.git_history_forensics.GitHistoryForensics") as mock_cls:
                     mock_forensics = MagicMock()

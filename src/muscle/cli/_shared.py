@@ -52,6 +52,7 @@ from ..project_fingerprint import (
     fingerprint_from_row,
 )
 from ..project_memory import ProjectMemory
+from ..providers import create_client
 from ..strategy_kb import GlobalKnowledgeBase
 from ..system_db import DEFAULT_SYSTEM_DB_PATH, SystemDatabase
 from ..types import BudgetMode, EvalMode, SessionReport, SessionStatus
@@ -150,7 +151,7 @@ def _resolve_review_execution_mode(
 
 def _create_m27_client() -> M27Client:
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("MINIMAX_API_KEY")
-    return M27Client(api_key=api_key)
+    return create_client(api_key=api_key, project_path=Path.cwd())
 
 
 def _build_context_budgeter(settings: dict[str, str]) -> ContextBudgeter:

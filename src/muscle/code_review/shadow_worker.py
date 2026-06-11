@@ -408,7 +408,7 @@ class ShadowWorker:
 
         try:
             from ..budget_manager import BudgetManager
-            from ..m27_client import M27Client
+            from ..providers import create_client
             from ..types import BudgetMode
             from .review_controller import ReviewController
 
@@ -421,7 +421,7 @@ class ShadowWorker:
                 )
                 logger.debug(f"Job {task.job_id} budget: {task.token_budget} tokens")
 
-            m27 = M27Client()
+            m27 = create_client(project_path=Path(task.project_path) if task.project_path else None)
             effective_target = task.target_path
             resolved_target = Path(task.target_path).resolve()
             project_root = task.project_path or str(

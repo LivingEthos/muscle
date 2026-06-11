@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from ..m27_client import M27Client
+from ..providers import create_client
 from .thinking_policy import thinking_for
 
 logger = logging.getLogger(__name__)
@@ -82,7 +83,7 @@ class SkillGenerator:
     def m27(self) -> M27Client:
         """Lazy M27 client initialization to avoid requiring API key for archive-only use."""
         if self._m27_client is None:
-            self._m27_client = M27Client()
+            self._m27_client = create_client(project_path=self.project_path)
         return self._m27_client
 
     def generate_skill(
@@ -101,10 +102,8 @@ class SkillGenerator:
         """
         # Can only proceed with M27 client for content generation
         if self._m27_client is None:
-            from ..m27_client import M27Client
-
             try:
-                self._m27_client = M27Client()
+                self._m27_client = create_client(project_path=self.project_path)
             except ValueError:
                 logger.debug("M27 client not available, skipping skill generation")
                 return None

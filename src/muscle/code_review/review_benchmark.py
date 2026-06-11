@@ -24,6 +24,7 @@ from ..m27_client import M27Client
 from ..optimization.recorder import TelemetryRecorder
 from ..project_memory import ProjectMemory
 from ..project_memory_types import ModelPackLesson, ModelPackMetadata
+from ..providers import create_client
 from ..routing import benchmark_routing_profiles
 from ..strategy_kb import GlobalKnowledgeBase
 from ..system_db import SystemDatabase
@@ -1384,7 +1385,7 @@ class ReviewBenchmarkRunner:
 
     def _get_client(self) -> M27Client:
         if self.m27_client is None:
-            self.m27_client = M27Client()
+            self.m27_client = create_client(project_path=self.project_path)
         return self.m27_client
 
     def _resolve_fixture_path(self, relative_path: str) -> Path:

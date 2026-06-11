@@ -15,8 +15,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
 
 import yaml
+
+if TYPE_CHECKING:
+    from .m27_client import M27Client
 
 logger = logging.getLogger("muscle.providers")
 
@@ -141,6 +145,43 @@ def resolve_provider(project_path: Path | None = None) -> tuple[ProviderProfile,
     if global_name:
         return _require(global_name, str(GLOBAL_CONFIG_PATH)), "global"
     return PROVIDERS[DEFAULT_PROVIDER], "default"
+
+
+def create_client(
+    provider: str | None = None,
+    project_path: Path | None = None,
+    **client_kwargs: Any,
+) -> M27Client:
+    """Return the configured execution client. All M27Client construction in
+    MUSCLE product code goes through here (tests may construct directly)."""
+    from .m27_client import M27Client
+
+    if provider is not None:
+        profile, source = _require(provider, "create_client(provider=...)"), "explicit"
+    else:
+        profile, source = resolve_provider(project_path)
+    logger.debug("Provider %s resolved from %s", profile.name, source)
+
+    client: M27Client
+    if profile.kind == "minimax-http":
+        client = M27Client(**client_kwargs)
+    elif profile.kind == "anthropic-http":
+        from .anthropic_client import AnthropicApiClient
+
+        client_kwargs.pop("api_key", None)  # MiniMax keys must never reach the Anthropic path
+        client = AnthropicApiClient(model=profile.model, **client_kwargs)
+    elif profile.kind == "claude-cli":
+        from .claude_cli_client import ClaudeCliClient
+
+        allowed = {"cache_db_path", "cache_pack_id"}
+        client = ClaudeCliClient(
+            model=profile.model,
+            **{k: v for k, v in client_kwargs.items() if k in allowed},
+        )
+    else:  # pragma: no cover — registry is closed
+        raise ProviderError(f"Unhandled provider kind {profile.kind!r}")
+    client.provider_profile = profile
+    return client
 
 
 def set_global_provider(name: str) -> None:

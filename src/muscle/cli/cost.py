@@ -15,12 +15,12 @@ import click
 from rich.table import Table
 
 from ..cost_optimizer import CostOptimizer
-from ..m27_client import M27Client
 from ..optimization import (
     ExternalBenchmarkImporter,
     WorkflowOptimizer,
 )
 from ..project_memory import ProjectMemory
+from ..providers import create_client
 from ._shared import (
     _get_status_color,
     _parse_since,
@@ -316,7 +316,7 @@ def lifeline(
         console.print("Get a key at: https://platform.minimax.io")
         sys.exit(1)
 
-    m27_client = M27Client(api_key=api_key)
+    m27_client = create_client(api_key=api_key)
     history_requested = history or bisect_cmd is not None
     history_summary = ""
     history_artifact = ""

@@ -17,11 +17,11 @@ import click
 
 from ..code_review.learning_pipeline import LearningPipeline
 from ..learning_ingestor import LearningIngestor
-from ..m27_client import M27Client
 from ..optimization import (
     WorkflowOptimizer,
 )
 from ..project_memory import ProjectMemory
+from ..providers import create_client
 from ..visual_devflow import VisualDevFlowBridge
 from ._shared import (
     _attach_optimization_runtime,
@@ -439,7 +439,7 @@ def review(
             console.print("Get a key at: https://platform.minimax.io")
         sys.exit(1)
 
-    m27_client = M27Client(api_key=api_key)
+    m27_client = create_client(api_key=api_key, project_path=Path(project_path))
     if no_db:
         pm = None
         optimizer = None

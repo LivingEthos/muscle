@@ -204,3 +204,70 @@ def _write_project_provider(project_path: Path, name: str) -> None:
     (muscle_dir / "config.yaml").write_text(
         json.dumps({"project": {"name": "t", "path": str(project_path), "provider": name}})
     )
+
+
+class TestFactory:
+    def test_default_returns_m27_client_with_minimax_model(self, tmp_path, monkeypatch):
+        from muscle.m27_client import M27Client
+        from muscle.providers import create_client
+
+        monkeypatch.delenv("MUSCLE_PROVIDER", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+        with mock.patch("muscle.providers.GLOBAL_CONFIG_PATH", tmp_path / "none.json"):
+            client = create_client(project_path=tmp_path)
+        assert type(client) is M27Client  # plain client, NOT a subclass
+        assert client.model == "MiniMax-M3"
+        assert client.provider_profile is not None
+        assert client.provider_profile.name == "minimax-plan"
+
+    def test_minimax_api_also_returns_plain_m27_client(self, monkeypatch):
+        from muscle.m27_client import M27Client
+        from muscle.providers import create_client
+
+        monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+        client = create_client(provider="minimax-api")
+        assert type(client) is M27Client
+        assert client.provider_profile is not None
+        assert client.provider_profile.name == "minimax-api"
+
+    def test_anthropic_api_returns_anthropic_client(self, monkeypatch):
+        from muscle.anthropic_client import AnthropicApiClient
+        from muscle.providers import create_client
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test123")
+        # A MiniMax api_key kwarg must be DROPPED, never sent to Anthropic.
+        client = create_client(provider="anthropic-api", api_key="eyJminimax")
+        assert isinstance(client, AnthropicApiClient)
+        assert client.model == "claude-opus-4-8"
+        assert client.provider_profile is not None
+        assert client.provider_profile.name == "anthropic-api"
+        assert client.api_key == "sk-ant-test123"
+
+    def test_claude_subscription_returns_cli_client(self, monkeypatch):
+        from muscle.claude_cli_client import ClaudeCliClient
+        from muscle.providers import create_client
+
+        with mock.patch(
+            "muscle.claude_cli_client.shutil.which", return_value="/usr/bin/claude"
+        ):
+            # api_key kwarg is filtered out without error on the CLI path.
+            client = create_client(provider="claude-subscription", api_key="eyJminimax")
+        assert isinstance(client, ClaudeCliClient)
+        assert client.provider_profile is not None
+        assert client.provider_profile.name == "claude-subscription"
+
+    def test_explicit_provider_arg_overrides_env(self, monkeypatch):
+        from muscle.providers import create_client
+
+        monkeypatch.setenv("MUSCLE_PROVIDER", "minimax-plan")
+        monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+        client = create_client(provider="minimax-api")
+        assert client.provider_profile is not None
+        assert client.provider_profile.name == "minimax-api"
+
+    def test_unknown_explicit_provider_raises(self):
+        from muscle.providers import create_client
+
+        with pytest.raises(ValueError, match="Unknown provider"):
+            create_client(provider="nope")
