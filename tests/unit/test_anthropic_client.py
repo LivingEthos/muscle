@@ -249,6 +249,89 @@ class TestUsageParsing:
         assert usage.cache_creation_input_tokens == 40
         assert usage.output_tokens == 5
 
+    def test_usage_cache_creation_only_first_write(self, mock_client):
+        """cache_creation=40, cache_read=0 (first cache write): input folded correctly."""
+        client, mock_session = mock_client
+        mock_session.post.return_value = _make_mock_response(
+            200,
+            json_data={
+                "content": [{"type": "text", "text": "Hello"}],
+                "usage": {
+                    "input_tokens": 10,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 40,
+                    "output_tokens": 5,
+                },
+            },
+        )
+        _, usage = client.chat([{"role": "user", "content": "hi"}])
+        # input_tokens = fresh(10) + cache_creation(40) = 50; no cache read
+        assert usage.input_tokens == 50
+        assert usage.cached_input_tokens == 0
+        assert usage.cache_creation_input_tokens == 40
+        assert usage.output_tokens == 5
+
+    def test_usage_cache_read_only_pure_hit(self, mock_client):
+        """cache_read=90, cache_creation=0 (pure cache hit): input folded correctly."""
+        client, mock_session = mock_client
+        mock_session.post.return_value = _make_mock_response(
+            200,
+            json_data={
+                "content": [{"type": "text", "text": "Hello"}],
+                "usage": {
+                    "input_tokens": 10,
+                    "cache_read_input_tokens": 90,
+                    "cache_creation_input_tokens": 0,
+                    "output_tokens": 5,
+                },
+            },
+        )
+        _, usage = client.chat([{"role": "user", "content": "hi"}])
+        # input_tokens = fresh(10) + cache_read(90) = 100; cached = 90
+        assert usage.input_tokens == 100
+        assert usage.cached_input_tokens == 90
+        assert usage.cache_creation_input_tokens == 0
+        assert usage.output_tokens == 5
+
+    def test_prompt_size_estimate_uses_pre_hook_content(self, mock_client):
+        """Regression: prompt-size estimate must be computed BEFORE _prepare_payload.
+
+        When a CachePlan is active, AnthropicApiClient._insert_cache_breakpoint
+        converts the first message's plain-string content into a list of text
+        blocks (cache_control dicts).  If the estimate ran AFTER that mutation,
+        str(list_of_dicts) would repr-inflate the char count and produce a
+        significantly larger estimated_input_tokens than the original text
+        would justify.
+
+        Setup: zero-usage response forces the fallback estimate path
+        (input_tokens == 0 AND output_tokens == 0 with non-empty text).
+        """
+        client, mock_session = mock_client
+        content = "PREFIXSUFFIX"
+        system = "SYS"
+        # Zero-usage response: forces the fallback estimation path.
+        mock_session.post.return_value = _make_mock_response(
+            200,
+            json_data={
+                "content": [{"type": "text", "text": "response text"}],
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+            },
+        )
+        _, usage = client.chat(
+            [{"role": "user", "content": content}],
+            system=system,
+            cache_plan=CachePlan(shared_prefix_chars=6, expected_reuse=1),
+        )
+        # Correct estimate: based on original string chars only (before hook).
+        # effective_system = system[:2000] = "SYS" (len 3)
+        # prompt_chars = len("PREFIXSUFFIX") + len("SYS") = 12 + 3 = 15
+        # estimated_input_tokens = max(1, 15 // 4) = 3
+        expected = max(1, (len(content) + len(system)) // 4)
+        assert usage.input_tokens == expected, (
+            f"Expected estimate based on original text ({expected}), "
+            f"got {usage.input_tokens} — likely inflated by repr() of cache blocks"
+        )
+
 
 class TestDetectAnthropicApiBase:
     def test_guard_honors_anthropic_host(self):

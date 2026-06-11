@@ -721,17 +721,23 @@ class M27Client:
         if response_format is not None:
             payload["response_format"] = response_format
 
-        payload = self._prepare_payload(
-            payload, is_openai_compatible, thinking=thinking, cache_plan=cache_plan
-        )
-
         # Fix: M27/M9. Estimate input tokens from the actual prompt size (all
         # message contents + system prompt, ~4 chars/token) for use as a fallback
         # when the provider omits usage. Using output length for input badly
         # under-counts input and corrupts cost accounting.
+        #
+        # IMPORTANT: compute BEFORE _prepare_payload so that provider hooks
+        # (e.g. AnthropicApiClient) cannot inflate the estimate by converting
+        # plain-string content into repr()-heavy list-of-text-block structures
+        # (cache breakpoints).  The base MiniMax hook is a no-op, so behavior
+        # is unchanged there.
         prompt_chars = sum(len(str(m.get("content", ""))) for m in payload_messages)
         prompt_chars += len(effective_system)
         estimated_input_tokens = max(1, prompt_chars // 4)
+
+        payload = self._prepare_payload(
+            payload, is_openai_compatible, thinking=thinking, cache_plan=cache_plan
+        )
 
         last_error = None
         backoff = 1.0
