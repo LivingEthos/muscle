@@ -1509,3 +1509,141 @@ class TestChatStructuredTruncationAndKey:
         # Savings estimate is preserved (heuristic, since the cache does not persist
         # the original call's input/output split — only the response dict).
         assert meta.tokens_saved_estimate > 0
+
+
+# ---------------------------------------------------------------------------
+# CachePlan + _prepare_payload hook tests
+# ---------------------------------------------------------------------------
+
+
+class TestCachePlan:
+    def test_cache_plan_dataclass(self):
+        """CachePlan defaults and frozen enforcement."""
+        from dataclasses import FrozenInstanceError
+
+        from muscle.m27_client import CachePlan
+
+        plan = CachePlan(shared_prefix_chars=100, expected_reuse=1)
+        assert plan.ttl == "5m"
+        assert plan.shared_prefix_chars == 100
+        assert plan.expected_reuse == 1
+
+        with pytest.raises(FrozenInstanceError):
+            plan.ttl = "1h"  # type: ignore[misc]
+
+    def test_base_client_never_sends_cache_control(self, mock_client, tmp_path):
+        """Base client must not emit cache_control even when a CachePlan is supplied."""
+        import json as json_mod
+
+        from muscle.m27_client import CachePlan
+
+        client, mock_session = mock_client
+        mock_session.post.return_value = _make_mock_response(
+            200,
+            json_data={
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": 5, "output_tokens": 2},
+            },
+        )
+
+        plan = CachePlan(shared_prefix_chars=10, expected_reuse=1)
+        result, usage = client.chat(
+            [{"role": "user", "content": "hello world"}],
+            temperature=1.0,
+            cache_plan=plan,
+        )
+
+        assert result == "ok"
+        assert mock_session.post.called
+        _, kwargs = mock_session.post.call_args
+        posted = kwargs.get("json") or mock_session.post.call_args[0][1] if not kwargs.get("json") else kwargs["json"]
+        # cache_control must be absent everywhere in the payload
+        assert "cache_control" not in json_mod.dumps(posted)
+        # temperature must be forwarded as-is
+        assert posted["temperature"] == 1.0
+        # messages[0]["content"] must still be a plain str (not a list/dict)
+        assert isinstance(posted["messages"][0]["content"], str)
+
+    def test_chat_structured_forwards_cache_plan(self, mock_client, tmp_path):
+        """cache_plan passed to chat_structured must be forwarded to chat()."""
+        from unittest.mock import call as mock_call
+
+        from pydantic import BaseModel
+
+        from muscle.m27_client import CachePlan, TokenUsage
+
+        client, _ = mock_client
+        # Point cache at tmp_path so ResponseCache doesn't touch the real DB.
+        client._cache_db_path = tmp_path / "test_cache.db"
+
+        class SimpleSchema(BaseModel):
+            x: int
+
+        plan = CachePlan(shared_prefix_chars=5, expected_reuse=2)
+
+        def _stub_chat(*args, _metadata_sink=None, **kwargs):
+            if _metadata_sink is not None:
+                _metadata_sink["truncated"] = False
+            return '{"x": 1}', TokenUsage(input_tokens=1, output_tokens=1)
+
+        with patch.object(client, "chat", side_effect=_stub_chat) as mock_chat:
+            result = client.chat_structured(
+                SimpleSchema,
+                [{"role": "user", "content": "hi"}],
+                cache_plan=plan,
+            )
+
+        assert result.x == 1
+        assert mock_chat.called
+        _, call_kwargs = mock_chat.call_args
+        assert call_kwargs.get("cache_plan") is plan
+
+    def test_prepare_payload_hook_receives_final_payload(self, mock_client):
+        """Subclass _prepare_payload hook receives thinking + cache_plan; its changes reach POST."""
+        import json as json_mod
+
+        from muscle.m27_client import CachePlan, M27Client
+
+        client, mock_session = mock_client
+        mock_session.post.return_value = _make_mock_response(
+            200,
+            json_data={
+                "content": [{"type": "text", "text": "hook-ok"}],
+                "usage": {"input_tokens": 3, "output_tokens": 1},
+            },
+        )
+
+        received_kwargs: dict = {}
+
+        class HookedClient(M27Client):
+            def _prepare_payload(
+                self,
+                payload,
+                is_openai_compatible,
+                thinking=None,
+                cache_plan=None,
+            ):
+                received_kwargs["thinking"] = thinking
+                received_kwargs["cache_plan"] = cache_plan
+                payload["_hook_marker"] = 1
+                return payload
+
+        # Wire the subclass instance to use the same mocked session / settings.
+        hooked = HookedClient.__new__(HookedClient)
+        # Copy all instance attributes from the fixture client.
+        hooked.__dict__.update(client.__dict__)
+        # The subclass overrides _prepare_payload; rest of the client is inherited.
+
+        plan = CachePlan(shared_prefix_chars=20, expected_reuse=3)
+        hooked.chat(
+            [{"role": "user", "content": "test hook"}],
+            thinking="adaptive",
+            cache_plan=plan,
+        )
+
+        assert mock_session.post.called
+        _, kwargs = mock_session.post.call_args
+        posted = kwargs["json"]
+        assert posted.get("_hook_marker") == 1
+        assert received_kwargs["thinking"] == "adaptive"
+        assert received_kwargs["cache_plan"] is plan

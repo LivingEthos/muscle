@@ -148,6 +148,26 @@ class TokenUsage:
 
 
 @dataclass(frozen=True)
+class CachePlan:
+    """Caller-supplied hint that the prompt's leading bytes will be reused.
+
+    shared_prefix_chars: split point in the FIRST user message's content; the
+        prefix [0:shared_prefix_chars] is byte-identical across the calls that
+        share it. expected_reuse: how many MORE calls are expected to reuse the
+        prefix within the cache TTL (write-amortization rule: providers only
+        mark a breakpoint when >= 1). ttl: "5m" or "1h" (1h only when a planner
+        predicts reuse beyond 5 minutes — write cost is 2x vs 1.25x).
+
+    The base MiniMax client ignores plans entirely: MiniMax prefix-caches
+    passively and MUST NOT receive cache_control markers.
+    """
+
+    shared_prefix_chars: int
+    expected_reuse: int = 0
+    ttl: str = "5m"
+
+
+@dataclass(frozen=True)
 class StructuredCallMetadata:
     """Metadata about one `chat_structured` execution."""
 
@@ -302,6 +322,9 @@ class M27Client:
     # Single consolidated init lock covers session + limiter configuration to
     # avoid lock-ordering deadlocks (fix: M27-08).
     _init_lock = threading.RLock()
+    # Set by muscle.providers.create_client; None = legacy/unrouted construction.
+    # Holds a muscle.providers.ProviderProfile at runtime; Any avoids circular import.
+    provider_profile: Any | None = None
 
     @classmethod
     def _get_session(cls) -> requests.Session:
@@ -615,6 +638,20 @@ class M27Client:
         except Exception:
             logger.debug("Telemetry update failed", exc_info=True)
 
+    def _prepare_payload(
+        self,
+        payload: dict[str, Any],
+        is_openai_compatible: bool,
+        thinking: str | None = None,
+        cache_plan: CachePlan | None = None,
+    ) -> dict[str, Any]:
+        """Provider hook: final payload adjustment before POST.
+
+        Base (MiniMax) implementation is a strict no-op — in particular it
+        never emits cache_control (MiniMax prefix-caches passively).
+        """
+        return payload
+
     def chat(
         self,
         messages: list[dict],
@@ -626,6 +663,7 @@ class M27Client:
         thinking: str | None = None,
         response_format: dict[str, Any] | None = None,
         _metadata_sink: dict[str, Any] | None = None,
+        cache_plan: CachePlan | None = None,
     ) -> tuple[str, TokenUsage]:
         # Type errors are programming bugs, not recoverable conditions: a plain
         # string passed where a list is expected used to log and return an empty
@@ -675,6 +713,10 @@ class M27Client:
         _apply_thinking_param(payload, thinking, is_openai_compatible)
         if response_format is not None:
             payload["response_format"] = response_format
+
+        payload = self._prepare_payload(
+            payload, is_openai_compatible, thinking=thinking, cache_plan=cache_plan
+        )
 
         # Fix: M27/M9. Estimate input tokens from the actual prompt size (all
         # message contents + system prompt, ~4 chars/token) for use as a fallback
@@ -1244,6 +1286,7 @@ class M27Client:
         telemetry_context: TelemetryContext | None = None,
         include_metadata: bool = False,
         thinking: str | None = None,
+        cache_plan: CachePlan | None = None,
     ) -> Any:
         """Call M2.7, parse response as JSON, validate against Pydantic schema.
 
@@ -1328,6 +1371,7 @@ class M27Client:
                 telemetry_context=telemetry_context,
                 thinking=thinking,
                 _metadata_sink=call_meta,
+                cache_plan=cache_plan,
             )
             truncated = bool(call_meta.get("truncated"))
             parsed_text = _strip_json_fences(_strip_thinking_tags(response_text))
