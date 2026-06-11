@@ -50,6 +50,9 @@ RATE_LIMIT_DELAY = 1.0
 DEFAULT_MAX_OUTPUT_TOKENS = 8192
 MODEL_MAX_OUTPUT_TOKENS: dict[str, int] = {
     "minimax-m3": 32768,
+    # Opus 4.8 (anthropic-api provider): non-streaming requests above ~16K
+    # output tokens risk HTTP timeouts, so cap below the model's 128K ceiling.
+    "claude-opus-4-8": 16384,
 }
 
 # MiniMax-M3 request-time thinking modes. "adaptive" is MiniMax's recommended
@@ -142,6 +145,10 @@ class TokenUsage:
     # from the provider usage payload so cost accounting can credit the discount and
     # the cache-hit rate stays observable.
     cached_input_tokens: int = 0
+    # Anthropic-side cache WRITE tokens (billed at a premium). Disjoint from both
+    # fresh input and cache reads; input_tokens is normalized to include them.
+    # Always 0 on MiniMax, which never reports cache_creation_input_tokens.
+    cache_creation_input_tokens: int = 0
 
     @property
     def total(self) -> int:
@@ -823,6 +830,9 @@ class M27Client:
                     #   OpenAI shape: `prompt_tokens` already INCLUDES cached, exposed
                     #     as a subset under `prompt_tokens_details.cached_tokens`.
                     cache_read = int(usage_payload.get("cache_read_input_tokens") or 0)
+                    # Anthropic-side cache WRITES (real Anthropic API only; MiniMax
+                    # never sends this key, so its normalization stays unchanged).
+                    cache_creation = int(usage_payload.get("cache_creation_input_tokens") or 0)
                     prompt_details = usage_payload.get("prompt_tokens_details")
                     openai_cached = int(
                         (
@@ -833,8 +843,8 @@ class M27Client:
                         or usage_payload.get("cached_tokens")
                         or 0
                     )
-                    if cache_read:
-                        input_tokens += cache_read
+                    if cache_read or cache_creation:
+                        input_tokens += cache_read + cache_creation
                         cached_input_tokens = cache_read
                     else:
                         cached_input_tokens = min(openai_cached, input_tokens)
@@ -843,6 +853,7 @@ class M27Client:
                         output_tokens=output_tokens,
                         reasoning_tokens=reasoning_tokens,
                         cached_input_tokens=cached_input_tokens,
+                        cache_creation_input_tokens=cache_creation,
                     )
                     # Fix: M27-06. Non-empty 200 response with zero tokens on both
                     # sides is almost always a provider telemetry gap worth

@@ -407,6 +407,28 @@ class TestChatSuccess:
         assert usage.cached_input_tokens == 800
         assert usage.cached_input_tokens <= usage.input_tokens
 
+    def test_chat_minimax_usage_without_cache_creation_unchanged(self, mock_client):
+        # Regression: MiniMax never sends cache_creation_input_tokens. Its usage
+        # normalization must stay byte-identical after the Anthropic-provider
+        # cache_creation support landed (fold cache_read in, cache_creation 0).
+        client, mock_session = mock_client
+        mock_session.post.return_value = _make_mock_response(
+            200,
+            json_data={
+                "content": [{"type": "text", "text": "Hello"}],
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "cache_read_input_tokens": 90,
+                },
+            },
+        )
+
+        _, usage = client.chat([{"role": "user", "content": "hi"}])
+        assert usage.input_tokens == 100
+        assert usage.cached_input_tokens == 90
+        assert usage.cache_creation_input_tokens == 0
+
     def test_chat_captures_cached_tokens_openai_shape(self, mock_client):
         client, mock_session = mock_client
         client.base_url = OPENAI_BASE_URL_IO
