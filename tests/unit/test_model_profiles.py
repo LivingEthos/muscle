@@ -5,8 +5,10 @@ import pytest
 from muscle.host_effort_policy import HostEffortLevel
 from muscle.model_profiles import (
     PROFILES,
+    VALID_DOC_FRAGMENT_KEYS,
     ActiveProfiles,
     AgentBehavior,
+    HostBehavior,
     ModelProfile,
     SecurityPosture,
     profile_for,
@@ -168,3 +170,17 @@ def test_resolve_active_profiles_opus_agent(monkeypatch, tmp_path):
     active = resolve_active_profiles(tmp_path)
     assert active.agent.canonical_key == OPUS_KEY
     assert active.agent_identity.identity_source.startswith("agent_provider:")
+
+
+def test_validate_profile_rejects_unknown_fragment_key():
+    bad = _minimal_profile(
+        positions=frozenset({"host"}),
+        host=HostBehavior(doc_fragment_keys=("not_a_real_fragment",)),
+    )
+    with pytest.raises(AssertionError):
+        validate_profile(bad)
+
+
+def test_opus_fragment_keys_are_all_valid():
+    opus = PROFILES[OPUS_KEY]
+    assert set(opus.host.doc_fragment_keys) <= VALID_DOC_FRAGMENT_KEYS

@@ -34,6 +34,15 @@ VALID_INJECTION_SENSITIVITY = frozenset({"standard", "elevated"})
 VALID_DEPENDENCY_POLICY = frozenset({"metadata_only", "sanitize"})
 VALID_ENVELOPE_EMPHASIS = frozenset({"standard", "elevated"})
 VALID_REASONING_DISPLAY = frozenset({None, "summarized"})
+VALID_DOC_FRAGMENT_KEYS = frozenset(
+    {
+        "literalism_narration",
+        "untrusted_content_and_thinking",
+        "delegation_triggers",
+        "report_everything_then_filter",
+        "autonomy_small_decisions",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -112,7 +121,10 @@ def validate_profile(profile: ModelProfile) -> None:
     assert profile.security.prompt_injection_sensitivity in VALID_INJECTION_SENSITIVITY
     assert profile.security.dependency_snippet_policy in VALID_DEPENDENCY_POLICY
     assert profile.security.untrusted_envelope_emphasis in VALID_ENVELOPE_EMPHASIS
-    # TODO(plan-3): validate HostBehavior.doc_fragment_keys against the fragment library once it exists.
+    assert set(profile.host.doc_fragment_keys) <= VALID_DOC_FRAGMENT_KEYS, (
+        f"{profile.canonical_key}: unknown doc_fragment_keys "
+        f"{set(profile.host.doc_fragment_keys) - VALID_DOC_FRAGMENT_KEYS}"
+    )
 
 
 OPUS_4_8_KEY = "anthropic/claude-opus-4-8@2026-05-28"
