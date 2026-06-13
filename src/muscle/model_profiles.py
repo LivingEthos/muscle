@@ -18,9 +18,11 @@ import logging
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
 
 from .host_effort_policy import HostEffortLevel
+from .project_memory_types import ModelIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -237,3 +239,65 @@ def profile_for(canonical_key: str | None) -> ModelProfile:
     )
     logger.info("profile_for: unresolved canonical_key=%r -> default", canonical_key)
     return PROFILES[DEFAULT_PROFILE_KEY]
+
+
+@dataclass(frozen=True)
+class ActiveProfiles:
+    """The profiles for the two positions, plus their resolved identities."""
+
+    host: ModelProfile
+    agent: ModelProfile
+    host_identity: ModelIdentity
+    agent_identity: ModelIdentity
+
+
+def _agent_identity(project_path: Path | None) -> ModelIdentity:
+    """Resolve the agent (executor) identity from the active provider."""
+    # Lazy imports to avoid import cycles: providers → m27_client → …
+    from .model_identity import canonical_for_label  # noqa: PLC0415
+    from .providers import resolve_provider  # noqa: PLC0415
+
+    try:
+        profile, source = resolve_provider(project_path)
+    except Exception:
+        logger.debug("_agent_identity: provider resolution failed", exc_info=True)
+        return ModelIdentity(
+            requested_label=None,
+            provider_endpoint=None,
+            provider_fingerprint=None,
+            canonical_model_key=None,
+            identity_source="agent_unresolved",
+            confidence=0.0,
+            metadata={"position": "agent"},
+        )
+    canonical = canonical_for_label(profile.model)
+    return ModelIdentity(
+        requested_label=profile.model,
+        provider_endpoint=None,
+        provider_fingerprint=None,
+        canonical_model_key=canonical,
+        identity_source=f"agent_provider:{source}",
+        confidence=0.9 if canonical else 0.3,
+        metadata={"position": "agent", "provider": profile.name},
+    )
+
+
+def resolve_active_profiles(project_path: Path | None = None) -> ActiveProfiles:
+    """Resolve host + agent profiles for the current context.
+
+    Single entry point for consumers. Unknown/low-confidence positions resolve to
+    the conservative ``default`` profile (loudly via ``profile_for``), so this is
+    safe to call from any seam without changing behavior until a profile is both
+    populated and consumed.
+    """
+    # Lazy import to avoid import cycle with host_model_resolver → model_identity → …
+    from .host_model_resolver import HostModelResolver  # noqa: PLC0415
+
+    host_identity = HostModelResolver().resolve(project_path)
+    agent_identity = _agent_identity(project_path)
+    return ActiveProfiles(
+        host=profile_for(host_identity.canonical_model_key),
+        agent=profile_for(agent_identity.canonical_model_key),
+        host_identity=host_identity,
+        agent_identity=agent_identity,
+    )

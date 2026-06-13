@@ -5,10 +5,12 @@ import pytest
 from muscle.host_effort_policy import HostEffortLevel
 from muscle.model_profiles import (
     PROFILES,
+    ActiveProfiles,
     AgentBehavior,
     ModelProfile,
     SecurityPosture,
     profile_for,
+    resolve_active_profiles,
     validate_profile,
 )
 
@@ -131,3 +133,31 @@ def test_validate_profile_rejects_empty_positions():
     bad = _minimal_profile(positions=frozenset())
     with pytest.raises(AssertionError):
         validate_profile(bad)
+
+
+def test_resolve_active_profiles_opus_host_minimax_agent(monkeypatch, tmp_path):
+    # Host = Opus via explicit env; agent = default MiniMax provider.
+    monkeypatch.setenv("MUSCLE_HOST_MODEL", "opus")
+    monkeypatch.delenv("MUSCLE_PROVIDER", raising=False)
+    active = resolve_active_profiles(tmp_path)
+    assert isinstance(active, ActiveProfiles)
+    assert active.host.canonical_key == OPUS_KEY
+    assert active.agent.canonical_key == M3_KEY
+    assert active.host_identity.identity_source == "host_explicit"
+
+
+def test_resolve_active_profiles_unknown_host_is_default(monkeypatch, tmp_path):
+    monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+    monkeypatch.delenv("MUSCLE_PROVIDER", raising=False)
+    # Isolate from the real ~/.claude/settings.json (which may have a model set).
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    active = resolve_active_profiles(tmp_path)
+    assert active.host.canonical_key == "default"
+
+
+def test_resolve_active_profiles_opus_agent(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUSCLE_PROVIDER", "anthropic-api")
+    monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+    active = resolve_active_profiles(tmp_path)
+    assert active.agent.canonical_key == OPUS_KEY
+    assert active.agent_identity.identity_source.startswith("agent_provider:")
