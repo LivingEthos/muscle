@@ -52,6 +52,7 @@ CLI_GROUPS = {
     "long-eval",
     "memory",
     "model",
+    "provider",
     "settings",
     "filters",
 }
@@ -64,6 +65,7 @@ CLI_SUBCOMMANDS = {
     "long-eval": {"run", "reports", "cleanup", "benchmark"},
     "memory": {"status", "history", "related", "import-project", "linked", "unlink"},
     "model": {"status", "history", "select", "packs"},
+    "provider": {"list", "show", "use", "setup", "login"},
     "settings": {"show", "api-key", "hooks", "platform", "reset", "review", "model"},
     "filters": {"verify", "trust", "untrust"},
 }

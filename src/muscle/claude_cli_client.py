@@ -130,10 +130,13 @@ class ClaudeCliClient(M27Client):
         response_format: dict[str, Any] | None = None,
         _metadata_sink: dict[str, Any] | None = None,
         cache_plan: CachePlan | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        functions: list[dict[str, Any]] | None = None,
     ) -> tuple[str, TokenUsage]:
-        # max_tokens/temperature/stream/response_format/cache_plan are accepted
-        # for interface parity with the base chat() but intentionally unused:
-        # Claude Code manages its own sampling, output limits, and caching.
+        # max_tokens/temperature/stream/response_format/cache_plan/tools/functions
+        # are accepted for interface parity with the base chat() but
+        # intentionally unused: Claude Code manages its own sampling, output
+        # limits, tools, and caching.
         if not self._validate_messages(messages):
             return "", TokenUsage()
 

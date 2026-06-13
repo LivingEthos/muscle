@@ -12,7 +12,20 @@ muscle settings model
 
 To set the canonical model explicitly:
 ```bash
+muscle settings model --canonical-model minimax/m3@1
+muscle settings model --canonical-model openai/gpt-5.5@1
+```
+
+For a legacy M2.7 pin, use:
+```bash
 muscle settings model --canonical-model minimax/m2.7@1
+```
+
+For Codex subscription execution, authenticate and select the provider through
+the provider group:
+```bash
+muscle provider login codex-subscription
+muscle provider use codex-subscription
 ```
 
 To keep related-project lessons suggested but not auto-applied, and model packs suggested by

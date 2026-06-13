@@ -27,3 +27,11 @@ def test_compose_prompt_envelope_applies_prompt_compaction_for_safe_stage() -> N
         envelope.metadata["prompt_compaction_compacted_chars"]
         < envelope.metadata["prompt_compaction_original_chars"]
     )
+    assert envelope.metadata["cache_prefix_chars"] == len(envelope.prompt)
+    assert isinstance(envelope.metadata["cache_prefix_digest"], str)
+    assert envelope.metadata["cache_prefix_lint_warning_count"] == 0
+    assert envelope.metadata["estimated_cache_fresh_cost"] > 0
+    assert (
+        envelope.metadata["estimated_cache_read_cost"]
+        < envelope.metadata["estimated_cache_fresh_cost"]
+    )

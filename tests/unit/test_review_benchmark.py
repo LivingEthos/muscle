@@ -8,8 +8,11 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from muscle.code_review import review_benchmark as benchmark_module
 from muscle.code_review.types import IssueCategory, ReviewIssue, Severity
+from muscle.structured_io import parse_benchmark_result_envelope, render_benchmark_result_envelope
 
 
 def _issue(file_path: str, severity: Severity, title: str, description: str) -> ReviewIssue:
@@ -95,7 +98,7 @@ def _scenario_result(
     baseline: dict[str, object],
     candidate: dict[str, object],
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "scenario": name,
         "suite": suite,
         "description": f"{suite} scenario",
@@ -104,6 +107,19 @@ def _scenario_result(
         "baseline": baseline,
         "candidate": candidate,
     }
+    payload["result_envelope"] = render_benchmark_result_envelope(
+        result=payload,
+        evidence_ids=[],
+        methodology={
+            "judge_model": benchmark_module.BENCHMARK_JUDGE_MODEL,
+            "prompt_version": benchmark_module.BENCHMARK_PROMPT_VERSION,
+            "rubric_version": benchmark_module.BENCHMARK_RUBRIC_VERSION,
+            "grader_run_count": 2,
+            "pairwise_ordering": {"baseline": "legacy", "candidate": "review-smart"},
+        },
+    )
+    payload["integrity"] = {"passed": True, "issue_count": 0, "issues": []}
+    return payload
 
 
 class TestReviewBenchmarkRunner:
@@ -130,6 +146,41 @@ class TestReviewBenchmarkRunner:
 
         assert scenarios
         assert all(scenario.suite == "related-project" for scenario in scenarios)
+
+    def test_get_client_uses_fresh_factory_client_per_call(self, tmp_path: Path):
+        created = []
+
+        def factory(**kwargs):
+            client = object()
+            created.append((client, kwargs))
+            return client
+
+        runner = benchmark_module.ReviewBenchmarkRunner(
+            str(tmp_path),
+            client_factory=factory,  # type: ignore[arg-type]
+        )
+
+        first = runner._get_client()
+        second = runner._get_client()
+
+        assert first is not second
+        assert [item[1]["project_path"] for item in created] == [runner.project_path, runner.project_path]
+
+    def test_zero_scenario_manifest_fails_hard(self, tmp_path: Path):
+        fixture_root = tmp_path / "fixtures"
+        fixture_root.mkdir()
+        (fixture_root / "manifest.json").write_text(
+            json.dumps({"manifest_version": 2, "scenarios": []}),
+            encoding="utf-8",
+        )
+        runner = benchmark_module.ReviewBenchmarkRunner(
+            str(tmp_path),
+            m27_client=object(),  # type: ignore[arg-type]
+            fixture_root=fixture_root,
+        )
+
+        with pytest.raises(ValueError, match="No benchmark scenarios"):
+            runner._load_scenarios(suite="all")
 
     def test_build_scenario_workspace_bootstraps_related_and_model_pack_state(
         self,
@@ -232,6 +283,46 @@ class TestReviewBenchmarkRunner:
         assert runner._issue_matches_expected(
             issue, scenario.expected_findings[0], scenario.target_path
         )
+
+    def test_compare_runs_emits_parseable_result_envelope(self, tmp_path: Path):
+        runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
+        scenario = benchmark_module.BenchmarkScenario(
+            name="sample",
+            suite="core-review",
+            target_path=str(tmp_path / "sample.py"),
+            false_positive_severity="medium",
+            expected_findings=[
+                benchmark_module.BenchmarkExpectedFinding(
+                    file_path="sample.py",
+                    minimum_severity="high",
+                    matchers=["sql injection"],
+                )
+            ],
+        )
+        issue = _issue(
+            str(tmp_path / "sample.py"),
+            Severity.HIGH,
+            "SQL injection vulnerability",
+            "Unsanitized query reaches the database.",
+        )
+        raw_run = {
+            "workflow_name": "review-smart",
+            "issues": [issue],
+            "duration_seconds": 1.0,
+            "tokens_used": 100,
+            "finding_count": 1,
+            "verified_fix_count": 0,
+            "one_shot_verified_fix_count": 0,
+            "net_tokens_saved": 0,
+            "lesson_usage_summary": benchmark_module.ReviewBenchmarkRunner._empty_lesson_usage_summary(),
+        }
+
+        compared = runner._compare_runs(scenario, raw_run, raw_run)
+        envelope = parse_benchmark_result_envelope(str(compared["result_envelope"]))
+
+        assert envelope.result["scenario"] == "sample"
+        assert envelope.methodology["judge_model"] == benchmark_module.BENCHMARK_JUDGE_MODEL
+        assert compared["integrity"]["passed"] is True
 
     def test_evaluate_run_counts_recall_and_false_positives(self, tmp_path: Path):
         runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]

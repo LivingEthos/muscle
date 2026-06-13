@@ -3,6 +3,12 @@ SQLite schema definition for project memory database (MUS-010).
 
 This module contains all CREATE TABLE statements and index definitions
 for the unified project memory database.
+
+Note:
+    Runtime migrations supersede these baseline CREATE statements. In particular,
+    migration _0009 rebuilds automation_state with its composite key and adds the
+    current skills/agents lifecycle columns; treat this module as the bootstrap
+    schema, not the complete post-migration shape.
 """
 
 from __future__ import annotations

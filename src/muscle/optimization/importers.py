@@ -264,9 +264,8 @@ class ExternalBenchmarkImporter:
             ]
             input_tokens = int(usage.get("input_tokens", 0) or 0)
             output_tokens = int(usage.get("output_tokens", 0) or 0)
-            cache_tokens = int(usage.get("cache_read_input_tokens", 0) or 0) + int(
-                usage.get("cache_creation_input_tokens", 0) or 0
-            )
+            cache_tokens = int(usage.get("cache_read_input_tokens", 0) or 0)
+            cache_creation_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0)
             timestamp = str(entry.get("timestamp") or "")
             retry_count = self._retry_count(tool_names)
             dedup_key = f"claude:{session_id}:{timestamp}:{message.get('id', '')}"
@@ -283,7 +282,12 @@ class ExternalBenchmarkImporter:
                 success_signal=retry_count == 0 and output_tokens > 0,
                 token_cost=input_tokens + output_tokens,
                 tool_names_json=json.dumps(tool_names),
-                metadata_json=json.dumps({"user_message": pending_user_message}),
+                metadata_json=json.dumps(
+                    {
+                        "user_message": pending_user_message,
+                        "cache_creation_tokens": cache_creation_tokens,
+                    }
+                ),
                 dedup_key=dedup_key,
             )
             if inserted:

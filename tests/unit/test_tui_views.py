@@ -3,6 +3,7 @@ Unit tests for tui/views.py
 """
 
 from io import StringIO
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from rich.console import Console
@@ -16,6 +17,7 @@ from muscle.tui.views import (
     FixesView,
     HistoryView,
     KnowledgeView,
+    MemoryView,
     NotesView,
     OptimizationView,
     ProjectsView,
@@ -680,6 +682,51 @@ class TestProjectsView:
         )
         panel = view.render(state)
         assert panel is not None
+
+    def test_render_uses_project_collection_when_available(self):
+        view = ProjectsView()
+        state = ViewState(
+            current_project="/repo/one",
+            data=SimpleNamespace(
+                projects=[
+                    {
+                        "project_path": "/repo/one",
+                        "review_count": 3,
+                        "last_activity": "2026-06-12",
+                    },
+                    {
+                        "project_path": "/repo/two",
+                        "review_count": 7,
+                        "last_activity": "2026-06-13",
+                    },
+                ],
+            ),
+        )
+
+        panel = view.render(state)
+        rendered = _render(panel)
+
+        assert "/repo/one" in rendered
+        assert "/repo/two" in rendered
+        assert "7" in rendered
+
+
+class TestMemoryView:
+    def test_counts_only_learned_start_markers(self, tmp_path):
+        muscle_dir = tmp_path / ".muscle"
+        muscle_dir.mkdir()
+        (muscle_dir / "CLAUDE.md").write_text(
+            "<!-- MUSCLE_LEARNED_START -->\nentry\n<!-- MUSCLE_LEARNED_END -->\n",
+            encoding="utf-8",
+        )
+
+        view = MemoryView()
+        state = ViewState(current_project=str(tmp_path))
+        panel = view.render(state)
+        rendered = _render(panel)
+
+        assert "CLAUDE.md" in rendered
+        assert "1" in rendered
 
 
 class TestNotesView:

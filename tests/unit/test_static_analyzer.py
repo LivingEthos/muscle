@@ -611,6 +611,8 @@ test.ts(10,5): warning TS6032: File change detected. Starting fresh analysis."""
         assert captured["cwd"] == str(tmp_path)
         assert result.parser_tier == ParserTier.FULL.value
         assert result.evidence is not None
+        assert result.evidence.command_familiarity["checked"] is True
+        assert result.evidence.command_familiarity["familiar"] is True
 
     def test_run_tool_inserts_end_of_options_separator_multi_file(self, tmp_path, monkeypatch):
         """File args must follow a ``--`` token so dash-prefixed names are not flags."""

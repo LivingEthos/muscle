@@ -444,13 +444,46 @@ class FixesView:
 
 class ProjectsView:
     def render(self, state: ViewState) -> Panel:
+        data: TUIData | None = state.data
+        projects = getattr(data, "projects", None) if data is not None else None
+
         table = Table(title="Projects", show_header=True)
         table.add_column("", style="dim", width=2)
         table.add_column("Project", style="cyan")
         table.add_column("Reviews", style="yellow")
         table.add_column("Last Activity", style="dim")
 
-        if state.current_project:
+        if projects:
+            for project in projects:
+                if isinstance(project, dict):
+                    path = str(
+                        project.get("project_path")
+                        or project.get("path")
+                        or project.get("display_name")
+                        or project.get("name")
+                        or "(unknown)"
+                    )
+                    reviews = str(project.get("review_count") or project.get("reviews") or "0")
+                    last_activity = str(
+                        project.get("last_activity") or project.get("last_review") or "—"
+                    )
+                else:
+                    path = str(
+                        getattr(project, "project_path", None) or getattr(project, "path", "")
+                    )
+                    reviews = str(
+                        getattr(project, "review_count", None)
+                        or getattr(project, "reviews", None)
+                        or "0"
+                    )
+                    last_activity = str(
+                        getattr(project, "last_activity", None)
+                        or getattr(project, "last_review", None)
+                        or "—"
+                    )
+                marker = "*" if path == state.current_project else ""
+                table.add_row(marker, path or "(unknown)", reviews, last_activity)
+        elif state.current_project:
             table.add_row(
                 "*", state.current_project, str(state.review_count), state.last_review or "—"
             )
@@ -541,10 +574,10 @@ class MemoryView:
                 # Count <!-- MUSCLE_LEARNED blocks as entries
                 try:
                     content = path.read_text()
-                    # Count blocks betweenLearned markers
+                    # Count learned-memory start blocks, not matching END markers.
                     import re
 
-                    entries = len(re.findall(r"<!--\s*MUSCLE_LEARNED", content))
+                    entries = len(re.findall(r"<!--\s*MUSCLE_LEARNED_START\s*-->", content))
                 except Exception:
                     entries = 0
                 table.add_row(name, f"{size_kb:.1f} KB", mtime, str(entries) if entries else "—")
@@ -666,7 +699,7 @@ class BackupsView:
             table.add_row(
                 "—",
                 "No backups yet",
-                "Run 'muscle backup create' to create one",
+                "Created automatically before MUSCLE modifies files",
                 "—",
                 "—",
                 "—",
@@ -872,7 +905,7 @@ class TUI:
                 menu_text.append(Text(f"[{icon}] {name} ", style="bold white on blue"))
             else:
                 menu_text.append(Text(f"{icon} {name} ", style="dim"))
-        menu_text.append("   [r] Run Review  [p] Pressure  [o] Optimize  [s] Settings  [q] Quit")
+        menu_text.append("   [r] Run Review  [p] Reviews  [o] Optimize  [s] Settings  [q] Quit")
 
         layout["footer"].update(Panel(menu_text, border_style="dim"))
 

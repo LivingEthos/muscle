@@ -346,12 +346,9 @@ Return ONLY the JSON array, nothing else."""
         if not demoted_entries:
             return
 
-        try:
-            # Write to audit file
-            audit_path = self.project_path / ".muscle" / "consolidation_audit.jsonl"
-            timestamp = datetime.now().isoformat()
-
-            with open(audit_path, "a") as f:
+        def append_audit_records(audit_path: Path, timestamp: str) -> None:
+            audit_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(audit_path, "a", encoding="utf-8") as f:
                 for entry in demoted_entries:
                     audit_record = {
                         "timestamp": timestamp,
@@ -360,6 +357,20 @@ Return ONLY the JSON array, nothing else."""
                         "entry": entry,
                     }
                     f.write(json.dumps(audit_record) + "\n")
+
+        try:
+            audit_path = self.project_path / ".muscle" / "consolidation_audit.jsonl"
+            timestamp = datetime.now().isoformat()
+
+            try:
+                with advisory_file_lock(audit_path):
+                    append_audit_records(audit_path, timestamp)
+            except OSError as lock_error:
+                logger.warning(
+                    "Failed to acquire consolidation audit lock; appending without lock: %s",
+                    lock_error,
+                )
+                append_audit_records(audit_path, timestamp)
 
             logger.info(f"Recorded {len(demoted_entries)} demotions for section {section_name}")
         except Exception as e:

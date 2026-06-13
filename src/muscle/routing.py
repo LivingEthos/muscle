@@ -5,11 +5,24 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+from .host_effort_policy import (
+    HostEffortDecision,
+    decide_host_effort,
+)
+from .host_risk_preflight import (
+    HostRiskPreflightDecision,
+    HostRiskPreflightInput,
+    build_host_risk_input,
+    preflight_host_risk,
+)
+from .providers import DEFAULT_PROVIDER, PROVIDERS
 
 logger = logging.getLogger(__name__)
 _THINKING_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -35,6 +48,26 @@ class RouteDecision:
     rationale: str
     from_cache: bool = False
     routing_profile: str = "current"
+    host_risk: HostRiskPreflightDecision | None = None
+    host_effort: HostEffortDecision | None = None
+    provider_metadata: dict[str, object] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialize route data for CLI, review artifacts, and reports."""
+        payload: dict[str, object] = {
+            "tier": self.tier.value,
+            "recommended": self.recommended.value,
+            "confidence": self.confidence,
+            "rationale": self.rationale,
+            "from_cache": self.from_cache,
+            "routing_profile": self.routing_profile,
+        }
+        if self.host_risk is not None:
+            payload["host_risk"] = self.host_risk.to_dict()
+        if self.host_effort is not None:
+            payload["host_effort"] = self.host_effort.to_dict()
+        payload.update(self.provider_metadata)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -110,12 +143,19 @@ class TaskRouter:
         self._cache_db = cache_db_path or Path.home() / ".muscle" / "cache" / "cache.db"
 
     def route(self, task_description: str, scope: Path | None = None) -> RouteDecision:
+        features = _extract_route_features(task_description)
+        host_risk = preflight_host_risk(
+            _host_risk_input_from_route(task_description, scope, features=features)
+        )
         cache_key = self._cache_key(task_description, scope)
         cached = self._cache_get(cache_key)
         if cached is not None:
-            return RouteDecision(**cached, from_cache=True)
+            decision = RouteDecision(**cached, from_cache=True, host_risk=host_risk)
+            return _with_route_metadata(decision, features)
 
         decision = self._classify_via_m27(task_description, scope)
+        decision.host_risk = host_risk
+        decision = _with_route_metadata(decision, features)
         self._cache_put(cache_key, decision)
         return decision
 
@@ -269,49 +309,70 @@ def _offline_route(task_description: str, profile: str) -> RouteDecision:
     target_type = features.get("target_type", "file")
     intensity = features.get("intensity", "medium")
     static_issue_count = int(features.get("static_issue_count", 0) or 0)
+    host_risk = preflight_host_risk(_host_risk_input_from_features(task_description, features))
 
     if "pressure-review" in task_description or mode == "pressure":
-        return RouteDecision(
-            tier=TaskTier.ARCHITECTURAL,
-            recommended=Recommendation.ESCALATE_TO_HOST,
-            confidence=0.85,
-            rationale="Pressure sweeps stay host-planned.",
-            routing_profile=profile,
+        return _with_route_metadata(
+            RouteDecision(
+                tier=TaskTier.ARCHITECTURAL,
+                recommended=Recommendation.ESCALATE_TO_HOST,
+                confidence=0.85,
+                rationale="Pressure sweeps stay host-planned.",
+                routing_profile=profile,
+                host_risk=host_risk,
+            ),
+            features,
         )
 
     if profile == ROUTING_PROFILE_LEAN_REVIEW_V1:
         if target_type == "directory" and intensity in {"high", "deep"}:
-            return RouteDecision(
-                tier=TaskTier.ARCHITECTURAL,
-                recommended=Recommendation.ESCALATE_TO_HOST,
-                confidence=0.72,
-                rationale="Wide-scope directory reviews stay host-planned.",
-                routing_profile=profile,
+            return _with_route_metadata(
+                RouteDecision(
+                    tier=TaskTier.ARCHITECTURAL,
+                    recommended=Recommendation.ESCALATE_TO_HOST,
+                    confidence=0.72,
+                    rationale="Wide-scope directory reviews stay host-planned.",
+                    routing_profile=profile,
+                    host_risk=host_risk,
+                ),
+                features,
             )
         if static_issue_count > 0 or mode in {"auto-fix", "hybrid"}:
-            return RouteDecision(
-                tier=TaskTier.REASONING if static_issue_count > 0 else TaskTier.MECHANICAL,
-                recommended=Recommendation.M27_WITH_VERIFY,
-                confidence=0.79,
-                rationale="Findings-bearing or fix-applying work gets verification.",
-                routing_profile=profile,
+            return _with_route_metadata(
+                RouteDecision(
+                    tier=TaskTier.REASONING if static_issue_count > 0 else TaskTier.MECHANICAL,
+                    recommended=Recommendation.M27_WITH_VERIFY,
+                    confidence=0.79,
+                    rationale="Findings-bearing or fix-applying work gets verification.",
+                    routing_profile=profile,
+                    host_risk=host_risk,
+                ),
+                features,
             )
 
     if mode in {"auto-fix", "hybrid"}:
-        return RouteDecision(
-            tier=TaskTier.MECHANICAL,
-            recommended=Recommendation.M27_WITH_VERIFY,
-            confidence=0.81,
-            rationale="Fix application requires verification.",
-            routing_profile=profile,
+        return _with_route_metadata(
+            RouteDecision(
+                tier=TaskTier.MECHANICAL,
+                recommended=Recommendation.M27_WITH_VERIFY,
+                confidence=0.81,
+                rationale="Fix application requires verification.",
+                routing_profile=profile,
+                host_risk=host_risk,
+            ),
+            features,
         )
 
-    return RouteDecision(
-        tier=TaskTier.REASONING if static_issue_count > 0 else TaskTier.MECHANICAL,
-        recommended=Recommendation.M27,
-        confidence=0.68,
-        rationale="Default review work can stay on M2.7.",
-        routing_profile=profile,
+    return _with_route_metadata(
+        RouteDecision(
+            tier=TaskTier.REASONING if static_issue_count > 0 else TaskTier.MECHANICAL,
+            recommended=Recommendation.M27,
+            confidence=0.68,
+            rationale="Default review work can stay on M2.7.",
+            routing_profile=profile,
+            host_risk=host_risk,
+        ),
+        features,
     )
 
 
@@ -330,6 +391,135 @@ def _extract_route_features(task_description: str) -> dict[str, str]:
         else:
             features[key] = value
     return features
+
+
+def _host_risk_input_from_route(
+    task_description: str,
+    scope: Path | None,
+    *,
+    features: dict[str, str] | None = None,
+) -> HostRiskPreflightInput:
+    features = features or _extract_route_features(task_description)
+    target_paths = [str(scope)] if scope is not None else []
+    if not target_paths and features.get("target_path"):
+        target_paths.append(features["target_path"])
+    return _host_risk_input_from_features(
+        task_description,
+        features,
+        target_paths=target_paths,
+    )
+
+
+def _with_route_metadata(
+    decision: RouteDecision,
+    features: dict[str, str],
+) -> RouteDecision:
+    decision.host_effort = _host_effort_from_features(decision, features)
+    decision.provider_metadata = _provider_route_metadata(decision, features)
+    return decision
+
+
+def _host_effort_from_features(
+    decision: RouteDecision,
+    features: dict[str, str],
+) -> HostEffortDecision:
+    fallback_risk = bool(decision.host_risk and decision.host_risk.likely_fallback)
+    return decide_host_effort(
+        route_tier=decision.tier.value,
+        target_type=features.get("target_type", "unknown"),
+        target_size=_int_feature(features, "target_size", "line_count", "file_count"),
+        verification_failure_count=_int_feature(features, "verification_failure_count"),
+        high_critical_issue_count=_high_critical_issue_count(features),
+        task_novelty=_bool_feature(features.get("task_novelty")),
+        fallback_risk=fallback_risk,
+        benchmark_mode=_bool_feature(features.get("benchmark_mode"))
+        or _bool_feature(features.get("benchmark_run")),
+        explicit_user_maximum_effort=features.get("effort", "").lower()
+        in {"max", "maximum", "xhigh"},
+        time_budget_seconds=_optional_int_feature(features.get("time_budget_seconds")),
+        token_budget=_optional_int_feature(features.get("token_budget")),
+    )
+
+
+def _provider_route_metadata(
+    decision: RouteDecision,
+    features: dict[str, str],
+) -> dict[str, object]:
+    raw_provider = (
+        features.get("executor_provider") or os.environ.get("MUSCLE_PROVIDER") or DEFAULT_PROVIDER
+    )
+    provider_name = raw_provider if raw_provider in PROVIDERS else DEFAULT_PROVIDER
+    profile = PROVIDERS[provider_name]
+    recommended_host = (
+        decision.host_risk.recommended_host if decision.host_risk is not None else "claude-fable-5"
+    )
+    host_role = "fallback-host" if recommended_host == "claude-opus-4-8" else "premium-host"
+    return {
+        "recommended_host_role": host_role,
+        "recommended_executor_role": profile.provider_role,
+        "host_capability_profile": recommended_host,
+        "executor_provider": profile.name,
+        "executor_capability_profile": profile.capability_profile,
+        "provider_identity_trust": profile.identity_trust,
+        "provider_cost_confidence": profile.pricing_source,
+    }
+
+
+def _high_critical_issue_count(features: dict[str, str]) -> int:
+    explicit = _int_feature(features, "high_critical_issue_count")
+    if explicit:
+        return explicit
+    return _int_feature(features, "high_issue_count") + _int_feature(
+        features, "critical_issue_count"
+    )
+
+
+def _int_feature(features: dict[str, str], *names: str) -> int:
+    for name in names:
+        value = _optional_int_feature(features.get(name))
+        if value is not None:
+            return value
+    return 0
+
+
+def _optional_int_feature(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return None
+
+
+def _bool_feature(raw: str | None) -> bool:
+    return (raw or "").strip().lower() in {"1", "true", "yes", "y", "high", "novel"}
+
+
+def _host_risk_input_from_features(
+    task_description: str,
+    features: dict[str, str],
+    *,
+    target_paths: list[str] | None = None,
+) -> HostRiskPreflightInput:
+    static_issue_categories = _split_feature_list(features.get("static_issue_categories"))
+    requested_tools = _split_feature_list(features.get("requested_tools"))
+    paths = list(target_paths or [])
+    if not paths and features.get("target_path"):
+        paths.append(features["target_path"])
+    return build_host_risk_input(
+        task_description,
+        target_paths=paths,
+        workflow_mode=features.get("mode"),
+        static_issue_categories=static_issue_categories,
+        requested_tools=requested_tools,
+        user_declared_domain=features.get("user_declared_domain"),
+    )
+
+
+def _split_feature_list(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
 
 
 def _route_eval(case: RoutingBenchmarkCase, decision: RouteDecision) -> dict[str, Any]:

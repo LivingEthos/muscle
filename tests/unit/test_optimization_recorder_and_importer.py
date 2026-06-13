@@ -211,3 +211,44 @@ def test_codex_importer_skips_rate_limit_only_events(tmp_path: Path, monkeypatch
 
     assert summary["codex"]["sessions_imported"] == 1
     assert summary["codex"]["turns_imported"] == 1
+
+
+def test_claude_importer_separates_cache_read_from_cache_creation(tmp_path: Path) -> None:
+    project_path = tmp_path / "tracked-project"
+    project_path.mkdir()
+    pm = ProjectMemory(str(project_path))
+    importer = ExternalBenchmarkImporter(pm, str(project_path))
+
+    transcript_path = tmp_path / "claude-session.jsonl"
+    lines = [
+        {
+            "type": "user",
+            "timestamp": "2026-04-15T10:00:00Z",
+            "message": {"content": [{"type": "text", "text": "review the cache accounting"}]},
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-04-15T10:00:05Z",
+            "message": {
+                "id": "msg-cache",
+                "model": "claude-fable-5",
+                "content": [],
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 25,
+                    "cache_read_input_tokens": 40,
+                    "cache_creation_input_tokens": 60,
+                },
+            },
+        },
+    ]
+    transcript_path.write_text("\n".join(json.dumps(line) for line in lines), encoding="utf-8")
+
+    imported = importer._import_claude_file(transcript_path)
+
+    assert imported["turns_imported"] == 1
+    turns = pm.list_external_benchmark_turns(str(project_path), provider="claude")
+    assert len(turns) == 1
+    assert turns[0]["cache_tokens"] == 40
+    metadata = json.loads(turns[0]["metadata_json"])
+    assert metadata["cache_creation_tokens"] == 60

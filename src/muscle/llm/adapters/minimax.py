@@ -16,6 +16,7 @@ import httpx
 
 from muscle.llm.adapters._shared import handle_llm_error
 from muscle.llm.client import LLMClient, LLMRequest, LLMResponse, LLMStreamChunk
+from muscle.llm.tool_schema_compat import normalize_openai_compatible_payload
 
 
 class MiniMaxClient(LLMClient):
@@ -77,7 +78,7 @@ class MiniMaxClient(LLMClient):
         if stream:
             payload["stream"] = True
         payload.update(request.extra)
-        return payload
+        return normalize_openai_compatible_payload(payload).payload
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         model = request.model or self.DEFAULT_MODEL

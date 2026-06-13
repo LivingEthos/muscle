@@ -153,9 +153,9 @@ def _create_m27_client() -> M27Client:
     """Create the provider-routed execution client for loop commands.
 
     Provider-aware: only MiniMax-backed providers require a MiniMax key env
-    var. Other providers (claude-subscription, anthropic-api) enforce their
-    own credentials inside their client constructors; their errors are
-    surfaced as a friendly CLI exit instead of a traceback.
+    var. Other providers enforce their own credentials inside their client
+    constructors; their errors are surfaced as a friendly CLI exit instead of
+    a traceback.
     """
     cwd = Path.cwd()
     try:
@@ -172,7 +172,7 @@ def _create_m27_client() -> M27Client:
         sys.exit(1)
 
     try:
-        return create_client(api_key=api_key, project_path=cwd)
+        return create_client(project_path=cwd)
     except (ValueError, ProviderError) as exc:
         console.print(f"[red]Error: {exc}[/red]")
         sys.exit(1)
@@ -766,12 +766,20 @@ def _parse_budget(budget_str: str) -> tuple[BudgetMode, int]:
     try:
         return BudgetMode.FIXED, int(budget_str)
     except ValueError:
+        # Suffixed forms like "50k" are not supported; warn instead of
+        # silently granting an unlimited budget for a typo.
+        logger.warning(
+            "Unrecognized budget value %r — falling back to unlimited. "
+            "Use a plain integer, 'auto', or 'unlimited'.",
+            budget_str,
+        )
         return BudgetMode.UNLIMITED, 0
 
 
 def _run_benchmark_release_invariants() -> dict[str, Any]:
     """Run the focused offline guardrail tests used by release-gate mode."""
     command = [sys.executable, "-m", "pytest", *RELEASE_GATE_TEST_TARGETS, "-q"]
+    logger.info("Running benchmark release invariants with interpreter: %s", sys.executable)
     result = subprocess.run(
         command,
         cwd=str(Path.cwd()),
@@ -780,16 +788,29 @@ def _run_benchmark_release_invariants() -> dict[str, Any]:
     )
     stdout_lines = [line for line in result.stdout.strip().splitlines() if line.strip()]
     stderr_lines = [line for line in result.stderr.strip().splitlines() if line.strip()]
+    pytest_missing = result.returncode != 0 and any(
+        "No module named pytest" in line for line in stderr_lines
+    )
+    summary = "Focused offline guardrails for normal run/review paths and installed-pack prompt resolution."
+    error_message = None
+    if pytest_missing:
+        error_message = (
+            f"pytest is not installed for interpreter {sys.executable!r}; run `uv sync` "
+            "and invoke release gates through `uv run`."
+        )
+        summary = error_message
     return {
         "checked": True,
         "passed": result.returncode == 0,
-        "summary": "Focused offline guardrails for normal run/review paths and installed-pack prompt resolution.",
+        "summary": summary,
         "details": {
             "command": " ".join(command),
+            "interpreter": sys.executable,
             "targets": list(RELEASE_GATE_TEST_TARGETS),
             "returncode": result.returncode,
             "stdout_tail": stdout_lines[-12:],
             "stderr_tail": stderr_lines[-12:],
+            **({"error": error_message} if error_message else {}),
         },
     }
 

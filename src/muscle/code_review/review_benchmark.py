@@ -13,6 +13,7 @@ import json
 import logging
 import shutil
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +28,11 @@ from ..project_memory_types import ModelPackLesson, ModelPackMetadata
 from ..providers import create_client
 from ..routing import benchmark_routing_profiles
 from ..strategy_kb import GlobalKnowledgeBase
+from ..structured_io import (
+    audit_benchmark_integrity,
+    parse_benchmark_result_envelope,
+    render_benchmark_result_envelope,
+)
 from ..system_db import SystemDatabase
 from ..tui.project_manager import ProjectConfig, ProjectManager
 from .review_controller import ReviewController
@@ -59,6 +65,9 @@ DEFAULT_RELEASE_INVARIANT_GUARD = {
     "summary": "Operational invariant tests were not provided.",
     "details": {},
 }
+BENCHMARK_JUDGE_MODEL = "deterministic-local-review-benchmark-grader"
+BENCHMARK_PROMPT_VERSION = "benchmark-integrity-v1"
+BENCHMARK_RUBRIC_VERSION = "review-benchmark-v2"
 
 SEVERITY_VALUES = {
     "critical": Severity.CRITICAL.value,
@@ -107,6 +116,7 @@ class ReviewBenchmarkRunner:
         project_path: str,
         m27_client: M27Client | None = None,
         fixture_root: Path | None = None,
+        client_factory: Callable[..., M27Client] | None = None,
     ):
         self.project_path = Path(project_path).resolve()
         self.fixture_root = (fixture_root or FIXTURE_ROOT).resolve()
@@ -115,6 +125,7 @@ class ReviewBenchmarkRunner:
         self.release_evidence_dir = self.project_path / BENCHMARK_RELEASE_EVIDENCE_DIR
         self.release_evidence_dir.mkdir(parents=True, exist_ok=True)
         self.m27_client = m27_client
+        self.client_factory = client_factory or create_client
         self.fixture_manifest_version = FIXTURE_MANIFEST_VERSION
 
     def run_benchmark(
@@ -132,6 +143,11 @@ class ReviewBenchmarkRunner:
             "candidate": candidate,
             "suite": suite,
             "fixture_manifest_version": self.fixture_manifest_version,
+            "methodology_metadata": self._benchmark_methodology_metadata(
+                baseline=baseline,
+                candidate=candidate,
+                grader_run_count=0,
+            ),
             "scenarios": [],
         }
 
@@ -154,6 +170,11 @@ class ReviewBenchmarkRunner:
         }
         report["suite_aggregates"] = self._aggregate_by_suite(report["scenarios"])
         report["scenario_counts_by_suite"] = self._scenario_counts_by_suite(report["scenarios"])
+        report["methodology_metadata"] = self._benchmark_methodology_metadata(
+            baseline=baseline,
+            candidate=candidate,
+            grader_run_count=len(report["scenarios"]) * 2,
+        )
         report["benchmark_gates"] = self._evaluate_benchmark_gates(report)
         report["thresholds"] = self._evaluate_thresholds(report["aggregate"])
         report["meta_harness"] = self._run_meta_harness_comparisons()
@@ -172,6 +193,24 @@ class ReviewBenchmarkRunner:
             "markdown": str(md_path),
         }
         return report
+
+    @staticmethod
+    def _benchmark_methodology_metadata(
+        *,
+        baseline: str,
+        candidate: str,
+        grader_run_count: int,
+    ) -> dict[str, Any]:
+        return {
+            "judge_model": BENCHMARK_JUDGE_MODEL,
+            "prompt_version": BENCHMARK_PROMPT_VERSION,
+            "rubric_version": BENCHMARK_RUBRIC_VERSION,
+            "grader_run_count": grader_run_count,
+            "pairwise_ordering": {
+                "baseline": baseline,
+                "candidate": candidate,
+            },
+        }
 
     def _run_meta_harness_comparisons(self) -> dict[str, Any]:
         return {
@@ -341,9 +380,8 @@ class ReviewBenchmarkRunner:
     def _run_scenario(self, scenario: BenchmarkScenario, workflow_name: str) -> dict[str, Any]:
         with tempfile.TemporaryDirectory(prefix="muscle-benchmark-") as temp_dir:
             prepared = self._build_scenario_workspace(scenario, Path(temp_dir))
-            client = self._get_client()
-            previous_sink = getattr(client, "_telemetry_sink", None)
             telemetry_recorder = TelemetryRecorder(prepared.lesson_resolver.project_memory)
+            client = self._get_client()
             set_sink = getattr(client, "set_telemetry_sink", None)
             if callable(set_sink):
                 set_sink(telemetry_recorder)
@@ -369,8 +407,6 @@ class ReviewBenchmarkRunner:
                 context = controller.run()
             finally:
                 telemetry_recorder.close()
-                if callable(set_sink):
-                    set_sink(previous_sink)
             review_result = controller.get_review_result()
             if review_result is None:
                 msg = f"Benchmark run produced no review result for {scenario.name}"
@@ -550,7 +586,7 @@ class ReviewBenchmarkRunner:
     ) -> dict[str, Any]:
         baseline_metrics = self._evaluate_run_against_scenario(scenario, baseline_run)
         candidate_metrics = self._evaluate_run_against_scenario(scenario, candidate_run)
-        return {
+        result_payload = {
             "scenario": scenario.name,
             "suite": scenario.suite,
             "description": scenario.description,
@@ -559,6 +595,24 @@ class ReviewBenchmarkRunner:
             "baseline": baseline_metrics,
             "candidate": candidate_metrics,
         }
+        methodology = self._benchmark_methodology_metadata(
+            baseline=str(baseline_run.get("workflow_name") or "baseline"),
+            candidate=str(candidate_run.get("workflow_name") or "candidate"),
+            grader_run_count=2,
+        )
+        result_envelope = render_benchmark_result_envelope(
+            result=result_payload,
+            evidence_ids=[],
+            methodology=methodology,
+        )
+        result_payload["result_envelope"] = result_envelope
+        result_payload["integrity"] = audit_benchmark_integrity(
+            final_result_text=result_envelope,
+            evidence_text=json.dumps(result_payload, sort_keys=True, default=str),
+            answer_terms=self._scenario_answer_terms(scenario),
+            contamination_blocklist=self._contamination_blocklist(scenario),
+        )
+        return result_payload
 
     def _evaluate_run_against_scenario(
         self,
@@ -665,6 +719,24 @@ class ReviewBenchmarkRunner:
             return False
         haystack = f"{issue.title} {issue.description}".lower()
         return any(matcher.lower() in haystack for matcher in expected.matchers)
+
+    @staticmethod
+    def _scenario_answer_terms(scenario: BenchmarkScenario) -> list[str]:
+        terms: list[str] = []
+        for finding in scenario.expected_findings:
+            terms.extend(finding.matchers)
+        return terms
+
+    @staticmethod
+    def _contamination_blocklist(scenario: BenchmarkScenario) -> list[str]:
+        root = str(scenario.project_root or "")
+        return [
+            "answer_key",
+            "expected_findings",
+            "benchmark_answers",
+            "solutions/",
+            f"{root}/answers" if root else "",
+        ]
 
     @staticmethod
     def _relative_issue_path(file_path: str, scenario_target_path: str) -> str:
@@ -919,6 +991,33 @@ class ReviewBenchmarkRunner:
     def _evaluate_benchmark_gates(self, report: dict[str, Any]) -> dict[str, Any]:
         suite_aggregates = dict(report.get("suite_aggregates", {}))
         gates: dict[str, dict[str, Any]] = {}
+        envelope_failures: list[dict[str, str]] = []
+        integrity_issues: list[dict[str, Any]] = []
+        for scenario in report.get("scenarios", []):
+            scenario_name = str(scenario.get("scenario") or "unknown")
+            try:
+                parse_benchmark_result_envelope(str(scenario.get("result_envelope") or ""))
+            except ValueError as exc:
+                envelope_failures.append({"scenario": scenario_name, "error": str(exc)})
+            integrity = scenario.get("integrity")
+            if isinstance(integrity, dict) and not integrity.get("passed", True):
+                integrity_issues.append(
+                    {
+                        "scenario": scenario_name,
+                        "issues": integrity.get("issues", []),
+                    }
+                )
+
+        gates["result_envelopes_parseable"] = {
+            "passed": not envelope_failures,
+            "summary": "Every benchmark scenario must expose one parseable result envelope.",
+            "failures": envelope_failures,
+        }
+        gates["benchmark_integrity_clean"] = {
+            "passed": not integrity_issues,
+            "summary": "Benchmark scenarios must not show contamination or transcript leakage.",
+            "issues": integrity_issues,
+        }
 
         protected_suites = ["core-review", "neutral-baseline", "unrelated-project"]
         protected_missing = [suite for suite in protected_suites if suite not in suite_aggregates]
@@ -1384,9 +1483,9 @@ class ReviewBenchmarkRunner:
         return counts
 
     def _get_client(self) -> M27Client:
-        if self.m27_client is None:
-            self.m27_client = create_client(project_path=self.project_path)
-        return self.m27_client
+        if self.m27_client is not None:
+            return self.m27_client
+        return self.client_factory(project_path=self.project_path)
 
     def _resolve_fixture_path(self, relative_path: str) -> Path:
         return self._assert_within_fixture_root((self.fixture_root / relative_path).resolve())

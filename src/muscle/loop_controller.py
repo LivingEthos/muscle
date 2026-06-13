@@ -207,6 +207,7 @@ class LoopController:
                 ctx.stats.output_tokens,
                 ctx.stats.total_tokens,
             )
+            cached_in = min(max(0, ctx.stats.cached_input_tokens), tokens_in)
             metrics.record(
                 DelegationEvent(
                     session_id=ctx.session_id,
@@ -214,7 +215,9 @@ class LoopController:
                     task_tier=(ctx.delegation_route or {}).get("tier"),
                     m27_tokens_in=tokens_in,
                     m27_tokens_out=tokens_out,
-                    m27_usd_cents=estimate_m27_cents(model, tokens_in, tokens_out),
+                    m27_usd_cents=estimate_m27_cents(
+                        model, tokens_in, tokens_out, cached_input_tokens=cached_in
+                    ),
                     escalations_emitted=int(
                         bool(
                             ctx.delegation_route
@@ -222,7 +225,10 @@ class LoopController:
                             == Recommendation.ESCALATE_TO_HOST.value
                         )
                     ),
-                    metadata=provider_metadata(self._m27_client),
+                    metadata={
+                        "m27_cached_tokens_in": cached_in,
+                        **provider_metadata(self._m27_client),
+                    },
                 )
             )
         except Exception as exc:
@@ -398,6 +404,7 @@ class LoopController:
         ctx.stats.total_tokens += usage.total
         ctx.stats.input_tokens += usage.input_tokens
         ctx.stats.output_tokens += usage.output_tokens
+        ctx.stats.cached_input_tokens += usage.cached_input_tokens
         budget_ok, budget_reason = self._check_budget(usage.total)
         if not budget_ok:
             self._abort_requested = True
@@ -534,6 +541,7 @@ class LoopController:
             token_cost=gen_usage.total,
             input_token_cost=gen_usage.input_tokens,
             output_token_cost=gen_usage.output_tokens,
+            cached_input_token_cost=gen_usage.cached_input_tokens,
             duration_seconds=duration,
             files_generated=changed_files,
         )
@@ -796,6 +804,7 @@ class LoopController:
                 ctx.stats.total_tokens += iteration_result.token_cost
                 ctx.stats.input_tokens += iteration_result.input_token_cost
                 ctx.stats.output_tokens += iteration_result.output_token_cost
+                ctx.stats.cached_input_tokens += iteration_result.cached_input_token_cost
                 ctx.stats.total_duration_seconds += iteration_result.duration_seconds
 
                 # LC-01: emit overspend event exactly once when budget is first exceeded

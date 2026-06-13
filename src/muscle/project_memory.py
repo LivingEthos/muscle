@@ -143,6 +143,10 @@ class ProjectMemory:
                 if not self._is_locked_error(exc) or attempt == SQLITE_LOCK_RETRY_ATTEMPTS - 1:
                     raise
                 time.sleep(SQLITE_LOCK_RETRY_DELAY_SECONDS * (attempt + 1))
+            except BaseException:
+                if conn is not None:
+                    conn.rollback()
+                raise
             finally:
                 if conn is not None:
                     conn.close()
@@ -667,6 +671,38 @@ class ProjectMemory:
     # Memory decision helpers
     # -------------------------------------------------------------------------
 
+    @staticmethod
+    def _insert_decision_conn(
+        conn: sqlite3.Connection,
+        *,
+        project_path: str,
+        decision_type: str,
+        source_table: str,
+        source_id: int,
+        evidence_json: str,
+        score_json: str,
+        reasoning: str,
+    ) -> int:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO memory_decisions
+            (project_path, created_at, decision_type, source_table, source_id, evidence_json, score_json, reasoning)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                project_path,
+                datetime.now().isoformat(),
+                decision_type,
+                source_table,
+                source_id,
+                evidence_json,
+                score_json,
+                reasoning,
+            ),
+        )
+        return cursor.lastrowid or 0
+
     def insert_decision(
         self,
         project_path: str,
@@ -681,26 +717,18 @@ class ProjectMemory:
         conn = None
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO memory_decisions
-                (project_path, created_at, decision_type, source_table, source_id, evidence_json, score_json, reasoning)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    project_path,
-                    datetime.now().isoformat(),
-                    decision_type,
-                    source_table,
-                    source_id,
-                    evidence_json,
-                    score_json,
-                    reasoning,
-                ),
+            decision_id = self._insert_decision_conn(
+                conn,
+                project_path=project_path,
+                decision_type=decision_type,
+                source_table=source_table,
+                source_id=source_id,
+                evidence_json=evidence_json,
+                score_json=score_json,
+                reasoning=reasoning,
             )
             conn.commit()
-            return cursor.lastrowid or 0
+            return decision_id
         finally:
             if conn:
                 conn.close()
@@ -732,6 +760,36 @@ class ProjectMemory:
             if conn:
                 conn.close()
 
+    @staticmethod
+    def _insert_action_log_conn(
+        conn: sqlite3.Connection,
+        *,
+        project_path: str,
+        action_type: str,
+        entity_type: str,
+        entity_id: int | None = None,
+        details_json: str | None = None,
+        actor: str = "muscle",
+    ) -> int:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO action_log
+            (project_path, created_at, action_type, entity_type, entity_id, details_json, actor)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                project_path,
+                datetime.now().isoformat(),
+                action_type,
+                entity_type,
+                entity_id,
+                details_json or "{}",
+                actor,
+            ),
+        )
+        return cursor.lastrowid or 0
+
     def insert_action_log(
         self,
         project_path: str,
@@ -745,25 +803,17 @@ class ProjectMemory:
         conn = None
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO action_log
-                (project_path, created_at, action_type, entity_type, entity_id, details_json, actor)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    project_path,
-                    datetime.now().isoformat(),
-                    action_type,
-                    entity_type,
-                    entity_id,
-                    details_json or "{}",
-                    actor,
-                ),
+            action_id = self._insert_action_log_conn(
+                conn,
+                project_path=project_path,
+                action_type=action_type,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                details_json=details_json,
+                actor=actor,
             )
             conn.commit()
-            return cursor.lastrowid or 0
+            return action_id
         finally:
             if conn:
                 conn.close()
@@ -1013,6 +1063,26 @@ class ProjectMemory:
     # Learned rule helpers
     # -------------------------------------------------------------------------
 
+    @staticmethod
+    def _insert_learned_rule_conn(
+        conn: sqlite3.Connection,
+        *,
+        project_path: str,
+        rule_text: str,
+        trigger_pattern: str,
+        status: str = "active",
+    ) -> int:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO learned_rules
+            (project_path, created_at, rule_text, trigger_pattern, recurrence_count, success_rate, status)
+            VALUES (?, ?, ?, ?, 1, 0.0, ?)
+            """,
+            (project_path, datetime.now().isoformat(), rule_text, trigger_pattern, status),
+        )
+        return cursor.lastrowid or 0
+
     def insert_learned_rule(
         self,
         project_path: str,
@@ -1024,17 +1094,15 @@ class ProjectMemory:
         conn = None
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO learned_rules
-                (project_path, created_at, rule_text, trigger_pattern, recurrence_count, success_rate, status)
-                VALUES (?, ?, ?, ?, 1, 0.0, ?)
-                """,
-                (project_path, datetime.now().isoformat(), rule_text, trigger_pattern, status),
+            rule_id = self._insert_learned_rule_conn(
+                conn,
+                project_path=project_path,
+                rule_text=rule_text,
+                trigger_pattern=trigger_pattern,
+                status=status,
             )
             conn.commit()
-            return cursor.lastrowid or 0
+            return rule_id
         finally:
             if conn:
                 conn.close()
@@ -2100,9 +2168,8 @@ class ProjectMemory:
 
     def unlink_related_project(self, project_path: str, source_project_path: str) -> bool:
         """Mark related-project links inactive and remove snapshot-imported lessons."""
-        conn = None
-        try:
-            conn = self._get_connection()
+
+        def operation(conn: sqlite3.Connection) -> bool:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -2121,8 +2188,8 @@ class ProjectMemory:
                 (project_path, source_project_path),
             )
             deleted_snapshot_lessons = cursor.rowcount
-            conn.commit()
-            self.insert_action_log(
+            self._insert_action_log_conn(
+                conn,
                 project_path=project_path,
                 action_type="related_project_unlinked",
                 entity_type="related_project",
@@ -2136,9 +2203,8 @@ class ProjectMemory:
                 ),
             )
             return True
-        finally:
-            if conn:
-                conn.close()
+
+        return bool(self._run_write_transaction(operation))
 
     def upsert_transferred_lesson(
         self,
@@ -2401,36 +2467,66 @@ class ProjectMemory:
             "rejections": rejected,
         }
 
-    def record_transferred_lesson_outcome(self, lesson_key: str, success: bool) -> bool:
-        """Increment validation counters for a transferred lesson."""
-        conn = None
-        try:
-            conn = self._get_connection()
+    def record_transferred_lesson_outcome(
+        self,
+        lesson_key: str,
+        success: bool,
+        *,
+        source_project_path: str | None = None,
+    ) -> bool:
+        """Increment validation counters for a transferred lesson.
+
+        The ``transferred_lessons`` UNIQUE constraint is
+        ``(project_path, lesson_key, source_project_path)``, so a single ``lesson_key``
+        (sha1 of trigger + text) can map to several rows when two different source
+        projects contribute identical content into the same target project. Passing
+        ``source_project_path`` scopes every read and write to that one row, so the
+        counters and the audit decision describe the source that was actually used.
+        Leaving it ``None`` preserves the legacy whole-set behaviour for callers that
+        do not track the source.
+        """
+
+        scope_clause = ""
+        scope_params: tuple[str, ...] = ()
+        if source_project_path is not None:
+            scope_clause = " AND source_project_path = ?"
+            scope_params = (source_project_path,)
+
+        def operation(conn: sqlite3.Connection) -> bool:
             cursor = conn.cursor()
             cursor.execute(
-                """
-                SELECT validation_count, success_count, validation_status
-                FROM transferred_lessons
-                WHERE lesson_key = ? AND project_path = ?
+                f"""
+                UPDATE transferred_lessons
+                SET validation_count = COALESCE(validation_count, 0) + 1,
+                    success_count = COALESCE(success_count, 0) + ?,
+                    updated_at = ?
+                WHERE lesson_key = ? AND project_path = ?{scope_clause}
                 """,
-                (lesson_key, str(self.project_path)),
+                (
+                    1 if success else 0,
+                    datetime.now().isoformat(),
+                    lesson_key,
+                    str(self.project_path),
+                    *scope_params,
+                ),
+            )
+            if cursor.rowcount == 0:
+                return False
+
+            cursor.execute(
+                f"""
+                SELECT id, source_project_path, validation_count, success_count, validation_status
+                FROM transferred_lessons
+                WHERE lesson_key = ? AND project_path = ?{scope_clause}
+                """,
+                (lesson_key, str(self.project_path), *scope_params),
             )
             row = cursor.fetchone()
             if row is None:
                 return False
-
-            validation_count = int(row["validation_count"] or 0) + 1
-            success_count = int(row["success_count"] or 0) + (1 if success else 0)
+            validation_count = int(row["validation_count"] or 0)
+            success_count = int(row["success_count"] or 0)
             current_status = str(row["validation_status"] or "provisional")
-            cursor.execute(
-                """
-                SELECT id, source_project_path
-                FROM transferred_lessons
-                WHERE lesson_key = ? AND project_path = ?
-                """,
-                (lesson_key, str(self.project_path)),
-            )
-            lesson_row = cursor.fetchone()
             next_status = current_status
             if current_status in ACTIVE_TRANSFERRED_LESSON_STATUSES:
                 if success_count >= TRANSFER_VALIDATION_SUCCESS_THRESHOLD:
@@ -2438,34 +2534,29 @@ class ProjectMemory:
                 else:
                     next_status = "provisional"
             cursor.execute(
-                """
+                f"""
                 UPDATE transferred_lessons
-                SET validation_count = ?,
-                    success_count = ?,
-                    validation_status = ?,
+                SET validation_status = ?,
                     updated_at = ?
-                WHERE lesson_key = ? AND project_path = ?
+                WHERE lesson_key = ? AND project_path = ?{scope_clause}
                 """,
                 (
-                    validation_count,
-                    success_count,
                     next_status,
                     datetime.now().isoformat(),
                     lesson_key,
                     str(self.project_path),
+                    *scope_params,
                 ),
             )
-            conn.commit()
             if current_status != next_status and next_status == "validated":
-                lesson_id = int(lesson_row["id"] or 0) if lesson_row else 0
-                source_project_path = (
-                    str(lesson_row["source_project_path"] or "") if lesson_row else ""
-                )
+                lesson_id = int(row["id"] or 0)
+                source_project_path = str(row["source_project_path"] or "")
                 reasoning = (
                     "Transferred lesson validated in the current project after "
                     f"{success_count}/{validation_count} successful validation events"
                 )
-                self.insert_decision(
+                self._insert_decision_conn(
+                    conn,
                     project_path=str(self.project_path),
                     decision_type="validate_transferred_lesson",
                     source_table="transferred_lessons",
@@ -2490,7 +2581,8 @@ class ProjectMemory:
                     ),
                     reasoning=reasoning,
                 )
-                self.insert_action_log(
+                self._insert_action_log_conn(
+                    conn,
                     project_path=str(self.project_path),
                     action_type="transferred_lesson_validated",
                     entity_type="transferred_lesson",
@@ -2506,111 +2598,127 @@ class ProjectMemory:
                         sort_keys=True,
                     ),
                 )
-            return cursor.rowcount > 0
-        finally:
-            if conn:
-                conn.close()
+            return True
+
+        return bool(self._run_write_transaction(operation))
 
     def promote_transferred_lesson(self, lesson_id: int, force: bool = False) -> int:
         """Promote a validated transferred lesson into project-local learned rules."""
-        lesson = self.get_transferred_lesson(lesson_id)
-        if lesson is None:
-            return 0
-        evaluation = self._evaluate_transferred_lesson_row(lesson)
-        if not force and not evaluation["promotion_candidate"]:
-            return 0
-        if lesson.get("validation_status") == "promoted":
-            return int(lesson.get("promoted_rule_id", 0) or 0)
-        if lesson.get("validation_status") == "archived" and not force:
-            return 0
 
-        existing_rule = None
-        for row in self.list_learned_rules(
-            project_path=str(self.project_path),
-            trigger_pattern=str(lesson.get("trigger_pattern", "")),
-            limit=200,
-        ):
-            if str(row.get("rule_text", "")) == str(lesson.get("lesson_text", "")) and str(
-                row.get("status", "")
-            ) in {"active", "promoted"}:
-                existing_rule = row
-                break
+        def operation(conn: sqlite3.Connection) -> int:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM transferred_lessons WHERE id = ?", (lesson_id,))
+            lesson_row = cursor.fetchone()
+            if lesson_row is None:
+                return 0
+            lesson = dict(lesson_row)
+            evaluation = self._evaluate_transferred_lesson_row(lesson)
+            if not force and not evaluation["promotion_candidate"]:
+                return 0
+            if lesson.get("validation_status") == "promoted":
+                return int(lesson.get("promoted_rule_id", 0) or 0)
+            if lesson.get("validation_status") == "archived" and not force:
+                return 0
 
-        if existing_rule is not None:
-            local_rule_id = int(existing_rule.get("id", 0) or 0)
-        else:
-            local_rule_id = self.insert_learned_rule(
-                project_path=str(self.project_path),
-                rule_text=str(lesson.get("lesson_text", "")),
-                trigger_pattern=str(lesson.get("trigger_pattern", "")),
-                status="active",
-            )
-        conn = None
-        try:
-            conn = self._get_connection()
-            conn.execute(
+            cursor.execute(
                 """
-                UPDATE transferred_lessons
-                SET validation_status = 'promoted',
-                    promoted_rule_id = ?,
-                    updated_at = ?
-                WHERE id = ?
+                SELECT * FROM learned_rules
+                WHERE project_path = ?
+                  AND trigger_pattern = ?
+                  AND rule_text = ?
+                  AND status IN ('active', 'promoted')
+                ORDER BY recurrence_count DESC, success_rate DESC
+                LIMIT 1
                 """,
-                (local_rule_id, datetime.now().isoformat(), lesson_id),
+                (
+                    str(self.project_path),
+                    str(lesson.get("trigger_pattern", "")),
+                    str(lesson.get("lesson_text", "")),
+                ),
             )
-            conn.commit()
-        finally:
-            if conn:
-                conn.close()
+            existing_rule = cursor.fetchone()
 
-        self.insert_decision(
-            project_path=str(self.project_path),
-            decision_type="promote_transferred_lesson",
-            source_table="transferred_lessons",
-            source_id=lesson_id,
-            evidence_json=json.dumps(
-                {
-                    "lesson_key": lesson.get("lesson_key"),
-                    "validation_count": evaluation["validation_count"],
-                    "success_count": evaluation["success_count"],
-                    "success_rate": evaluation["success_rate"],
-                    "manual_accepts": evaluation["manual_accepts"],
-                    "manual_rejects": evaluation["manual_rejects"],
-                    "source_project_path": lesson.get("source_project_path"),
-                },
-                sort_keys=True,
-            ),
-            score_json=json.dumps(
-                {
-                    "recommendation": evaluation["recommendation"],
-                    "promotion_candidate": evaluation["promotion_candidate"],
-                    "archive_candidate": evaluation["archive_candidate"],
-                },
-                sort_keys=True,
-            ),
-            reasoning=(
-                "Promoted transferred lesson into project-local learned rules after "
-                f"{evaluation['recommendation_reason']}"
-            ),
+            if existing_rule is not None:
+                local_rule_id = int(existing_rule["id"] or 0)
+                used_existing_rule = True
+            else:
+                local_rule_id = self._insert_learned_rule_conn(
+                    conn,
+                    project_path=str(self.project_path),
+                    rule_text=str(lesson.get("lesson_text", "")),
+                    trigger_pattern=str(lesson.get("trigger_pattern", "")),
+                    status="active",
+                )
+                used_existing_rule = False
+
+            self._mark_transferred_lesson_promoted(conn, lesson_id, local_rule_id)
+            self._insert_decision_conn(
+                conn,
+                project_path=str(self.project_path),
+                decision_type="promote_transferred_lesson",
+                source_table="transferred_lessons",
+                source_id=lesson_id,
+                evidence_json=json.dumps(
+                    {
+                        "lesson_key": lesson.get("lesson_key"),
+                        "validation_count": evaluation["validation_count"],
+                        "success_count": evaluation["success_count"],
+                        "success_rate": evaluation["success_rate"],
+                        "manual_accepts": evaluation["manual_accepts"],
+                        "manual_rejects": evaluation["manual_rejects"],
+                        "source_project_path": lesson.get("source_project_path"),
+                    },
+                    sort_keys=True,
+                ),
+                score_json=json.dumps(
+                    {
+                        "recommendation": evaluation["recommendation"],
+                        "promotion_candidate": evaluation["promotion_candidate"],
+                        "archive_candidate": evaluation["archive_candidate"],
+                    },
+                    sort_keys=True,
+                ),
+                reasoning=(
+                    "Promoted transferred lesson into project-local learned rules after "
+                    f"{evaluation['recommendation_reason']}"
+                ),
+            )
+            self._insert_action_log_conn(
+                conn,
+                project_path=str(self.project_path),
+                action_type="transferred_lesson_promoted",
+                entity_type="transferred_lesson",
+                entity_id=lesson_id,
+                details_json=json.dumps(
+                    {
+                        "lesson_key": lesson.get("lesson_key"),
+                        "source_project_path": lesson.get("source_project_path"),
+                        "promoted_rule_id": local_rule_id,
+                        "force": force,
+                        "recommendation_reason": evaluation["recommendation_reason"],
+                        "used_existing_rule": used_existing_rule,
+                    },
+                    sort_keys=True,
+                ),
+            )
+            return local_rule_id
+
+        return int(self._run_write_transaction(operation))
+
+    @staticmethod
+    def _mark_transferred_lesson_promoted(
+        conn: sqlite3.Connection, lesson_id: int, local_rule_id: int
+    ) -> None:
+        conn.execute(
+            """
+            UPDATE transferred_lessons
+            SET validation_status = 'promoted',
+                promoted_rule_id = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (local_rule_id, datetime.now().isoformat(), lesson_id),
         )
-        self.insert_action_log(
-            project_path=str(self.project_path),
-            action_type="transferred_lesson_promoted",
-            entity_type="transferred_lesson",
-            entity_id=lesson_id,
-            details_json=json.dumps(
-                {
-                    "lesson_key": lesson.get("lesson_key"),
-                    "source_project_path": lesson.get("source_project_path"),
-                    "promoted_rule_id": local_rule_id,
-                    "force": force,
-                    "recommendation_reason": evaluation["recommendation_reason"],
-                    "used_existing_rule": existing_rule is not None,
-                },
-                sort_keys=True,
-            ),
-        )
-        return local_rule_id
 
     def archive_transferred_lesson(
         self,
@@ -2620,28 +2728,30 @@ class ProjectMemory:
         force: bool = False,
     ) -> bool:
         """Archive a transferred lesson that has aged out or failed to prove useful."""
-        lesson = self.get_transferred_lesson(lesson_id)
-        if lesson is None:
-            return False
-        evaluation = self._evaluate_transferred_lesson_row(lesson)
-        if not force and not evaluation["archive_candidate"]:
-            return False
-        if lesson.get("validation_status") == "promoted" and not force:
-            return False
-        if lesson.get("validation_status") == "archived":
-            return True
 
-        metadata = self._load_json_object(lesson.get("metadata_json"))
-        metadata["archive"] = {
-            "reason": reason,
-            "archived_at": datetime.now().isoformat(),
-            "previous_status": lesson.get("validation_status", "provisional"),
-        }
+        def operation(conn: sqlite3.Connection) -> bool:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM transferred_lessons WHERE id = ?", (lesson_id,))
+            lesson_row = cursor.fetchone()
+            if lesson_row is None:
+                return False
+            lesson = dict(lesson_row)
+            evaluation = self._evaluate_transferred_lesson_row(lesson)
+            if not force and not evaluation["archive_candidate"]:
+                return False
+            if lesson.get("validation_status") == "promoted" and not force:
+                return False
+            if lesson.get("validation_status") == "archived":
+                return True
 
-        conn = None
-        try:
-            conn = self._get_connection()
-            conn.execute(
+            metadata = self._load_json_object(lesson.get("metadata_json"))
+            metadata["archive"] = {
+                "reason": reason,
+                "archived_at": datetime.now().isoformat(),
+                "previous_status": lesson.get("validation_status", "provisional"),
+            }
+
+            cursor.execute(
                 """
                 UPDATE transferred_lessons
                 SET validation_status = 'archived',
@@ -2651,52 +2761,51 @@ class ProjectMemory:
                 """,
                 (json.dumps(metadata, sort_keys=True), datetime.now().isoformat(), lesson_id),
             )
-            conn.commit()
-        finally:
-            if conn:
-                conn.close()
+            self._insert_decision_conn(
+                conn,
+                project_path=str(self.project_path),
+                decision_type="archive_transferred_lesson",
+                source_table="transferred_lessons",
+                source_id=lesson_id,
+                evidence_json=json.dumps(
+                    {
+                        "lesson_key": lesson.get("lesson_key"),
+                        "validation_count": evaluation["validation_count"],
+                        "success_count": evaluation["success_count"],
+                        "success_rate": evaluation["success_rate"],
+                        "idle_days": evaluation["idle_days"],
+                        "source_project_path": lesson.get("source_project_path"),
+                    },
+                    sort_keys=True,
+                ),
+                score_json=json.dumps(
+                    {
+                        "recommendation": evaluation["recommendation"],
+                        "archive_candidate": evaluation["archive_candidate"],
+                    },
+                    sort_keys=True,
+                ),
+                reasoning=reason,
+            )
+            self._insert_action_log_conn(
+                conn,
+                project_path=str(self.project_path),
+                action_type="transferred_lesson_archived",
+                entity_type="transferred_lesson",
+                entity_id=lesson_id,
+                details_json=json.dumps(
+                    {
+                        "lesson_key": lesson.get("lesson_key"),
+                        "reason": reason,
+                        "force": force,
+                        "source_project_path": lesson.get("source_project_path"),
+                    },
+                    sort_keys=True,
+                ),
+            )
+            return True
 
-        self.insert_decision(
-            project_path=str(self.project_path),
-            decision_type="archive_transferred_lesson",
-            source_table="transferred_lessons",
-            source_id=lesson_id,
-            evidence_json=json.dumps(
-                {
-                    "lesson_key": lesson.get("lesson_key"),
-                    "validation_count": evaluation["validation_count"],
-                    "success_count": evaluation["success_count"],
-                    "success_rate": evaluation["success_rate"],
-                    "idle_days": evaluation["idle_days"],
-                    "source_project_path": lesson.get("source_project_path"),
-                },
-                sort_keys=True,
-            ),
-            score_json=json.dumps(
-                {
-                    "recommendation": evaluation["recommendation"],
-                    "archive_candidate": evaluation["archive_candidate"],
-                },
-                sort_keys=True,
-            ),
-            reasoning=reason,
-        )
-        self.insert_action_log(
-            project_path=str(self.project_path),
-            action_type="transferred_lesson_archived",
-            entity_type="transferred_lesson",
-            entity_id=lesson_id,
-            details_json=json.dumps(
-                {
-                    "lesson_key": lesson.get("lesson_key"),
-                    "reason": reason,
-                    "force": force,
-                    "source_project_path": lesson.get("source_project_path"),
-                },
-                sort_keys=True,
-            ),
-        )
-        return True
+        return bool(self._run_write_transaction(operation))
 
     def insert_model_identity_history(
         self,
@@ -2950,14 +3059,29 @@ class ProjectMemory:
             lesson_source="related",
             only_pending=only_pending,
         )
-        lesson_keys = sorted(
-            {str(row.get("lesson_key", "")) for row in updated_rows if row.get("lesson_key")}
+        # Credit the exact (lesson_key, source_project_path) row that was used: a
+        # lesson_key can resolve to several transferred_lessons rows when two source
+        # projects contribute identical content. The usage events carry the source the
+        # resolver actually picked, so scope the outcome to that row.
+        lesson_refs = sorted(
+            {
+                (
+                    str(row.get("lesson_key", "")),
+                    str(row.get("source_project_path", "") or ""),
+                )
+                for row in updated_rows
+                if row.get("lesson_key")
+            }
         )
-        for lesson_key in lesson_keys:
-            self.record_transferred_lesson_outcome(lesson_key, success=success)
+        for lesson_key, lesson_source in lesson_refs:
+            self.record_transferred_lesson_outcome(
+                lesson_key,
+                success=success,
+                source_project_path=lesson_source or None,
+            )
         return {
             "events_updated": len(updated_rows),
-            "lessons_updated": len(lesson_keys),
+            "lessons_updated": len(lesson_refs),
         }
 
     def record_manual_transferred_lesson_feedback(
@@ -2986,7 +3110,11 @@ class ProjectMemory:
             outcome=outcome,
             metadata_json=json.dumps({"note": note or ""}, sort_keys=True),
         )
-        self.record_transferred_lesson_outcome(lesson_key, success=success)
+        self.record_transferred_lesson_outcome(
+            lesson_key,
+            success=success,
+            source_project_path=str(lesson.get("source_project_path", "") or "") or None,
+        )
         return True
 
     # -------------------------------------------------------------------------

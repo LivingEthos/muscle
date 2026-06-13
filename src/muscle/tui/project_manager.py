@@ -40,6 +40,8 @@ class ProjectConfig:
     automation_level: str = "auto-fix"
     review_gate: str = "block+fix"
     review_execution: str = "local"
+    review_async_workers: bool = False
+    review_async_worker_limit: int = 3
     triggers: list[str] = field(default_factory=list)
     github_enabled: bool = False
     memory_location: str = DEFAULT_MUSCLE_DIR
@@ -143,6 +145,10 @@ class ProjectManager:
                 "automation_level": config.automation_level,
                 "review_gate": config.review_gate,
                 "review_execution": config.review_execution,
+                "review": {
+                    "async_workers": config.review_async_workers,
+                    "async_worker_limit": config.review_async_worker_limit,
+                },
                 "triggers": config.triggers,
                 "github_enabled": config.github_enabled,
                 "memory_location": config.memory_location,
@@ -247,6 +253,10 @@ class ProjectManager:
         except (KeyError, TypeError):
             return None
 
+        review_settings = data.get("review")
+        if not isinstance(review_settings, dict):
+            review_settings = {}
+
         return ProjectConfig(
             name=data["name"],
             path=project_path,
@@ -254,6 +264,16 @@ class ProjectManager:
             automation_level=data.get("automation_level", "auto-fix"),
             review_gate=data.get("review_gate", "block+fix"),
             review_execution=data.get("review_execution", "local"),
+            review_async_workers=bool(
+                review_settings.get("async_workers", data.get("review_async_workers", False))
+            ),
+            review_async_worker_limit=int(
+                review_settings.get(
+                    "async_worker_limit",
+                    data.get("review_async_worker_limit", 3),
+                )
+                or 3
+            ),
             triggers=data.get("triggers", []),
             github_enabled=data.get("github_enabled", False),
             memory_location=data.get("memory_location", DEFAULT_MUSCLE_DIR),
@@ -406,6 +426,8 @@ class ProjectManager:
         hooks_enabled: bool | None = None,
         review_gate: str | None = None,
         review_execution: str | None = None,
+        review_async_workers: bool | None = None,
+        review_async_worker_limit: int | None = None,
         platform: str | None = None,
         cli_path: str | None = None,
         api_key_source: str | None = None,
@@ -440,6 +462,13 @@ class ProjectManager:
             data["project"]["review_gate"] = review_gate
         if review_execution is not None:
             data["project"]["review_execution"] = review_execution
+        if review_async_workers is not None or review_async_worker_limit is not None:
+            review_settings = data["project"].setdefault("review", {})
+            if isinstance(review_settings, dict):
+                if review_async_workers is not None:
+                    review_settings["async_workers"] = review_async_workers
+                if review_async_worker_limit is not None:
+                    review_settings["async_worker_limit"] = review_async_worker_limit
         if platform is not None:
             data["project"]["platform"] = platform
         if cli_path is not None:

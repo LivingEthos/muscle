@@ -10,6 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from muscle.cli import cli
+from muscle.host_risk_preflight import HostRiskReasonCode
 from muscle.routing import (
     Recommendation,
     RouteDecision,
@@ -45,6 +46,8 @@ class TestRouteDecision:
         )
         assert rd.from_cache is False
         assert rd.routing_profile == "current"
+        assert rd.host_risk is None
+        assert rd.host_effort is None
 
 
 class TestParseJsonResponse:
@@ -212,6 +215,61 @@ class TestRouteCLI:
         output = json.loads(result.output)
         assert output["tier"] == "reasoning"
         assert output["recommended"] == "m27"
+        assert output["host_risk"]["safe_for_fable"] is True
+        assert output["host_risk"]["recommended_host"] == "claude-fable-5"
+        assert output["host_effort"]["effort"] == "medium"
+        assert output["host_effort"]["max_output_tokens"] == 4096
+        assert output["recommended_host_role"] == "premium-host"
+        assert output["recommended_executor_role"] == "cheap-worker"
+        assert output["host_capability_profile"] == "claude-fable-5"
+        assert output["executor_provider"] == "minimax-plan"
+        assert output["executor_capability_profile"] == "minimax-m3"
+        assert output["provider_identity_trust"] == "first-party"
+        assert output["provider_cost_confidence"] == "known"
+
+    def test_route_json_includes_host_risk_metadata(self, runner: CliRunner) -> None:
+        with patch.dict("os.environ", {}, clear=False):
+            import os as _os
+
+            _os.environ.pop("MINIMAX_API_KEY", None)
+            _os.environ.pop("ANTHROPIC_API_KEY", None)
+            result = runner.invoke(
+                cli,
+                [
+                    "route",
+                    "--task",
+                    "Internal authorized pentest exploit proof of concept for our lab app",
+                    "--json",
+                ],
+            )
+
+        assert result.exit_code == 0
+        output = json.loads(result.output)
+        assert output["host_risk"]["likely_fallback"] is True
+        assert output["host_risk"]["needs_user_confirmation"] is True
+        assert output["host_risk"]["recommended_host"] == "claude-opus-4-8"
+        assert "cyber_dual_use" in output["host_risk"]["reason_codes"]
+        assert output["host_effort"]["effort"] == "medium"
+        assert output["recommended_host_role"] == "fallback-host"
+
+    def test_route_json_can_surface_openrouter_executor_metadata(
+        self,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("MUSCLE_PROVIDER", "openrouter-api")
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        result = runner.invoke(cli, ["route", "--task", "summarize static findings", "--json"])
+
+        assert result.exit_code == 0
+        output = json.loads(result.output)
+        assert output["executor_provider"] == "openrouter-api"
+        assert output["recommended_executor_role"] == "user-selected-gateway"
+        assert output["executor_capability_profile"] == "openrouter-selected"
+        assert output["provider_identity_trust"] == "gateway-reported"
+        assert output["provider_cost_confidence"] == "unknown"
 
     def test_route_falls_back_to_offline_when_no_api_key(self, runner: CliRunner) -> None:
         """B1 + N3: missing API key must not raise; the heuristic produces a
@@ -256,6 +314,51 @@ class TestOfflineRoute:
         )
         assert decision.recommended == Recommendation.ESCALATE_TO_HOST
         assert decision.tier == TaskTier.ARCHITECTURAL
+        assert decision.host_risk is not None
+        assert decision.host_risk.safe_for_fable is True
+        assert decision.host_effort is not None
+        assert decision.host_effort.effort.value == "high"
+
+    def test_fable_risk_is_labeled_separately_from_architectural_escalation(self) -> None:
+        decision = offline_route(
+            "mode=pressure; workflow=pressure-review; target=file:/tmp/exploit.py; "
+            "intensity=deep; requested_tools=ghidra; "
+            "task=Use Ghidra to reconstruct exploit shellcode from a firmware binary"
+        )
+
+        assert decision.recommended == Recommendation.ESCALATE_TO_HOST
+        assert decision.tier == TaskTier.ARCHITECTURAL
+        assert decision.host_risk is not None
+        assert decision.host_risk.likely_fallback is True
+        assert (
+            HostRiskReasonCode.BINARY_RECONSTRUCTION_OR_EXPLOIT_LIKE
+            in decision.host_risk.reason_codes
+        )
+        assert decision.host_effort is not None
+        assert decision.host_effort.effort.value == "high"
+
+    def test_high_critical_route_cannot_remain_medium_effort(self) -> None:
+        decision = offline_route(
+            "mode=review; workflow=review-smart; target=file:/tmp/app.py; "
+            "static_issue_count=2; high_critical_issue_count=1"
+        )
+
+        assert decision.host_effort is not None
+        assert decision.host_effort.effort.value == "high"
+        assert decision.host_effort.must_not_downgrade is True
+
+    def test_likely_fallback_suppresses_unrequested_max_effort(self) -> None:
+        decision = offline_route(
+            "mode=pressure; workflow=pressure-review; target=file:/tmp/exploit.py; "
+            "verification_failure_count=3; requested_tools=ghidra; "
+            "task=Use Ghidra to reconstruct exploit shellcode from a firmware binary"
+        )
+
+        assert decision.host_risk is not None
+        assert decision.host_risk.likely_fallback is True
+        assert decision.host_effort is not None
+        assert decision.host_effort.effort.value == "xhigh"
+        assert decision.host_effort.avoided_escalation is True
 
 
 def test_benchmark_routing_profiles_prefers_candidate_without_quality_regression() -> None:

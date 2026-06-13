@@ -11,6 +11,7 @@ Architecture Decision Record (ADR):
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -27,6 +28,8 @@ from typing import TYPE_CHECKING, Any
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+from .llm.tool_schema_compat import normalize_openai_compatible_payload
 
 if TYPE_CHECKING:
     from .optimization.types import TelemetryContext
@@ -81,6 +84,10 @@ class M27StructuredError(Exception):
     """Raised when chat_structured fails to produce valid JSON after retries."""
 
     pass
+
+
+class M27ClientError(RuntimeError):
+    """Raised when the M27 client is asked to use an unsupported transport path."""
 
 
 def _strip_json_fences(text: str) -> str:
@@ -700,6 +707,8 @@ class M27Client:
         response_format: dict[str, Any] | None = None,
         _metadata_sink: dict[str, Any] | None = None,
         cache_plan: CachePlan | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        functions: list[dict[str, Any]] | None = None,
     ) -> tuple[str, TokenUsage]:
         if not self._validate_messages(messages):
             return "", TokenUsage()
@@ -732,6 +741,18 @@ class M27Client:
         _apply_thinking_param(payload, thinking, is_openai_compatible)
         if response_format is not None:
             payload["response_format"] = response_format
+        if tools is not None:
+            if not is_openai_compatible:
+                raise ValueError(
+                    "OpenAI-compatible tools require an OpenAI-compatible provider endpoint."
+                )
+            payload["tools"] = tools
+        if functions is not None:
+            if not is_openai_compatible:
+                raise ValueError(
+                    "OpenAI-compatible functions require an OpenAI-compatible provider endpoint."
+                )
+            payload["functions"] = functions
 
         # Fix: M27/M9. Estimate input tokens from the actual prompt size (all
         # message contents + system prompt, ~4 chars/token) for use as a fallback
@@ -744,12 +765,26 @@ class M27Client:
         # (cache breakpoints).  The base MiniMax hook is a no-op, so behavior
         # is unchanged there.
         prompt_chars = sum(len(str(m.get("content", ""))) for m in payload_messages)
-        prompt_chars += len(effective_system)
+        # On the OpenAI-compatible path effective_system was already inserted into
+        # payload_messages above, so the sum already includes it; adding it again
+        # would overcount input (~50% on system-heavy calls) and corrupt the
+        # fallback estimate. Only the Anthropic path keeps system out-of-band in
+        # payload["system"] and must add it here.
+        if not is_openai_compatible:
+            prompt_chars += len(effective_system)
         estimated_input_tokens = max(1, prompt_chars // 4)
 
         payload = self._prepare_payload(
             payload, is_openai_compatible, thinking=thinking, cache_plan=cache_plan
         )
+        if is_openai_compatible:
+            compatibility = normalize_openai_compatible_payload(payload)
+            payload = compatibility.payload
+            if _metadata_sink is not None and compatibility.argument_wrappers:
+                _metadata_sink["openai_tool_argument_wrappers"] = {
+                    name: unwrap_key.value
+                    for name, unwrap_key in compatibility.argument_wrappers.items()
+                }
 
         last_error = None
         backoff = 1.0
@@ -762,15 +797,14 @@ class M27Client:
                 if M27Client._rate_limiter:
                     M27Client._rate_limiter.wait()
 
-                if M27Client._concurrency_limiter:
-                    with M27Client._concurrency_limiter:
-                        session = M27Client._get_session()
-                        response = session.post(
-                            f"{endpoint_base}{endpoint_path}",
-                            headers=self._get_headers(),
-                            json=payload,
-                            timeout=self.timeout,
-                        )
+                with M27Client._concurrency_limiter or contextlib.nullcontext():
+                    session = M27Client._get_session()
+                    response = session.post(
+                        f"{endpoint_base}{endpoint_path}",
+                        headers=self._get_headers(),
+                        json=payload,
+                        timeout=self.timeout,
+                    )
 
                 if response.status_code == 200:
                     self._rate_limit_errors = 0
@@ -1045,6 +1079,12 @@ class M27Client:
         # not a recoverable condition. Raise rather than streaming garbage.
         if not isinstance(messages, list):
             raise TypeError(f"messages must be a list, got {type(messages).__name__}")
+        endpoint_base = self.base_url.rstrip("/")
+        if endpoint_base.endswith("/v1"):
+            raise M27ClientError(
+                "streaming is not supported on the OpenAI-compatible endpoint; "
+                "unset MINIMAX_API_BASE or use chat()"
+            )
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -1072,16 +1112,15 @@ class M27Client:
                 if M27Client._rate_limiter:
                     M27Client._rate_limiter.wait()
 
-                if M27Client._concurrency_limiter:
-                    with M27Client._concurrency_limiter:
-                        session = M27Client._get_session()
-                        response = session.post(
-                            f"{self.base_url}/v1/messages",
-                            headers=self._get_headers(),
-                            json=payload,
-                            timeout=request_timeout,
-                            stream=True,
-                        )
+                with M27Client._concurrency_limiter or contextlib.nullcontext():
+                    session = M27Client._get_session()
+                    response = session.post(
+                        f"{self.base_url}/v1/messages",
+                        headers=self._get_headers(),
+                        json=payload,
+                        timeout=request_timeout,
+                        stream=True,
+                    )
 
                 if response.status_code == 200:
                     self._rate_limit_errors = 0

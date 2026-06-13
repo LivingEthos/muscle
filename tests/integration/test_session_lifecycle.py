@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from muscle.budget_manager import BudgetInfo, BudgetManager
+from muscle.budget_manager import BudgetManager, BudgetSnapshot
 from muscle.session_manager import SessionManager
 from muscle.types import (
     BudgetMode,
@@ -214,13 +214,13 @@ class TestBudgetManagerIntegration:
         assert ok is False
 
     def test_budget_info_property(self):
-        """BudgetInfo should report accurate remaining tokens."""
+        """BudgetSnapshot should report accurate remaining tokens."""
         bm = BudgetManager(mode=BudgetMode.FIXED, fixed_limit=100000)
 
         bm.check_budget(30000)
         info = bm.get_budget_info()
 
-        assert isinstance(info, BudgetInfo)
+        assert isinstance(info, BudgetSnapshot)
         assert info.mode == BudgetMode.FIXED
         assert info.total_tokens == 100000
         assert info.used_tokens == 30000

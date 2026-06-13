@@ -22,7 +22,14 @@ ABSOLUTE_PATH_RE = re.compile(
     r"(/Users/|/home/|/private/|/var/|/tmp/|/opt/|/etc/|/srv/|/mnt/|/Volumes/|[A-Za-z]:\\\\)"
 )
 SECRET_RE = re.compile(
-    r"(sk-[A-Za-z0-9]{12,}|api[_-]?key|secret|token-plan-api-key)",
+    r"("
+    r"sk-[A-Za-z0-9]{12,}|"
+    r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|"
+    r"github_pat_[A-Za-z0-9_]{20,}|"
+    r"AKIA[0-9A-Z]{16}|"
+    r"bearer\s+[A-Za-z0-9\-._~+/=]{12,}|"
+    r"api[_-]?key|secret|token-plan-api-key"
+    r")",
     re.IGNORECASE,
 )
 GENERIC_BRANCHES = {"main", "master", "develop", "development", "dev", "trunk"}

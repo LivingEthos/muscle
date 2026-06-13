@@ -64,6 +64,7 @@ muscle review --target <path> --mode plan --output handoff.md
 ```bash
 muscle review --target <path> --mode review --format json --output review.json
 muscle review --target <path> --mode review --no-db
+muscle review --target <path> --mode review --async-workers
 ```
 
 ### Step 3: Present Results
@@ -109,10 +110,16 @@ Use `--no-db` only for reviews that should skip project-memory, learning, and op
 
 ## Important Notes
 
-- Ensure `MINIMAX_API_KEY` is set before running reviews
+- Ensure a MUSCLE execution provider is configured before running reviews:
+  `MINIMAX_API_KEY` for the default MiniMax backend, `OPENROUTER_API_KEY` for
+  `openrouter-api`, or the provider-specific credential shown by
+  `muscle provider show`
 - The `muscle` CLI must be installed (`muscle --version` to verify)
 - Run `muscle init` in your project directory before the first review to set up `.muscle/` state
 - Shadow mode background reviews are available: `muscle review --target <path> --shadow`
+- Hard-tail async workers are opt-in: `muscle review --target <path> --async-workers`
+  records skipped-worker reasons for easy reviews and queues bounded detached
+  review-only workers for wide/failed-verification/multi-subsystem cases.
 
 ## Example Workflows
 

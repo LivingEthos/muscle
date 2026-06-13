@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from ..io_safety import atomic_write_text
+from ..untrusted_content import detect_sanitizer_warnings
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,8 @@ AGENT_REPOS: list[PinnedKBSource] = [
 
 # Cap on embedded free-text fields sourced from upstream READMEs.
 _MAX_FIELD_LEN = 300
-# Lines that look like injected instructions are dropped before embedding.
+# Lines that look like injected instructions are preserved as data with a
+# warning marker before embedding.
 _INJECTION_LINE_RE = re.compile(
     r"(?i)\b(ignore (the |all )?(previous|above)|disregard|system prompt|"
     r"you are now|act as|<\|?(system|im_start|im_end)\|?>)\b"
@@ -97,9 +99,12 @@ def _sanitize_field(value: str) -> str:
     """
     if not value:
         return ""
+    warnings = detect_sanitizer_warnings(value)
     # Drop control / non-printable characters (keep ordinary whitespace).
     cleaned = "".join(ch for ch in value if ch == " " or (ch.isprintable() and ch != "\t"))
-    # Remove lines that look like injected instructions.
+    # Drop lines that look like injected instructions. Upstream community
+    # descriptions are optional convenience data, not evidence that needs to be
+    # preserved verbatim in downstream LLM templates.
     kept_lines = [line for line in cleaned.splitlines() if not _INJECTION_LINE_RE.search(line)]
     cleaned = " ".join(part.strip() for part in kept_lines if part.strip())
     # Neutralize markdown/HTML control sequences that could break out of the
@@ -108,9 +113,27 @@ def _sanitize_field(value: str) -> str:
     cleaned = re.sub(r"[<>]", "", cleaned)
     cleaned = re.sub(r"[*_#\[\]{}|]", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if warnings:
+        cleaned = f"[sanitizer_warnings={','.join(warnings)}] {cleaned}"
     if len(cleaned) > _MAX_FIELD_LEN:
         cleaned = cleaned[:_MAX_FIELD_LEN].rstrip() + "…"
     return cleaned
+
+
+_SAFE_URL_RE = re.compile(r"^https://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+$")
+
+
+def _sanitize_url(value: str) -> str:
+    """Validate an UNTRUSTED upstream URL; return "" unless it is plain https.
+
+    URLs from the upstream README flow into cached entries and generated
+    templates, so reject anything that is not a well-formed https URL
+    (e.g. ``javascript:`` schemes or embedded whitespace/control chars).
+    """
+    candidate = value.strip()
+    if len(candidate) > 2048 or not _SAFE_URL_RE.match(candidate):
+        return ""
+    return candidate
 
 
 class AgentKBFetcher:
@@ -249,7 +272,7 @@ class AgentKBFetcher:
                 agents.append(
                     {
                         "name": _sanitize_field(name.strip()),
-                        "url": url.strip(),
+                        "url": _sanitize_url(url),
                         "description": _sanitize_field(description.strip()),
                         "source": "awesome-claude-code-subagents",
                         "fetched_at": datetime.now().isoformat(),
@@ -271,7 +294,7 @@ class AgentKBFetcher:
                 skills.append(
                     {
                         "name": _sanitize_field(name.strip()),
-                        "url": url.strip(),
+                        "url": _sanitize_url(url),
                         "description": _sanitize_field(description.strip()),
                         "source": "awesome-claude-skills",
                         "fetched_at": datetime.now().isoformat(),

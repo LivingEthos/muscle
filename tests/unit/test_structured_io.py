@@ -9,12 +9,16 @@ from pydantic import ValidationError
 
 from muscle.m27_client import M27Client, M27StructuredError, _strip_json_fences
 from muscle.structured_io import (
+    BENCHMARK_RESULT_BEGIN,
     FixCandidate,
     PatternScanResult,
     ReviewFinding,
     ReviewFindings,
     RouteDecisionSchema,
     VerificationReport,
+    audit_benchmark_integrity,
+    parse_benchmark_result_envelope,
+    render_benchmark_result_envelope,
 )
 
 
@@ -34,6 +38,41 @@ class TestReviewFinding:
         assert f.auto_fixable is False
         assert f.suggested_fix is None
         assert f.code_snippet == ""
+
+
+class TestBenchmarkResultEnvelope:
+    def test_result_envelope_round_trips(self) -> None:
+        rendered = render_benchmark_result_envelope(
+            result={"score": 1.0},
+            evidence_ids=["cmd-abc"],
+            methodology={"judge_model": "deterministic"},
+        )
+
+        parsed = parse_benchmark_result_envelope(rendered)
+
+        assert parsed.result == {"score": 1.0}
+        assert parsed.evidence_ids == ["cmd-abc"]
+        assert parsed.methodology["judge_model"] == "deterministic"
+
+    def test_missing_result_envelope_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="missing"):
+            parse_benchmark_result_envelope("score: 1.0")
+
+    def test_malformed_result_envelope_is_rejected(self) -> None:
+        text = f"{BENCHMARK_RESULT_BEGIN}\nnot-json\n<<<MUSCLE_BENCHMARK_RESULT_JSON_END>>>"
+        with pytest.raises(ValueError, match="malformed JSON"):
+            parse_benchmark_result_envelope(text)
+
+    def test_transcript_leakage_audit_flags_answer_without_evidence(self) -> None:
+        audit = audit_benchmark_integrity(
+            final_result_text=render_benchmark_result_envelope(result={"score": 0.5}),
+            tool_output_text="tool printed SQL injection answer",
+            evidence_text="evidence mentions only auth",
+            answer_terms=["SQL injection"],
+        )
+
+        assert audit["passed"] is False
+        assert audit["issues"][0]["type"] == "retrieved_answer_leakage"
 
     def test_invalid_severity_rejected(self) -> None:
         with pytest.raises(ValidationError):

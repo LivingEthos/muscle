@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -118,6 +119,27 @@ class TestHelperFunctions:
 
         def test_negative_with_unit(self):
             assert _parse_timeout("-5m") == 3600
+
+    def test_release_invariants_report_missing_pytest_interpreter(self, monkeypatch):
+        from muscle.cli import _run_benchmark_release_invariants
+
+        def fake_run(*args, **kwargs):
+            return subprocess.CompletedProcess(
+                args=args[0],
+                returncode=1,
+                stdout="",
+                stderr="/usr/bin/python: No module named pytest\n",
+            )
+
+        monkeypatch.setattr("muscle.cli._shared.subprocess.run", fake_run)
+
+        result = _run_benchmark_release_invariants()
+
+        assert result["checked"] is True
+        assert result["passed"] is False
+        assert "pytest is not installed for interpreter" in result["summary"]
+        assert result["details"]["interpreter"]
+        assert "uv run" in result["details"]["error"]
 
     class TestParseBudget:
         def test_unlimited(self):
@@ -1136,6 +1158,7 @@ class TestSettingsGroup:
         result = runner.invoke(settings_group, ["show"], catch_exceptions=False)
         assert result.exit_code == 0
         assert "Review Execution" in result.output
+        assert "Async Review Workers" in result.output
         assert "local" in result.output
         assert "Related Project Mode" in result.output
         assert "Model Pack Mode" in result.output
@@ -1155,6 +1178,20 @@ class TestSettingsGroup:
         config = json.loads((tmp_path / ".muscle" / "config.yaml").read_text(encoding="utf-8"))
         assert config["project"]["review_execution"] == "worktree"
         assert config["project"]["review_gate"] == "block+fix"
+
+    def test_settings_review_updates_async_workers(self, runner, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(init, ["--non-interactive"], catch_exceptions=False)
+
+        result = runner.invoke(
+            settings_group,
+            ["review", "--async-workers", "--async-worker-limit", "2"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        config = json.loads((tmp_path / ".muscle" / "config.yaml").read_text(encoding="utf-8"))
+        assert config["project"]["review"]["async_workers"] is True
+        assert config["project"]["review"]["async_worker_limit"] == 2
 
     def test_settings_api_key_shows_status_in_non_tty(self, runner, monkeypatch):
         """B2: when invoked without args from a non-interactive shell (slash
@@ -1794,6 +1831,18 @@ class TestCreateM27ClientProviderAware:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.setenv("MUSCLE_PROVIDER", "claude-subscription")
+
+        fake_client = MagicMock()
+        with patch("muscle.cli._shared.create_client", return_value=fake_client) as factory:
+            assert _create_m27_client() is fake_client
+        factory.assert_called_once()
+
+    def test_codex_subscription_needs_no_minimax_key(self, monkeypatch):
+        from muscle.cli._shared import _create_m27_client
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.setenv("MUSCLE_PROVIDER", "codex-subscription")
 
         fake_client = MagicMock()
         with patch("muscle.cli._shared.create_client", return_value=fake_client) as factory:

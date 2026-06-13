@@ -38,10 +38,25 @@ from ..delegation_metrics import (
     resolve_m27_token_split,
 )
 from ..escalation import EscalationPolicy, EscalationRecord, EscalationRecorder
+from ..host_effort_policy import host_effort_metadata
+from ..host_risk_preflight import host_risk_metadata
 from ..io_safety import advisory_file_lock
 from ..m27_client import M27Client
 from ..project_memory import ProjectMemory
 from ..routing import Recommendation, TaskRouter, offline_route
+from ..verification_claims import (
+    VerificationClaim,
+    VerificationClaimType,
+    audit_verification_claims,
+    claim_from_command_evidence,
+)
+from .async_worker_policy import (
+    AsyncWorkerJobMetadata,
+    AsyncWorkerPolicyDecision,
+    AsyncWorkerPolicyInput,
+    build_worker_evidence_id,
+    decide_async_worker_policy,
+)
 from .code_reviewer import CodeReviewer, _read_file_cached
 from .committee_reviewer import AGENT_PRESSURE, CommitteeReviewer, _split_from_summary
 from .fix_generator import FixGenerator
@@ -62,6 +77,7 @@ from .types import (
     ReviewScope,
     ReviewStats,
     Severity,
+    StaticAnalysisResult,
 )
 from .verification_loop import VerificationLoop
 from .worktree_manager import GitWorktreeManager, WorktreeSession
@@ -108,6 +124,28 @@ logger = logging.getLogger(__name__)
 
 MAX_PARALLEL_FILE_REVIEWS = 5
 MAX_PARALLEL_FIXES = 3
+ASYNC_WORKER_SOURCE_EXTENSIONS = frozenset(
+    {
+        ".c",
+        ".cc",
+        ".cpp",
+        ".go",
+        ".h",
+        ".hpp",
+        ".java",
+        ".js",
+        ".jsx",
+        ".kt",
+        ".kts",
+        ".m",
+        ".mm",
+        ".py",
+        ".rs",
+        ".swift",
+        ".ts",
+        ".tsx",
+    }
+)
 
 
 @dataclass
@@ -265,6 +303,17 @@ class ReviewController:
                 if isinstance(ctx.scope_summary, dict)
                 else {}
             )
+            host_risk_summary = (
+                route_summary.get("host_risk", {}) if isinstance(route_summary, dict) else {}
+            )
+            host_effort_summary = (
+                route_summary.get("host_effort", {}) if isinstance(route_summary, dict) else {}
+            )
+            async_worker_summary = (
+                ctx.scope_summary.get("async_workers", {})
+                if isinstance(ctx.scope_summary, dict)
+                else {}
+            )
             route_cache_hit = int(bool(route_summary.get("from_cache")))
             metrics = DelegationMetrics(self.project_path)
             # ctx.stats now carries the real per-call input/output split threaded
@@ -278,6 +327,7 @@ class ReviewController:
                 ctx.stats.output_tokens,
                 ctx.stats.tokens_used,
             )
+            cached_in = min(max(0, ctx.stats.cached_input_tokens), tokens_in)
             metrics.record(
                 DelegationEvent(
                     session_id=ctx.session_id,
@@ -285,7 +335,9 @@ class ReviewController:
                     task_tier=route_summary.get("tier"),
                     m27_tokens_in=tokens_in,
                     m27_tokens_out=tokens_out,
-                    m27_usd_cents=estimate_m27_cents(model, tokens_in, tokens_out),
+                    m27_usd_cents=estimate_m27_cents(
+                        model, tokens_in, tokens_out, cached_input_tokens=cached_in
+                    ),
                     verifications_run=ctx.stats.auto_fixed + ctx.stats.failed_fixes,
                     verifications_failed=ctx.stats.failed_fixes,
                     escalations_emitted=int(
@@ -304,13 +356,46 @@ class ReviewController:
                         and structured_metrics["cache_hits"] > 0
                     ),
                     metadata={
+                        "m27_cached_tokens_in": cached_in,
                         "route_recommended": route_summary.get("recommended"),
                         "route_confidence": route_summary.get("confidence"),
                         "routing_profile": route_summary.get("routing_profile", "current"),
+                        "requested_host_model": host_risk_summary.get("requested_host_model"),
+                        "recommended_host_model": host_risk_summary.get("recommended_host"),
+                        "host_risk_safe_for_fable": host_risk_summary.get("safe_for_fable"),
+                        "host_risk_likely_fallback": host_risk_summary.get("likely_fallback"),
+                        "host_risk_reason_codes": host_risk_summary.get("reason_codes", []),
+                        "host_risk_needs_user_confirmation": host_risk_summary.get(
+                            "needs_user_confirmation"
+                        ),
+                        "fallback_policy": host_risk_summary.get("fallback_policy"),
+                        "host_effort_level": host_effort_summary.get("effort"),
+                        "host_effort_max_output_tokens": host_effort_summary.get(
+                            "max_output_tokens"
+                        ),
+                        "host_effort_retry_ladder": host_effort_summary.get("retry_ladder", []),
+                        "host_effort_stop_condition": host_effort_summary.get("stop_condition"),
+                        "host_effort_must_not_downgrade": host_effort_summary.get(
+                            "must_not_downgrade"
+                        ),
+                        "host_effort_avoided_escalation": host_effort_summary.get(
+                            "avoided_escalation"
+                        ),
                         "verification_status": self._delegation_verification_status(ctx),
                         "verified_fix_count": ctx.stats.auto_fixed,
                         "failed_fix_count": ctx.stats.failed_fixes,
                         "remaining_issues": len(ctx.unfixed_issues or ctx.issues),
+                        "async_workers_enabled": async_worker_summary.get("enabled"),
+                        "async_workers_triggered": async_worker_summary.get("should_run"),
+                        "async_worker_trigger_reasons": async_worker_summary.get(
+                            "trigger_reasons",
+                            [],
+                        ),
+                        "async_worker_job_count": len(
+                            async_worker_summary.get("worker_jobs", [])
+                            if isinstance(async_worker_summary.get("worker_jobs"), list)
+                            else []
+                        ),
                         "token_savings_signal": (
                             structured_metrics["cache_tokens_saved"]
                             + (256 if route_cache_hit else 0)
@@ -641,15 +726,43 @@ class ReviewController:
             f"fetch_sources={self.config.fetch_sources}"
         )
 
+    @staticmethod
+    def _static_issue_categories(static_issues: list[dict[str, object]]) -> list[str]:
+        """Return a stable, compact static-issue category list for routing metadata."""
+        return sorted(
+            {
+                str(issue["category"])
+                for issue in static_issues
+                if isinstance(issue.get("category"), str) and issue["category"]
+            }
+        )
+
+    @staticmethod
+    def _high_critical_static_issue_count(static_issues: list[dict[str, object]]) -> int:
+        """Count high/critical static issues for host-effort routing."""
+        return sum(
+            1
+            for issue in static_issues
+            if str(issue.get("severity", "")).lower() in {"high", "critical"}
+        )
+
     def _route_review_request(
         self,
         ctx: ReviewContext,
         *,
         static_issue_count: int,
         workflow_name: str | None,
+        static_issue_categories: list[str] | None = None,
+        high_critical_issue_count: int = 0,
     ) -> bool:
         artifact_store = self._ensure_artifact_store(ctx)
         route_description = self._build_route_description(static_issue_count, workflow_name)
+        if static_issue_categories:
+            route_description += "; static_issue_categories=" + ",".join(
+                sorted(static_issue_categories)
+            )
+        if high_critical_issue_count:
+            route_description += f"; high_critical_issue_count={high_critical_issue_count}"
         if self.benchmark_run:
             decision = offline_route(route_description)
         else:
@@ -664,14 +777,30 @@ class ReviewController:
 
         if ctx.scope_summary is None:
             ctx.scope_summary = {}
-        ctx.scope_summary["delegation_route"] = {
-            "tier": decision.tier.value,
-            "recommended": decision.recommended.value,
-            "confidence": decision.confidence,
-            "rationale": decision.rationale,
-            "from_cache": decision.from_cache,
-            "routing_profile": getattr(decision, "routing_profile", "current"),
-        }
+        route_payload = decision.to_dict()
+        if static_issue_categories:
+            route_payload["static_issue_categories"] = list(static_issue_categories)
+        if high_critical_issue_count:
+            route_payload["high_critical_issue_count"] = high_critical_issue_count
+        ctx.scope_summary["delegation_route"] = route_payload
+        if decision.host_risk is not None:
+            artifact_store.write_diagnostic(
+                "host-risk-preflight",
+                {
+                    "session_id": ctx.session_id,
+                    "route": route_payload,
+                    "metadata": host_risk_metadata(decision.host_risk),
+                },
+            )
+        if decision.host_effort is not None:
+            artifact_store.write_diagnostic(
+                "host-effort-policy",
+                {
+                    "session_id": ctx.session_id,
+                    "route": route_payload,
+                    "metadata": host_effort_metadata(decision.host_effort),
+                },
+            )
 
         if decision.recommended != Recommendation.ESCALATE_TO_HOST:
             return False
@@ -725,6 +854,249 @@ class ReviewController:
         )
         return True
 
+    def _finalize_async_worker_policy(
+        self,
+        ctx: ReviewContext,
+        validation_payload: dict[str, object] | None = None,
+    ) -> AsyncWorkerPolicyDecision:
+        """Evaluate, record, and optionally queue hard-tail async review workers."""
+        start = perf_counter()
+        artifact_store = self._ensure_artifact_store(ctx)
+        if ctx.scope_summary is None:
+            ctx.scope_summary = {}
+
+        decision = decide_async_worker_policy(
+            AsyncWorkerPolicyInput(
+                enabled=self.config.async_workers,
+                target_file_count=self._target_file_count(ctx),
+                module_count=self._module_count(ctx),
+                verification_failure_count=self._verification_failure_count(
+                    ctx,
+                    validation_payload or {},
+                ),
+                subsystem_count=self._subsystem_count(ctx),
+                route_confidence=self._route_confidence(ctx),
+                route_tier=self._route_tier(ctx),
+                historical_pass_rate=self._historical_pass_rate(ctx),
+                worker_limit=self.config.async_worker_limit,
+            )
+        )
+        if decision.should_run and not self.benchmark_run:
+            self._queue_async_worker_jobs(ctx, decision)
+        decision.critical_path_time_ms += max(0, int((perf_counter() - start) * 1000))
+
+        payload = decision.to_dict()
+        ctx.scope_summary["async_workers"] = payload
+        artifact_store.write_diagnostic("async-worker-policy", payload)
+        return decision
+
+    def _queue_async_worker_jobs(
+        self,
+        ctx: ReviewContext,
+        decision: AsyncWorkerPolicyDecision,
+    ) -> None:
+        """Queue detached review-only worker jobs for hard-tail evidence collection."""
+        try:
+            from .shadow_worker import WorkerManager
+
+            manager = WorkerManager(project_path=self.project_path)
+            for target_path in self._select_async_worker_targets(ctx, decision.worker_limit):
+                job_id = manager.submit_shadow_job(
+                    target_path=target_path,
+                    mode=ReviewMode.REVIEW,
+                    intensity=self.config.intensity,
+                    execution_mode="local",
+                    timeout_seconds=min(self.config.timeout_seconds, 900),
+                    changed_files=self._source_files_for_worker(ctx),
+                    workflow_name="review-comprehensive",
+                    detached=True,
+                )
+                evidence_id = build_worker_evidence_id(
+                    session_id=ctx.session_id,
+                    job_id=job_id,
+                    trigger_reasons=decision.trigger_reasons,
+                )
+                decision.add_worker_job(
+                    AsyncWorkerJobMetadata(
+                        job_id=job_id,
+                        status="queued",
+                        target_path=target_path,
+                        trigger_reasons=list(decision.trigger_reasons),
+                        evidence_id=evidence_id,
+                    )
+                )
+        except Exception as exc:
+            logger.warning("Failed to queue async review workers: %s", exc)
+            decision.worker_errors.append(str(exc))
+
+    def _select_async_worker_targets(
+        self,
+        ctx: ReviewContext,
+        worker_limit: int,
+    ) -> list[str]:
+        """Return bounded, deterministic worker targets."""
+        targets: list[str] = []
+        for raw_path in self._source_files_for_worker(ctx):
+            resolved = self._resolve_review_path(raw_path)
+            if resolved is None or not resolved.exists() or not resolved.is_file():
+                continue
+            targets.append(str(resolved))
+            if len(targets) >= max(1, worker_limit):
+                break
+
+        if targets:
+            return targets
+        return [str(Path(self.config.target_path).resolve())]
+
+    def _source_files_for_worker(self, ctx: ReviewContext) -> list[str]:
+        scope = ctx.scope_summary or {}
+        source_files = scope.get("source_files") or scope.get("changed_files") or []
+        values: list[str] = [str(value) for value in source_files if isinstance(value, str)]
+        if not values:
+            values = sorted({issue.file_path for issue in [*ctx.issues, *ctx.raw_issues]})
+        return values
+
+    def _target_file_count(self, ctx: ReviewContext) -> int:
+        source_files = self._source_files_for_worker(ctx)
+        if source_files:
+            return len({str(self._resolve_review_path(path) or path) for path in source_files})
+
+        target = Path(self.config.target_path).resolve()
+        if target.is_file():
+            return 1
+        if not target.is_dir():
+            return 0
+        count = 0
+        for path in target.rglob("*"):
+            if path.is_file() and path.suffix.lower() in ASYNC_WORKER_SOURCE_EXTENSIONS:
+                count += 1
+                if count >= 10_000:
+                    break
+        return count
+
+    def _module_count(self, ctx: ReviewContext) -> int:
+        modules = {
+            self._subsystem_key(str(self._resolve_review_path(path) or path))
+            for path in self._source_files_for_worker(ctx)
+        }
+        modules = {module for module in modules if module}
+        if modules:
+            return len(modules)
+
+        target = Path(self.config.target_path).resolve()
+        if target.is_file():
+            return 1
+        if target.is_dir():
+            return len(
+                {
+                    self._subsystem_key(str(path))
+                    for path in target.rglob("*")
+                    if path.is_file() and path.suffix.lower() in ASYNC_WORKER_SOURCE_EXTENSIONS
+                }
+            )
+        return 0
+
+    def _subsystem_count(self, ctx: ReviewContext) -> int:
+        subsystems = {
+            self._subsystem_key(issue.file_path)
+            for issue in [*ctx.issues, *ctx.raw_issues]
+            if issue.file_path
+        }
+        subsystems = {subsystem for subsystem in subsystems if subsystem}
+        return len(subsystems)
+
+    def _subsystem_key(self, file_path: str) -> str:
+        resolved = self._resolve_review_path(file_path) or Path(file_path)
+        try:
+            relative = resolved.resolve().relative_to(Path(self.project_path).resolve())
+        except (OSError, ValueError):
+            relative = Path(file_path)
+        parts = [part for part in relative.parts if part not in {".", ""}]
+        if not parts:
+            return ""
+        if parts[0] in {"app", "lib", "packages", "services", "src"} and len(parts) > 1:
+            return Path(parts[1]).stem
+        return Path(parts[0]).stem
+
+    def _resolve_review_path(self, file_path: str) -> Path | None:
+        path = Path(file_path)
+        if path.is_absolute():
+            return path
+        candidates = [
+            Path(self.project_path) / path,
+            Path(self.config.target_path).resolve().parent / path,
+        ]
+        for candidate in candidates:
+            try:
+                if candidate.exists():
+                    return candidate.resolve()
+            except OSError:
+                continue
+        try:
+            return candidates[0].resolve()
+        except OSError:
+            return None
+
+    @staticmethod
+    def _route_confidence(ctx: ReviewContext) -> float | None:
+        route = (ctx.scope_summary or {}).get("delegation_route", {})
+        if not isinstance(route, dict):
+            return None
+        value = route.get("confidence")
+        if isinstance(value, int | float):
+            return float(value)
+        return None
+
+    @staticmethod
+    def _route_tier(ctx: ReviewContext) -> str | None:
+        route = (ctx.scope_summary or {}).get("delegation_route", {})
+        if not isinstance(route, dict):
+            return None
+        value = route.get("tier")
+        return str(value) if value is not None else None
+
+    def _verification_failure_count(
+        self,
+        ctx: ReviewContext,
+        validation_payload: dict[str, object],
+    ) -> int:
+        count = int(ctx.stats.failed_fixes or 0)
+        status = str(validation_payload.get("status") or "")
+        if status and status not in {"not-run", "passed", "pressure-only", "review-only"}:
+            count += 1
+        return count
+
+    def _historical_pass_rate(self, ctx: ReviewContext) -> float | None:
+        if self.project_memory is None:
+            return None
+        try:
+            rows = self.project_memory.list_workflow_rollups(
+                self.project_path,
+                stage="review_total",
+                limit=50,
+            )
+        except Exception:
+            return None
+
+        workflow_name = self._resolve_workflow_name() or (ctx.scope_summary or {}).get("workflow")
+        target_type = self._runtime_target_type()
+        language = self.config.language or "unknown"
+        matching = [
+            row
+            for row in rows
+            if str(row.get("workflow_name") or "") == str(workflow_name)
+            and str(row.get("target_type") or "unknown") == target_type
+            and str(row.get("language") or "unknown") in {language, "unknown"}
+        ]
+        run_count = sum(int(row.get("run_count") or 0) for row in matching)
+        if run_count < 3:
+            return None
+        success_count = sum(
+            int(row.get("validation_successes") or row.get("success_count") or 0)
+            for row in matching
+        )
+        return success_count / max(1, run_count)
+
     def _run_structured_workflow(self, ctx: ReviewContext, workflow_name: str) -> ReviewContext:
         workflow = self.workflow_loader.load(workflow_name)
         artifact_store = self._ensure_artifact_store(ctx)
@@ -747,6 +1119,8 @@ class ReviewController:
             ctx,
             static_issue_count=len(all_static_issues),
             workflow_name=workflow_name,
+            static_issue_categories=self._static_issue_categories(all_static_issues),
+            high_critical_issue_count=self._high_critical_static_issue_count(all_static_issues),
         ):
             artifact_store.write_summary(
                 "# MUSCLE Review Summary\n\n- Escalated to host planner before semantic review.\n"
@@ -775,6 +1149,7 @@ class ReviewController:
         }
         artifact_store.write_fixes(fix_payload)
         artifact_store.write_validation(validation_payload)
+        self._write_validation_claims(ctx, validation_payload, [])
 
         def handle_classify(
             _node: ReviewWorkflowNode,
@@ -803,9 +1178,10 @@ class ReviewController:
                 trace_reasons=self._base_trace_reasons(),
             )
             ctx.agent_findings[node.agent or node.id] = issues
-            tin, tout = self.committee_reviewer.consume_agent_tokens(node.agent or node.id)
+            tin, tout, tcached = self.committee_reviewer.consume_agent_tokens(node.agent or node.id)
             ctx.stats.input_tokens += tin
             ctx.stats.output_tokens += tout
+            ctx.stats.cached_input_tokens += tcached
             ctx.stats.tokens_used += tin + tout
             return issues
 
@@ -867,9 +1243,10 @@ class ReviewController:
             validation_result = (
                 validation_output if isinstance(validation_output, dict) else validation_payload
             )
+            self._finalize_async_worker_policy(ctx, validation_result)
             summary_markdown = self._build_summary_markdown(
                 workflow_name=workflow_name,
-                scope=scope.to_dict(),
+                scope=ctx.scope_summary or scope.to_dict(),
                 synthesized_issues=ctx.issues,
                 fix_payload=fix_payload,
                 validation_payload=validation_result,
@@ -1050,6 +1427,7 @@ class ReviewController:
                     success, issue, reason = future.result()
                     if not success:
                         ctx.unfixed_issues.append(issue)
+                        ctx.stats.failed_fixes += 1
                         failed_payload.append(
                             {
                                 "issue": review_issue_to_dict(issue),
@@ -1074,7 +1452,9 @@ class ReviewController:
                     )
                 except Exception as e:
                     logger.warning(f"Fix application failed: {e}")
+                    ctx.stats.failed_fixes += 1
                     failed_payload.append({"issue": review_issue_to_dict(issue), "reason": str(e)})
+                    self._record_fix_failure(issue, str(e))
 
         ctx.stats.fixed_issues = fixed_count
         ctx.stats.auto_fixed = fixed_count
@@ -1089,18 +1469,83 @@ class ReviewController:
 
     def _validate_post_fix_state(self, ctx: ReviewContext) -> dict:
         if self.config.mode not in {ReviewMode.AUTO_FIX, ReviewMode.HYBRID}:
-            return {
+            payload = {
                 "performed": False,
                 "remaining_issues": len(ctx.issues),
                 "status": "not-run",
             }
+            self._write_validation_claims(ctx, payload, [])
+            return payload
         re_review = self.static_analyzer.analyze()
         remaining = sum(len(result.issues) for result in re_review)
-        return {
+        payload = {
             "performed": True,
             "remaining_issues": remaining,
             "status": "passed" if remaining == 0 else "issues-remaining",
         }
+        self._write_validation_claims(ctx, payload, re_review)
+        return payload
+
+    def _write_validation_claims(
+        self,
+        ctx: ReviewContext,
+        validation_payload: dict,
+        static_results: list[StaticAnalysisResult],
+    ) -> None:
+        artifact_store = self._ensure_artifact_store(ctx)
+        claims = self._build_validation_claims(validation_payload, static_results)
+        artifact_store.write_claims(audit_verification_claims(claims))
+
+    def _build_validation_claims(
+        self,
+        validation_payload: dict,
+        static_results: list[StaticAnalysisResult],
+    ) -> list[VerificationClaim]:
+        if not validation_payload.get("performed"):
+            return [
+                VerificationClaim(
+                    claim_text="Post-fix validation was not run.",
+                    claim_type=VerificationClaimType.NOT_RUN,
+                    limitations=[str(validation_payload.get("status") or "not-run")],
+                )
+            ]
+
+        claims: list[VerificationClaim] = []
+        for result in static_results:
+            if result.evidence is None:
+                claims.append(
+                    VerificationClaim(
+                        claim_text=f"{result.tool_name} inspected without command evidence.",
+                        claim_type=VerificationClaimType.MANUAL_INSPECTION,
+                        limitations=["static analyzer produced no command evidence"],
+                    )
+                )
+                continue
+            claim_type = self._claim_type_for_static_tool(result.tool_name)
+            status = "passed" if result.evidence.exit_code == 0 else "failed"
+            claims.append(
+                claim_from_command_evidence(
+                    result.evidence,
+                    claim_type=claim_type,
+                    claim_text=f"{result.tool_name} validation {status}.",
+                )
+            )
+        if not claims:
+            claims.append(
+                VerificationClaim(
+                    claim_text="Post-fix validation produced no command evidence.",
+                    claim_type=VerificationClaimType.BLOCKED,
+                    limitations=["no static analyzer evidence was available"],
+                )
+            )
+        return claims
+
+    @staticmethod
+    def _claim_type_for_static_tool(tool_name: str) -> VerificationClaimType:
+        normalized = tool_name.lower()
+        if normalized in {"pyright", "tsc", "svelte-check"}:
+            return VerificationClaimType.TYPECHECKED
+        return VerificationClaimType.LINTED
 
     @staticmethod
     def _build_summary_markdown(
@@ -1138,6 +1583,29 @@ class ReviewController:
                 )
         else:
             lines.append("- No findings")
+        if not validation_payload.get("performed"):
+            lines.extend(
+                [
+                    "",
+                    "## Not Run",
+                    f"- Validation checks: `{validation_payload.get('status', 'not-run')}`",
+                ]
+            )
+        async_workers = scope.get("async_workers")
+        if isinstance(async_workers, dict):
+            worker_jobs = async_workers.get("worker_jobs")
+            worker_job_count = len(worker_jobs) if isinstance(worker_jobs, list) else 0
+            lines.extend(
+                [
+                    "",
+                    "## Async Workers",
+                    f"- Enabled: `{async_workers.get('enabled', False)}`",
+                    f"- Triggered: `{async_workers.get('should_run', False)}`",
+                    f"- Skipped reason: `{async_workers.get('skipped_reason') or 'none'}`",
+                    f"- Queued jobs: `{worker_job_count}`",
+                    f"- Arbitration: `{async_workers.get('arbitration_scope', 'compact_disagreements')}`",
+                ]
+            )
         return "\n".join(lines)
 
     def _run_review_mode(self, ctx: ReviewContext) -> ReviewContext:
@@ -1154,12 +1622,16 @@ class ReviewController:
             "target_type": self._runtime_target_type(),
             "complexity": self._runtime_complexity(ctx),
             "static_issue_count": len(all_static_issues),
+            "static_issue_categories": self._static_issue_categories(all_static_issues),
+            "high_critical_issue_count": self._high_critical_static_issue_count(all_static_issues),
         }
         artifact_store.write_scope(ctx.scope_summary)
         if self._route_review_request(
             ctx,
             static_issue_count=len(all_static_issues),
             workflow_name=self._resolve_workflow_name(),
+            static_issue_categories=self._static_issue_categories(all_static_issues),
+            high_critical_issue_count=self._high_critical_static_issue_count(all_static_issues),
         ):
             artifact_store.write_summary(
                 "# MUSCLE Review Summary\n\n- Escalated to host planner before semantic review.\n"
@@ -1187,11 +1659,17 @@ class ReviewController:
         ctx.raw_issues = list(semantic_issues)
         ctx.stats.valid_issues = len(ctx.issues)
         if isinstance(summary, dict):
-            tin, tout = _split_from_summary(summary)
+            tin, tout, tcached = _split_from_summary(summary)
             ctx.stats.input_tokens += tin
             ctx.stats.output_tokens += tout
+            ctx.stats.cached_input_tokens += tcached
             ctx.stats.tokens_used += tin + tout
         artifact_store.write_synthesis(ctx.issues, summary if isinstance(summary, dict) else {})
+        if self.config.mode == ReviewMode.REVIEW:
+            self._finalize_async_worker_policy(
+                ctx,
+                {"status": "review-only", "performed": False},
+            )
         artifact_store.write_summary(
             self._build_summary_markdown(
                 workflow_name=self._resolve_workflow_name() or "legacy",
@@ -1203,6 +1681,11 @@ class ReviewController:
                 },
                 validation_payload={"status": "review-only", "performed": False},
             )
+        )
+        self._write_validation_claims(
+            ctx,
+            {"status": "review-only", "performed": False},
+            [],
         )
 
         self._emit(ReviewEvent.SEMANTIC_REVIEW_COMPLETE, {"issues": len(ctx.issues)})
@@ -1278,15 +1761,27 @@ class ReviewController:
                         ctx.unfixed_issues.append(issue)
                         self._record_fix_failure(issue, reason)
                 except Exception as e:
+                    failed_issue = futures[future]
                     logger.warning(f"Fix application failed: {e}")
+                    with fix_lock:
+                        failed_fixes += 1
+                    ctx.stats.failed_fixes += 1
+                    ctx.unfixed_issues.append(failed_issue)
+                    self._record_fix_failure(failed_issue, str(e))
 
         ctx.stats.fixed_issues = fixed_count
+        # Mirror the structured-workflow path (_apply_workflow_fixes): auto_fixed is
+        # the authoritative count for delegation verification status and the public
+        # ReviewResult.auto_fixed_count. Leaving it 0 here mislabels verified
+        # auto-fixes as "fixed_without_validation_summary".
+        ctx.stats.auto_fixed = fixed_count
 
         if ctx.stats.fixed_issues > 0:
             re_review = self.static_analyzer.analyze()
             self._emit(ReviewEvent.FIX_VERIFIED, {"remaining_issues": len(re_review)})
         artifact_store = self._ensure_artifact_store(ctx)
         validation_payload = self._validate_post_fix_state(ctx)
+        self._finalize_async_worker_policy(ctx, validation_payload)
         artifact_store.write_fixes(
             {
                 "applied": [review_issue_to_dict(issue) for issue in ctx.fixed_issues],
@@ -1325,6 +1820,22 @@ class ReviewController:
             ctx.stats.handoffs_generated = len(ctx.handoff_plan.issues)
             self._emit(ReviewEvent.HANDOFF_GENERATED, {"count": ctx.stats.handoffs_generated})
 
+        self._finalize_async_worker_policy(
+            ctx,
+            {"status": "plan-only", "performed": False},
+        )
+        self._ensure_artifact_store(ctx).write_summary(
+            self._build_summary_markdown(
+                workflow_name=self._resolve_workflow_name() or "review-smart",
+                scope=ctx.scope_summary or {},
+                synthesized_issues=ctx.issues,
+                fix_payload={
+                    "verified": 0,
+                    "remaining_issues": len(ctx.issues),
+                },
+                validation_payload={"status": "plan-only", "performed": False},
+            )
+        )
         return ctx
 
     def _run_hybrid_mode(self, ctx: ReviewContext) -> ReviewContext:
@@ -1366,13 +1877,22 @@ class ReviewController:
                         ctx.fixed_issues.append(issue)
                     else:
                         ctx.unfixed_issues.append(issue)
+                        ctx.stats.failed_fixes += 1
                         self._record_fix_failure(issue, reason)
                 except Exception as e:
+                    failed_issue = futures[future]
                     logger.warning(f"Fix application failed: {e}")
+                    ctx.stats.failed_fixes += 1
+                    ctx.unfixed_issues.append(failed_issue)
+                    self._record_fix_failure(failed_issue, str(e))
 
         ctx.stats.fixed_issues = fixed_count
+        # See _run_auto_fix_mode: auto_fixed feeds delegation verification status
+        # and the public ReviewResult.auto_fixed_count.
+        ctx.stats.auto_fixed = fixed_count
         artifact_store = self._ensure_artifact_store(ctx)
         validation_payload = self._validate_post_fix_state(ctx)
+        self._finalize_async_worker_policy(ctx, validation_payload)
         artifact_store.write_fixes(
             {
                 "applied": [review_issue_to_dict(issue) for issue in ctx.fixed_issues],
@@ -1440,10 +1960,11 @@ class ReviewController:
 
         def review_single_file(
             file_path: Path,
-        ) -> tuple[list[ReviewIssue], int, int]:
+        ) -> tuple[list[ReviewIssue], int, int, int]:
             issues: list[ReviewIssue] = []
             tokens_in = 0
             tokens_out = 0
+            tokens_cached = 0
             try:
                 cached_content = _read_file_cached(str(file_path))
                 if cached_content is not None:
@@ -1471,8 +1992,8 @@ class ReviewController:
                         artifact_store,
                         self._base_trace_reasons(),
                     )
-                    tokens_in, tokens_out = self.committee_reviewer.consume_agent_tokens(
-                        AGENT_PRESSURE
+                    tokens_in, tokens_out, tokens_cached = (
+                        self.committee_reviewer.consume_agent_tokens(AGENT_PRESSURE)
                     )
                     issues.extend(
                         issue
@@ -1481,18 +2002,19 @@ class ReviewController:
                     )
             except Exception as e:
                 logger.warning(f"Pressure review failed for {file_path}: {e}")
-            return issues, tokens_in, tokens_out
+            return issues, tokens_in, tokens_out, tokens_cached
 
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FILE_REVIEWS) as executor:
             futures = {executor.submit(review_single_file, fp): fp for fp in files_to_review}
 
             for future in as_completed(futures):
                 try:
-                    issues, tokens_in, tokens_out = future.result()
+                    issues, tokens_in, tokens_out, tokens_cached = future.result()
                     with issues_lock:
                         found_issues.extend(issues)
                         ctx.stats.input_tokens += tokens_in
                         ctx.stats.output_tokens += tokens_out
+                        ctx.stats.cached_input_tokens += tokens_cached
                         ctx.stats.tokens_used += tokens_in + tokens_out
                 except Exception as e:
                     logger.warning(f"Pressure review failed: {e}")
@@ -1510,6 +2032,10 @@ class ReviewController:
                 "challenge_mode": self.config.pressure_challenge or "default",
                 "total": len(ctx.issues),
             },
+        )
+        self._finalize_async_worker_policy(
+            ctx,
+            {"status": "pressure-only", "performed": False},
         )
         artifact_store.write_summary(
             self._build_summary_markdown(

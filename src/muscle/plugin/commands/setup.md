@@ -38,7 +38,24 @@ To switch fix execution between the local checkout and isolated worktrees:
 ```bash
 muscle settings review --execution local
 muscle settings review --execution worktree
+muscle settings review --async-workers --async-worker-limit 3
 ```
+
+To inspect or switch MUSCLE's execution backend without leaving the CLI, use the
+provider command group from the main MUSCLE CLI.
+
+MiniMax is the default low-cost worker backend. OpenRouter is available for
+user-selected gateway models via `OPENROUTER_API_KEY` and
+`MUSCLE_OPENROUTER_MODEL`; its model identity and pricing are reported as
+gateway-scoped unless configured evidence says otherwise. Codex subscription
+execution uses the official Codex CLI and ChatGPT sign-in:
+```bash
+muscle provider login codex-subscription
+muscle provider use codex-subscription
+```
+
+Codex subscription usage spends ChatGPT Codex subscription allowance, not
+OpenAI API dollars. MUSCLE does not store ChatGPT OAuth tokens.
 
 To enable MUSCLE after initialization:
 ```bash

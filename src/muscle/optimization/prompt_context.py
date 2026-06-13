@@ -9,11 +9,13 @@ Architecture Decision Record (ADR):
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 from uuid import uuid4
 
 from ..lesson_resolver import LessonRenderBudget
 from .prompt_compactor import compact_prompt_text, should_compact_stage
+from .prompt_prefix import PromptPrefixPlanner
 from .types import PromptEnvelope, TelemetryContext
 
 DEFAULT_STAGE_RENDER_BUDGETS: dict[str, LessonRenderBudget] = {
@@ -60,6 +62,13 @@ def _stage_budget(stage: str) -> LessonRenderBudget:
         return DEFAULT_STAGE_RENDER_BUDGETS[stage]
     if "review" in stage:
         return DEFAULT_STAGE_RENDER_BUDGETS["semantic_review"]
+    # A stage with no configured budget is usually a typo or an unwired new
+    # stage — warn loudly instead of silently handing out the default budget.
+    warnings.warn(
+        f"No lesson render budget configured for stage {stage!r}; using defaults",
+        RuntimeWarning,
+        stacklevel=2,
+    )
     return LessonRenderBudget()
 
 
@@ -124,6 +133,9 @@ def compose_prompt_envelope(
     else:
         metadata["prompt_compaction_original_chars"] = len(prompt)
         metadata["prompt_compaction_compacted_chars"] = len(prompt)
+
+    prefix_plan = PromptPrefixPlanner().plan_rendered_prompt(prompt)
+    metadata.update(prefix_plan.to_metadata())
 
     return PromptEnvelope(
         prompt=prompt,

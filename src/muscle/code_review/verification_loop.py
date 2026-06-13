@@ -33,6 +33,44 @@ from .types import ReviewIssue
 logger = logging.getLogger(__name__)
 
 
+def build_verification_prompt(issue: ReviewIssue, fixed_content: str) -> str:
+    """Build the fix-verification user prompt deterministically.
+
+    Pure: no datetime/uuid/os/path lookups, so identical inputs always yield a
+    byte-identical string (foundation for prefix caching).
+    """
+    return f"""Verify this code fix is correct and doesn't break anything.
+
+Original Issue:
+- File: {issue.file_path}
+- Line: {issue.line_number}
+- Issue: {issue.title}
+- Description: {issue.description}
+
+Original Code:
+```
+{issue.code_snippet}
+```
+
+Fixed Code:
+```
+{fixed_content}
+```
+
+Check for:
+1. Does the fix actually address the issue?
+2. Could the fix introduce new bugs or break existing functionality?
+3. Are there any syntax errors?
+4. Does the fix maintain the same API/signature if applicable?
+
+Respond with:
+- "VERIFIED" if the fix is correct
+- "BREAKS: <reason>" if the fix breaks something
+- "NEEDS_WORK: <reason>" if the fix doesn't fully address the issue
+
+Be conservative - if you're not sure, say NEEDS_WORK."""
+
+
 class VerificationStatus(Enum):
     """Strict semantic verification statuses accepted from M2.7."""
 
@@ -208,36 +246,7 @@ class VerificationLoop:
         if not self.m27_client:
             return "M27 not available for verification", None
 
-        prompt = f"""Verify this code fix is correct and doesn't break anything.
-
-Original Issue:
-- File: {issue.file_path}
-- Line: {issue.line_number}
-- Issue: {issue.title}
-- Description: {issue.description}
-
-Original Code:
-```
-{issue.code_snippet}
-```
-
-Fixed Code:
-```
-{fixed_content}
-```
-
-Check for:
-1. Does the fix actually address the issue?
-2. Could the fix introduce new bugs or break existing functionality?
-3. Are there any syntax errors?
-4. Does the fix maintain the same API/signature if applicable?
-
-Respond with:
-- "VERIFIED" if the fix is correct
-- "BREAKS: <reason>" if the fix breaks something
-- "NEEDS_WORK: <reason>" if the fix doesn't fully address the issue
-
-Be conservative - if you're not sure, say NEEDS_WORK."""
+        prompt = build_verification_prompt(issue, fixed_content)
 
         prompt_envelope = compose_prompt_envelope(
             base_prompt=prompt,

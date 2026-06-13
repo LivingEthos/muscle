@@ -1,6 +1,6 @@
 """Provider profiles and resolution for MUSCLE's execution backend.
 
-MUSCLE's execution layer can run on one of four providers. Resolution order:
+MUSCLE's execution layer can run on registered provider backends. Resolution order:
 ``MUSCLE_PROVIDER`` env var -> per-project ``.muscle/config.yaml`` -> global
 ``~/.muscle/config.json`` -> default ``minimax-plan`` (backward compatible).
 Unknown provider names raise (fail closed) rather than silently falling back.
@@ -26,6 +26,7 @@ logger = logging.getLogger("muscle.providers")
 
 DEFAULT_PROVIDER = "minimax-plan"
 GLOBAL_CONFIG_PATH = Path.home() / ".muscle" / "config.json"
+OPENROUTER_DEFAULT_MODEL = "openai/gpt-4o-mini"
 
 
 class ProviderError(RuntimeError):
@@ -39,11 +40,38 @@ class ProviderBillingError(ProviderError):
 @dataclass(frozen=True)
 class ProviderProfile:
     name: str
-    kind: str  # "minimax-http" | "anthropic-http" | "claude-cli"
+    kind: str  # "minimax-http" | "anthropic-http" | "claude-cli" | "codex-cli" | "openrouter-http"
     model: str
     billing: str  # "plan-quota" | "api-dollars" | "agent-sdk-credit"
     billing_label: str
     description: str
+    execution_surface: str = "http-api"
+    provider_role: str = "cheap-worker"
+    capability_profile: str = "minimax-m3"
+    supports_structured_json: bool = True
+    supports_streaming: bool = True
+    supports_effort: bool = False
+    effort_transport: str = "metadata-only"
+    supports_cache_telemetry: bool = False
+    subscription_safe: bool = False
+    identity_trust: str = "first-party"
+    pricing_source: str = "known"
+
+    def capability_metadata(self) -> dict[str, object]:
+        """Return stable provider capability metadata for route/report output."""
+        return {
+            "execution_surface": self.execution_surface,
+            "provider_role": self.provider_role,
+            "capability_profile": self.capability_profile,
+            "supports_structured_json": self.supports_structured_json,
+            "supports_streaming": self.supports_streaming,
+            "supports_effort": self.supports_effort,
+            "effort_transport": self.effort_transport,
+            "supports_cache_telemetry": self.supports_cache_telemetry,
+            "subscription_safe": self.subscription_safe,
+            "identity_trust": self.identity_trust,
+            "pricing_source": self.pricing_source,
+        }
 
 
 PROVIDERS: Mapping[str, ProviderProfile] = MappingProxyType(
@@ -55,6 +83,9 @@ PROVIDERS: Mapping[str, ProviderProfile] = MappingProxyType(
             billing="plan-quota",
             billing_label="plan quota, $0 marginal",
             description="MiniMax M3 via subscription token-plan key (default)",
+            provider_role="cheap-worker",
+            capability_profile="minimax-m3",
+            supports_cache_telemetry=True,
         ),
         "minimax-api": ProviderProfile(
             name="minimax-api",
@@ -63,6 +94,9 @@ PROVIDERS: Mapping[str, ProviderProfile] = MappingProxyType(
             billing="api-dollars",
             billing_label="MiniMax API dollars",
             description="MiniMax M3 pay-as-you-go API key (same wire protocol as plan)",
+            provider_role="cheap-worker",
+            capability_profile="minimax-m3",
+            supports_cache_telemetry=True,
         ),
         "claude-subscription": ProviderProfile(
             name="claude-subscription",
@@ -71,6 +105,27 @@ PROVIDERS: Mapping[str, ProviderProfile] = MappingProxyType(
             billing="agent-sdk-credit",
             billing_label="Agent SDK credit",
             description="Official `claude` CLI in headless print mode (Opus only)",
+            execution_surface="official-cli",
+            provider_role="premium-host",
+            capability_profile="claude-opus-4-8",
+            supports_structured_json=False,
+            supports_streaming=False,
+            subscription_safe=True,
+            identity_trust="first-party",
+        ),
+        "codex-subscription": ProviderProfile(
+            name="codex-subscription",
+            kind="codex-cli",
+            model="gpt-5.5",
+            billing="plan-quota",
+            billing_label="ChatGPT Codex subscription allowance",
+            description="Official `codex` CLI via ChatGPT sign-in (GPT-5.5)",
+            execution_surface="official-cli",
+            provider_role="premium-host",
+            capability_profile="codex-gpt-5.5",
+            supports_streaming=False,
+            subscription_safe=True,
+            identity_trust="first-party",
         ),
         "anthropic-api": ProviderProfile(
             name="anthropic-api",
@@ -79,6 +134,25 @@ PROVIDERS: Mapping[str, ProviderProfile] = MappingProxyType(
             billing="api-dollars",
             billing_label="Anthropic API dollars",
             description="Direct Anthropic API with a real ANTHROPIC_API_KEY (Opus only)",
+            provider_role="premium-host",
+            capability_profile="claude-opus-4-8",
+            supports_effort=True,
+            effort_transport="api-output-config",
+            supports_cache_telemetry=True,
+            identity_trust="first-party",
+        ),
+        "openrouter-api": ProviderProfile(
+            name="openrouter-api",
+            kind="openrouter-http",
+            model="openrouter-selected",
+            billing="api-dollars",
+            billing_label="OpenRouter API dollars (pricing unknown until configured/reported)",
+            description="OpenRouter gateway with user-selected model",
+            provider_role="user-selected-gateway",
+            capability_profile="openrouter-selected",
+            supports_cache_telemetry=False,
+            identity_trust="gateway-reported",
+            pricing_source="unknown",
         ),
     }
 )
@@ -132,6 +206,70 @@ def _global_provider_name() -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _project_openrouter_model(project_path: Path | None) -> str | None:
+    if project_path is None:
+        return None
+    config_path = Path(project_path) / ".muscle" / "config.yaml"
+    if not config_path.exists():
+        return None
+    try:
+        text = config_path.read_text(encoding="utf-8")
+        data = json.loads(text) if text.lstrip().startswith("{") else (yaml.safe_load(text) or {})
+    except (OSError, json.JSONDecodeError, yaml.YAMLError):
+        logger.warning(
+            "Unreadable project config at %s; ignoring for OpenRouter model resolution",
+            config_path,
+        )
+        return None
+    project = data.get("project") if isinstance(data, Mapping) else None
+    if isinstance(project, Mapping):
+        value = project.get("openrouter_model")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    openrouter = data.get("openrouter") if isinstance(data, Mapping) else None
+    if isinstance(openrouter, Mapping):
+        value = openrouter.get("model")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _global_openrouter_model() -> str | None:
+    if not GLOBAL_CONFIG_PATH.exists():
+        return None
+    try:
+        data = json.loads(GLOBAL_CONFIG_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        logger.warning(
+            "Unreadable global config at %s; ignoring for OpenRouter model resolution",
+            GLOBAL_CONFIG_PATH,
+        )
+        return None
+    value = data.get("openrouter_model")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    openrouter = data.get("openrouter")
+    if isinstance(openrouter, Mapping):
+        nested = openrouter.get("model")
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip()
+    return None
+
+
+def resolve_openrouter_model(project_path: Path | None = None) -> tuple[str, str]:
+    """Resolve the OpenRouter requested model label and where it came from."""
+    env_model = os.environ.get("MUSCLE_OPENROUTER_MODEL")
+    if env_model and env_model.strip():
+        return env_model.strip(), "env"
+    project_model = _project_openrouter_model(project_path)
+    if project_model:
+        return project_model, "project"
+    global_model = _global_openrouter_model()
+    if global_model:
+        return global_model, "global"
+    return OPENROUTER_DEFAULT_MODEL, "default"
+
+
 def resolve_provider(project_path: Path | None = None) -> tuple[ProviderProfile, str]:
     """Resolve the active provider. Returns (profile, source).
 
@@ -179,6 +317,45 @@ def create_client(
         client = ClaudeCliClient(
             model=profile.model,
             **{k: v for k, v in client_kwargs.items() if k in allowed},
+        )
+    elif profile.kind == "codex-cli":
+        from .codex_cli_client import CodexCliClient
+
+        allowed = {"cache_db_path", "cache_pack_id"}
+        client = CodexCliClient(
+            model=profile.model,
+            **{k: v for k, v in client_kwargs.items() if k in allowed},
+        )
+        client.set_model_identity(
+            {
+                "requested_label": profile.model,
+                "provider_endpoint": "codex-cli://local",
+                "provider_fingerprint": "codex-cli://local",
+                "canonical_model_key": "openai/gpt-5.5@1",
+                "identity_source": "provider_endpoint",
+                "confidence": 0.9,
+                "manual_override": False,
+            }
+        )
+    elif profile.kind == "openrouter-http":
+        from .openrouter_api_client import OPENROUTER_API_BASE, OpenRouterApiClient
+
+        model = client_kwargs.pop("model", None)
+        model_source = "explicit"
+        if not model:
+            model, model_source = resolve_openrouter_model(project_path)
+        client = OpenRouterApiClient(model=str(model), **client_kwargs)
+        client.set_model_identity(
+            {
+                "requested_label": str(model),
+                "provider_endpoint": OPENROUTER_API_BASE,
+                "provider_fingerprint": "openrouter.ai/api/v1",
+                "canonical_model_key": None,
+                "identity_source": "gateway_label",
+                "confidence": 0.3,
+                "manual_override": False,
+                "model_source": model_source,
+            }
         )
     else:  # pragma: no cover — registry is closed
         raise ProviderError(f"Unhandled provider kind {profile.kind!r}")

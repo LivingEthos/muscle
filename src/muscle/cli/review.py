@@ -202,6 +202,18 @@ def _detect_review_warnings(review_result: Any, stats: Any) -> list[str]:
     help="Explicit package(s) to fetch (repeatable); overrides import-based discovery",
 )
 @click.option(
+    "--async-workers",
+    is_flag=True,
+    default=False,
+    help="Queue hard-tail detached review workers for large or failed-verification reviews",
+)
+@click.option(
+    "--async-worker-limit",
+    type=click.IntRange(1, 10),
+    default=None,
+    help="Maximum detached async worker jobs for this foreground review",
+)
+@click.option(
     "--visual/--no-visual",
     default=True,
     help="Emit lifecycle events to Visual DevFlow when enabled",
@@ -229,6 +241,8 @@ def review(
     execution: str | None,
     fetch_sources: bool,
     source_package: tuple[str, ...],
+    async_workers: bool,
+    async_worker_limit: int | None,
     visual: bool,
     no_db: bool,
 ) -> None:
@@ -245,6 +259,8 @@ def review(
         muscle review --target ./src --mode pressure --intensity intensive
 
         muscle review --target ./src --shadow  # Run in background
+
+        muscle review --target ./src --async-workers  # Queue hard-tail worker evidence
 
         muscle review --target ./src --mode pressure --focus design,failure,race
     """
@@ -282,11 +298,19 @@ def review(
     }
 
     resolved_target = Path(target).resolve()
-    execution_mode, resolved_project_path, _ = _resolve_review_execution_mode(
+    execution_mode, resolved_project_path, project_config = _resolve_review_execution_mode(
         resolved_target,
         execution,
     )
     project_path = str(resolved_project_path)
+    configured_async_workers = (
+        bool(project_config.review_async_workers) if project_config is not None else False
+    )
+    configured_async_worker_limit = (
+        int(project_config.review_async_worker_limit) if project_config is not None else 3
+    )
+    resolved_async_workers = async_workers or configured_async_workers
+    resolved_async_worker_limit = async_worker_limit or configured_async_worker_limit
     configured_workflow = workflow
     if no_db:
         logger.info("Memory-only review mode active (--no-db): skipping project memory defaults")
@@ -309,6 +333,11 @@ def review(
         raise click.UsageError(
             "--fetch-sources is not supported with --shadow. "
             "Run a foreground review to use dependency context enrichment."
+        )
+    if async_workers and shadow:
+        raise click.UsageError(
+            "--async-workers is for foreground review orchestration; --shadow already runs "
+            "the review in a detached worker."
         )
 
     pressure_focus: PressureFocus | None = None
@@ -425,8 +454,8 @@ def review(
                 console.print(f"[dim]Artifacts: {data['artifact_dir']}[/dim]")
 
     # Provider-aware credential guard: only MiniMax-backed providers require a
-    # MiniMax key env var. Other providers (claude-subscription, anthropic-api)
-    # enforce their own credentials inside their client constructors.
+    # MiniMax key env var. Other providers enforce their own credentials inside
+    # their client constructors.
     try:
         provider_profile, _provider_source = resolve_provider(Path(project_path))
     except ValueError as exc:
@@ -452,7 +481,7 @@ def review(
         sys.exit(1)
 
     try:
-        m27_client = create_client(api_key=api_key, project_path=Path(project_path))
+        m27_client = create_client(project_path=Path(project_path))
     except (ValueError, ProviderError) as exc:
         if json_output:
             _emit_json({"error": str(exc)})
@@ -490,6 +519,8 @@ def review(
         worktree_enabled=execution_mode == "worktree",
         fetch_sources=fetch_sources,
         fetch_source_packages=list(source_package) if source_package else None,
+        async_workers=resolved_async_workers,
+        async_worker_limit=resolved_async_worker_limit,
     )
 
     # Initialize ProjectMemory and LearningIngestor early for correction signal callback

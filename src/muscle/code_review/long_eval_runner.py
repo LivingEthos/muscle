@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ..io_safety import atomic_write_text
 from .learning_pipeline import LearningPipeline
 from .types import ReviewResult
 
@@ -58,6 +59,13 @@ class LongEvalRunner:
             "critical_issues": [],
             "high_issues": [],
             "failures": [],
+            "methodology_metadata": {
+                "judge_model": "local-review-json-parser",
+                "prompt_version": "long-eval-v1",
+                "rubric_version": "review-summary-v1",
+                "grader_run_count": 0,
+                "pairwise_ordering": {},
+            },
             "success": True,
         }
 
@@ -91,6 +99,9 @@ class LongEvalRunner:
 
         results["completed_at"] = datetime.now().isoformat()
         results["duration_seconds"] = (datetime.now() - start_time).total_seconds()
+        methodology = results.get("methodology_metadata")
+        if isinstance(methodology, dict):
+            methodology["grader_run_count"] = len(target_paths)
 
         self._save_report(results)
 
@@ -227,7 +238,7 @@ class LongEvalRunner:
         date_str = datetime.now().strftime("%Y-%m-%d")
         report_path = self.reports_dir / f"long_eval_{date_str}.json"
 
-        report_path.write_text(json.dumps(results, indent=2))
+        atomic_write_text(report_path, json.dumps(results, indent=2))
         logger.info(f"Saved long evaluation report to {report_path}")
 
         self._generate_markdown_summary(results)
@@ -282,7 +293,7 @@ class LongEvalRunner:
         lines.append("---")
         lines.append(f"*Generated at {datetime.now().isoformat()}*")
 
-        summary_path.write_text("\n".join(lines))
+        atomic_write_text(summary_path, "\n".join(lines))
         logger.info(f"Saved markdown summary to {summary_path}")
 
         return summary_path

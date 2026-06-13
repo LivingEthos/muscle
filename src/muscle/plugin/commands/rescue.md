@@ -18,4 +18,6 @@ Valid `--intensity` values: `minimal`, `moderate`, `intensive`, `exhaustive`. An
 
 `/muscle:rescue` and `/muscle:lifeline` both wrap `muscle lifeline`. Use `/muscle:rescue` when the user has a specific failure they want diagnosed (race condition, memory leak, intermittent test, regression after a known change). Use `/muscle:lifeline` for open-ended exploratory investigation. The corresponding rescue subagent at `agents/rescue_agent.md` returns structured root-cause JSON with `confidence`, `evidence`, and `fix_suggestions` fields.
 
+Do not use review async workers as a substitute for rescue. Async workers belong to `muscle review --async-workers` and only collect detached hard-tail review evidence after the planner has a focused review target.
+
 Present the findings with confidence levels and suggested fixes. Offer to apply suggested fixes or run a follow-up review.

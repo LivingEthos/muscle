@@ -6,6 +6,11 @@ from pathlib import Path
 from muscle.code_review.review_artifacts import ReviewArtifactStore
 from muscle.code_review.review_workflows import ReviewWorkflowEngine, ReviewWorkflowLoader
 from muscle.code_review.types import IssueCategory, ReviewIssue, ReviewScope, Severity
+from muscle.verification_claims import (
+    VerificationClaim,
+    VerificationClaimType,
+    audit_verification_claims,
+)
 
 
 class TestReviewWorkflowLoader:
@@ -64,6 +69,16 @@ class TestReviewArtifactStore:
         store.write_synthesis([issue], {"high": 1})
         store.write_fixes({"applied": [], "failed": []})
         store.write_validation({"performed": False, "status": "not-run"})
+        store.write_claims(
+            audit_verification_claims(
+                [
+                    VerificationClaim(
+                        claim_text="Validation not run.",
+                        claim_type=VerificationClaimType.NOT_RUN,
+                    )
+                ]
+            )
+        )
         store.write_summary("# Summary\n")
 
         root = Path(store.artifact_dir)
@@ -72,10 +87,12 @@ class TestReviewArtifactStore:
         assert (root / "synthesis.json").exists()
         assert (root / "fixes.json").exists()
         assert (root / "validation.json").exists()
+        assert (root / "verification-claims.json").exists()
         assert (root / "summary.md").exists()
         manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
         assert manifest["session_id"] == "sess123"
         assert "scope.json" in manifest["artifacts"]
+        assert "verification-claims.json" in manifest["artifacts"]
 
     def test_prepare_llm_trace_writes_stable_trace_pointers(self, tmp_path: Path):
         store = ReviewArtifactStore(str(tmp_path), "sess123")

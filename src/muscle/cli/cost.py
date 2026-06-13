@@ -310,8 +310,8 @@ def lifeline(
         muscle lifeline --target ./src/auth.py --prompt "suggest improvements to error handling"
     """
     # Provider-aware credential guard: only MiniMax-backed providers require a
-    # MiniMax key env var. Other providers (claude-subscription, anthropic-api)
-    # enforce their own credentials inside their client constructors.
+    # MiniMax key env var. Other providers enforce their own credentials inside
+    # their client constructors.
     cwd = Path.cwd()
     try:
         provider_profile, _provider_source = resolve_provider(cwd)
@@ -327,7 +327,7 @@ def lifeline(
         sys.exit(1)
 
     try:
-        m27_client = create_client(api_key=api_key, project_path=cwd)
+        m27_client = create_client(project_path=cwd)
     except (ValueError, ProviderError) as exc:
         console.print(f"[red]Error: {exc}[/red]")
         sys.exit(1)

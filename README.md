@@ -35,9 +35,10 @@ It works with **Claude Code** (as a first-class plugin), **Codex** (via the
 shipped bundle), and from the **terminal** as a standalone CLI.
 
 ```bash
-# install, point at MiniMax, run your first self-learning review
+# install, choose an execution backend, run your first self-learning review
 curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/install.sh | bash
 export MINIMAX_API_KEY="your-token-plan-key"
+muscle provider list
 muscle init && muscle review --target . --mode review
 ```
 
@@ -54,7 +55,7 @@ coding agent you already use.
 | **Reviews that get smarter over time** | A project-local memory that learns *your* repo's patterns and never leaks across projects. |
 | **Confidence that fixes are real** | Static analysis + semantic review + a verification agent + isolated worktree fixes. |
 | **A safer AI agent loop** | Hooks that run on session start, prompt submit, and stop — keeping the host model's memory aligned with project reality. |
-| **Less wasted host-model spend** | Routing classifier delegates bulk work to the cheaper M3 model. Your premium host model handles planning. |
+| **Less wasted host-model spend** | Routing classifier delegates bulk work to optional execution backends like MiniMax M3 or OpenRouter. Your premium host model handles planning. |
 | **Auditable evidence** | Every finding, fix, decision, and skill promotion is recorded in a local SQLite DB you can inspect. |
 | **Works without lock-in** | The CLI does everything. Plugins are optional sugar on top. |
 
@@ -131,13 +132,16 @@ The harness is **opt-in by command**, **inspectable by default**, and
 
 - macOS or Linux (or any shell with `bash`)
 - Python 3.10+ and `git`
-- A **MiniMax** API key ([api.minimax.io](https://api.minimax.io/) — token plan)
+- One MUSCLE execution provider credential or login:
+  MiniMax token-plan/API key, OpenRouter API key, Anthropic API key, official Claude CLI login,
+  or official Codex CLI ChatGPT login
 - *Optional:* [Claude Code](https://claude.ai/code) for the first-class plugin UI
 
-> **Note:** Your Claude/Codex subscription and your MiniMax key are different
-> things. The host agent UI is one tool; MUSCLE uses MiniMax M3 for its own
-> review and learning calls because it's roughly **5–10× cheaper per token**
-> than premium host models.
+> **Note:** Your Claude/Codex host session and your MUSCLE execution backend are
+> separate roles. MiniMax M3 remains the default low-cost backend, OpenRouter is
+> available for user-selected gateway models, and Claude execution is available
+> when you intentionally want to spend Claude subscription/API credit or ChatGPT
+> Codex subscription allowance.
 
 ### 1. Install
 
@@ -148,20 +152,45 @@ curl -fsSL https://raw.githubusercontent.com/LivingEthos/muscle/main/install.sh 
 The installer checks Python, uses `uv` when available, clones MUSCLE to
 `~/.muscle/src`, and installs the `muscle` CLI.
 
-### 2. Add your API key
+### 2. Choose an execution provider
 
 ```bash
+# Default low-cost backend:
 export MINIMAX_API_KEY="your-token-plan-api-key"
 # Optional explicit Anthropic-compatible endpoint override:
 # export ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic"
 # China Anthropic-compatible endpoint:
 # export ANTHROPIC_BASE_URL="https://api.minimaxi.com/anthropic"
+
+# Optional OpenRouter backend:
+# export OPENROUTER_API_KEY="your-openrouter-api-key"
+# export MUSCLE_PROVIDER="openrouter-api"
+# export MUSCLE_OPENROUTER_MODEL="qwen/qwen3-coder"
+
+# Optional Codex subscription backend:
+# muscle provider login codex-subscription
+# muscle provider use codex-subscription
 ```
 
 `MINIMAX_API_KEY` (or its legacy alias `ANTHROPIC_API_KEY`) authenticates
 MiniMax. By default MUSCLE uses MiniMax's OpenAI-compatible
 `https://api.minimax.io/v1` endpoint; set `ANTHROPIC_BASE_URL` only when you
 need an explicit Anthropic-compatible endpoint override.
+
+Provider selection stays inside the `muscle` CLI:
+
+```bash
+muscle provider list
+muscle provider show
+muscle provider use minimax-plan      # project scope
+muscle provider use openrouter-api    # project scope
+muscle provider use codex-subscription # project scope, after Codex ChatGPT login
+```
+
+OpenRouter preserves the exact requested model label and reports identity and
+pricing as gateway-scoped/unknown unless you configure trusted pricing evidence.
+Codex subscription execution uses the official `codex` CLI with ChatGPT sign-in;
+MUSCLE never stores or refreshes ChatGPT OAuth tokens itself.
 
 ### 3. Initialize your project
 
@@ -241,6 +270,7 @@ muscle review --target ./src --mode review --format json   # machine-readable
 muscle review --target ./src --format json --output review.json
 muscle review --target ./src --mode review --no-db         # skip memory/learning writes
 muscle review --target ./src --shadow                      # background, async
+muscle review --target ./src --async-workers               # hard-tail worker evidence
 ```
 
 | Mode | What it does |
@@ -316,6 +346,7 @@ project-memory state.
 ```bash
 muscle review --target . --mode auto-fix --execution worktree
 muscle settings review --execution worktree   # make it the default
+muscle settings review --async-workers --async-worker-limit 3  # hard-tail evidence default
 ```
 
 `worktree` mode runs every fix in an isolated `git worktree`, so a bad fix
@@ -330,6 +361,11 @@ muscle review --target . --mode review --shadow   # queue
 muscle probe                                       # check status
 muscle diagnosis                                   # read completed results
 ```
+
+`--async-workers` is different from `--shadow`: it keeps the foreground review
+on the critical path and queues bounded review-only workers only for hard-tail
+cases such as wide targets, failed verification, multi-subsystem findings, low
+non-architectural route confidence, or poor historical pass rate.
 
 ### Verification agent
 
@@ -482,8 +518,8 @@ defaults.
 ```bash
 muscle model status
 muscle model history
-muscle model select --canonical-model minimax/m2.7@1
-muscle model packs install --pack-id minimax-m27-core
+muscle model select --canonical-model minimax/m3@1
+muscle model packs install --canonical-model minimax/m3@1
 ```
 
 ### Release gates & benchmarks

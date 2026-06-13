@@ -27,3 +27,9 @@ muscle settings api-key --source env       # use $MINIMAX_API_KEY
 muscle settings api-key --source opencode  # use OpenCode-managed credential
 muscle settings api-key --source ask       # prompt next time a key is needed
 ```
+
+For ChatGPT-backed Codex subscription usage, do not set an API key here. Use:
+```bash
+muscle provider login codex-subscription
+muscle provider use codex-subscription
+```

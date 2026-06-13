@@ -5,7 +5,7 @@
 | Audience | Users, maintainers, release operators, and coding agents |
 | Scope | `src/muscle/` runtime and `src/muscle/plugin/` bundle |
 | Status | Current repo-local wiki database |
-| Source of truth | Current repository files, especially [`README.md`](../README.md), [`src/muscle/cli.py`](../src/muscle/cli.py), and [`src/muscle/plugin/`](../src/muscle/plugin/) |
+| Source of truth | Current repository files, especially [`README.md`](../README.md), [`src/muscle/cli/`](../src/muscle/cli/), and [`src/muscle/plugin/`](../src/muscle/plugin/) |
 | Online-docs readiness | Pages are split by topic, use stable slugs, and have matching YAML catalogs under [`data/`](data/) |
 
 MUSCLE is a self-learning code review and developer-ops plugin for Claude Code,

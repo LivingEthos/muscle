@@ -27,6 +27,9 @@ TRUSTED_ENDPOINTS = {
     "api.openai.com": "openai",
     "generativelanguage.googleapis.com": "google",
 }
+GATEWAY_ENDPOINTS = {
+    "openrouter.ai": "openrouter-api",
+}
 
 HEURISTIC_ALIAS_MAP = {
     "minimax-m3": "minimax/m3@1",
@@ -38,6 +41,11 @@ HEURISTIC_ALIAS_MAP = {
     "claude-sonnet-4": "anthropic/claude-sonnet@4",
     "claude 4 sonnet": "anthropic/claude-sonnet@4",
     "claude-3-7-sonnet": "anthropic/claude-sonnet@3.7",
+    "claude-fable-5": "anthropic/claude-fable-5@2026-06-09",
+    "fable 5": "anthropic/claude-fable-5@2026-06-09",
+    "anthropic/claude-fable-5@2026-06-09": "anthropic/claude-fable-5@2026-06-09",
+    "gpt-5.5": "openai/gpt-5.5@1",
+    "openai/gpt-5.5@1": "openai/gpt-5.5@1",
     "gpt-5": "openai/gpt-5@1",
     "gpt-5-mini": "openai/gpt-5-mini@1",
     "gemini-2.5-pro": "google/gemini-pro@2.5",
@@ -50,6 +58,8 @@ SUPPORTED_CANONICAL_MODELS = sorted(
         "minimax/m2.7@1",
         "anthropic/claude-sonnet@4",
         "anthropic/claude-sonnet@3.7",
+        "anthropic/claude-fable-5@2026-06-09",
+        "openai/gpt-5.5@1",
         "openai/gpt-5@1",
         "openai/gpt-5-mini@1",
         "google/gemini-pro@2.5",
@@ -65,11 +75,14 @@ INTROSPECTION_MODEL_PATTERNS: dict[str, tuple[tuple[str, str], ...]] = {
         ("m2.7", "minimax/m2.7@1"),
     ),
     "anthropic": (
+        ("claude-fable-5", "anthropic/claude-fable-5@2026-06-09"),
+        ("fable-5", "anthropic/claude-fable-5@2026-06-09"),
         ("claude-sonnet-4", "anthropic/claude-sonnet@4"),
         ("claude-4-sonnet", "anthropic/claude-sonnet@4"),
         ("claude-3-7-sonnet", "anthropic/claude-sonnet@3.7"),
     ),
     "openai": (
+        ("gpt-5.5", "openai/gpt-5.5@1"),
         ("gpt-5-mini", "openai/gpt-5-mini@1"),
         ("gpt-5", "openai/gpt-5@1"),
     ),
@@ -101,6 +114,15 @@ def _provider_owner(provider_endpoint: str | None) -> tuple[str | None, str | No
         return None, None
     host = fingerprint.split("/", 1)[0]
     return TRUSTED_ENDPOINTS.get(host), fingerprint
+
+
+def _gateway_provider(provider_endpoint: str | None) -> tuple[str | None, str | None]:
+    """Return gateway provider name and fingerprint for non-first-party endpoints."""
+    fingerprint = endpoint_fingerprint(provider_endpoint)
+    if not fingerprint:
+        return None, None
+    host = fingerprint.split("/", 1)[0]
+    return GATEWAY_ENDPOINTS.get(host), fingerprint
 
 
 def _extract_response_model_name(response_payload: Mapping[str, Any] | None) -> str | None:
@@ -207,6 +229,10 @@ class ModelIdentityResolver:
                 manual_override=True,
             )
 
+        gateway_identity = self._resolve_gateway_label(requested_label, provider_endpoint)
+        if gateway_identity is not None:
+            return gateway_identity
+
         trusted_identity = self._resolve_trusted_first_party(requested_label, provider_endpoint)
         if trusted_identity is not None:
             return trusted_identity
@@ -283,6 +309,29 @@ class ModelIdentityResolver:
                     confidence=0.9,
                 )
         return None
+
+    def _resolve_gateway_label(
+        self,
+        requested_label: str | None,
+        provider_endpoint: str | None,
+    ) -> ModelIdentity | None:
+        gateway, fingerprint = _gateway_provider(provider_endpoint)
+        if gateway is None or fingerprint is None:
+            return None
+        requested = (requested_label or "").strip()
+        return ModelIdentity(
+            requested_label=requested_label,
+            provider_endpoint=provider_endpoint,
+            provider_fingerprint=fingerprint,
+            canonical_model_key=None,
+            identity_source="gateway_label",
+            confidence=0.3 if requested else 0.1,
+            manual_override=False,
+            metadata={
+                "gateway_provider": gateway,
+                "requested_model": requested,
+            },
+        )
 
     def _resolve_heuristic(
         self,

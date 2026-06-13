@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from .io_safety import atomic_write_json, atomic_write_text
+from .untrusted_content import detect_sanitizer_warnings
 
 logger = logging.getLogger(__name__)
 
@@ -58,12 +59,27 @@ class CommandEvidence:
     tokens_raw_estimate: int = 0
     tokens_compact_estimate: int = 0
     warnings: list[str] = field(default_factory=list)
+    command_familiarity: dict[str, Any] = field(default_factory=dict)
     stdout_truncated: bool = False
     stderr_truncated: bool = False
     artifact_dir: str | None = None
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     )
+
+    @property
+    def evidence_id(self) -> str:
+        """Stable identifier for linking claims back to this command evidence."""
+        artifact_path = self.artifact_dir or self.raw_stdout_path or self.raw_stderr_path or ""
+        payload = {
+            "command": self.command,
+            "cwd": self.cwd,
+            "created_at": self.created_at,
+            "exit_code": self.exit_code,
+            "artifact_path": artifact_path,
+        }
+        digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+        return f"cmd-{digest[:20]}"
 
     @property
     def tokens_saved_estimate(self) -> int:
@@ -73,6 +89,7 @@ class CommandEvidence:
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable dict."""
         data = asdict(self)
+        data["evidence_id"] = self.evidence_id
         data["tokens_saved_estimate"] = self.tokens_saved_estimate
         return data
 
@@ -212,11 +229,38 @@ def build_command_evidence(
     raw_stderr: str,
     parser_tier: ParserTier | str = ParserTier.FULL,
     warnings: list[str] | None = None,
+    command_familiarity: dict[str, Any] | None = None,
     compact_max_chars: int = DEFAULT_COMPACT_MAX_CHARS,
     force_raw_artifact: bool = False,
 ) -> CommandEvidence:
     """Build and persist command evidence for one command run."""
     project_root = find_project_root(cwd)
+    if command_familiarity is None:
+        try:
+            from .command_familiarity_guard import CommandFamiliarityGuard
+
+            familiarity = CommandFamiliarityGuard(project_root).check(command, cwd)
+            command_familiarity = familiarity.to_dict()
+            familiarity_warnings = familiarity.warning_labels()
+        except Exception as exc:
+            command_familiarity = {
+                "checked": False,
+                "familiar": False,
+                "risk_level": "unknown",
+                "source": "guard_error",
+                "warnings": [str(exc)],
+                "blocked": False,
+            }
+            familiarity_warnings = [f"command_familiarity_guard_failed:{exc}"]
+    else:
+        familiarity_warnings = [
+            "command_familiarity_checked",
+            *[str(item) for item in command_familiarity.get("warnings", [])],
+        ]
+        if not bool(command_familiarity.get("familiar")):
+            familiarity_warnings.append("command_unfamiliar")
+        if bool(command_familiarity.get("blocked")):
+            familiarity_warnings.append("command_blocked")
     filter_warnings: list[str] = []
     filtered_stdout = raw_stdout
     filtered_stderr = raw_stderr
@@ -256,7 +300,13 @@ def build_command_evidence(
         parser_tier=tier_value,
         tokens_raw_estimate=estimate_tokens(raw_combined),
         tokens_compact_estimate=estimate_tokens(compact_combined),
-        warnings=[*(warnings or []), *filter_warnings],
+        warnings=[
+            *(warnings or []),
+            *familiarity_warnings,
+            *filter_warnings,
+            *detect_sanitizer_warnings(raw_combined),
+        ],
+        command_familiarity=command_familiarity,
         stdout_truncated=stdout_truncated,
         stderr_truncated=stderr_truncated,
     )
@@ -292,6 +342,26 @@ def run_command_with_evidence(
 ) -> tuple[int, str, str, CommandEvidence]:
     """Run a command and return its exit code, raw stdout/stderr, and evidence."""
     started = time.time()
+    project_root = find_project_root(cwd)
+    from .command_familiarity_guard import CommandFamiliarityGuard
+
+    familiarity = CommandFamiliarityGuard(project_root).check(command, cwd)
+    if familiarity.blocked:
+        duration_ms = int((time.time() - started) * 1000)
+        stderr = "Command blocked by familiarity guard"
+        evidence = build_command_evidence(
+            command=command,
+            cwd=cwd,
+            exit_code=-4,
+            duration_ms=duration_ms,
+            raw_stdout="",
+            raw_stderr=stderr,
+            parser_tier=ParserTier.PASSTHROUGH,
+            warnings=[stderr],
+            command_familiarity=familiarity.to_dict(),
+            force_raw_artifact=True,
+        )
+        return -4, "", stderr, evidence
     try:
         result = subprocess.run(
             command,
@@ -310,6 +380,7 @@ def run_command_with_evidence(
             raw_stderr=result.stderr,
             parser_tier=parser_tier,
             warnings=warnings,
+            command_familiarity=familiarity.to_dict(),
             compact_max_chars=compact_max_chars,
         )
         return result.returncode, result.stdout, result.stderr, evidence
@@ -325,6 +396,7 @@ def run_command_with_evidence(
             raw_stderr=stderr,
             parser_tier=ParserTier.PASSTHROUGH,
             warnings=[stderr],
+            command_familiarity=familiarity.to_dict(),
             force_raw_artifact=True,
         )
         return -1, "", evidence.compact_stderr, evidence
@@ -340,6 +412,7 @@ def run_command_with_evidence(
             raw_stderr=stderr,
             parser_tier=ParserTier.PASSTHROUGH,
             warnings=[stderr],
+            command_familiarity=familiarity.to_dict(),
             force_raw_artifact=True,
         )
         return -2, "", evidence.compact_stderr, evidence
@@ -355,6 +428,7 @@ def run_command_with_evidence(
             raw_stderr=stderr,
             parser_tier=ParserTier.PASSTHROUGH,
             warnings=[stderr],
+            command_familiarity=familiarity.to_dict(),
             force_raw_artifact=True,
         )
         return -3, "", evidence.compact_stderr, evidence

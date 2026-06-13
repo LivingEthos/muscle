@@ -10,6 +10,12 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..untrusted_content import (
+    UntrustedPermissions,
+    UntrustedSourceKind,
+    render_untrusted_content,
+)
+
 logger = logging.getLogger(__name__)
 
 _JS_TS_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx"}
@@ -113,6 +119,13 @@ class SourceContextBuilder:
             )
 
         context = self._build_context(packages, listing, project_root)
+        if context:
+            context = render_untrusted_content(
+                context,
+                source_kind=UntrustedSourceKind.DEPENDENCY_SOURCE,
+                permissions=UntrustedPermissions.CITATION_ONLY,
+                source_path=str(project_root),
+            )
         fetched = [p for p in packages if any(e.get("name") == p for e in listing)]
         return SourceContextResult(context=context, packages_fetched=fetched)
 

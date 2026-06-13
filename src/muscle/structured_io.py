@@ -20,6 +20,8 @@ _REVIEW_CATEGORIES = {
     "docs",
     "best_practice",
 }
+BENCHMARK_RESULT_BEGIN = "<<<MUSCLE_BENCHMARK_RESULT_JSON_BEGIN>>>"
+BENCHMARK_RESULT_END = "<<<MUSCLE_BENCHMARK_RESULT_JSON_END>>>"
 
 
 class ReviewFinding(BaseModel):
@@ -120,7 +122,11 @@ def _flatten_review_item(item: dict[str, Any]) -> list[dict[str, Any]]:
     without an inner list pass through unchanged (the legacy flat shape).
     """
     if not isinstance(item, dict):
-        return [item]
+        # M3 occasionally emits null entries in the reviews array; drop them
+        # rather than letting one null fail the whole payload validation.
+        # Non-dict, non-None items (e.g. constructed ReviewFinding instances)
+        # pass through for normal validation.
+        return [] if item is None else [item]
 
     inner_list: Any = None
     for key in ("issues", "findings"):
@@ -234,3 +240,102 @@ class RouteDecisionSchema(BaseModel):
     recommended: Literal["m27", "m27_with_verify", "escalate_to_host"]
     confidence: float = Field(ge=0.0, le=1.0)
     rationale: str
+
+
+class BenchmarkResultEnvelope(BaseModel):
+    """Strict benchmark result envelope visible to deterministic graders."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    result: dict[str, Any]
+    evidence_ids: list[str] = Field(default_factory=list)
+    methodology: dict[str, Any] = Field(default_factory=dict)
+
+
+def render_benchmark_result_envelope(
+    *,
+    result: dict[str, Any],
+    evidence_ids: list[str] | None = None,
+    methodology: dict[str, Any] | None = None,
+) -> str:
+    """Render one strict benchmark result envelope."""
+    envelope = BenchmarkResultEnvelope(
+        result=result,
+        evidence_ids=evidence_ids or [],
+        methodology=methodology or {},
+    )
+    payload = envelope.model_dump()
+    import json
+
+    return (
+        f"{BENCHMARK_RESULT_BEGIN}\n{json.dumps(payload, sort_keys=True)}\n{BENCHMARK_RESULT_END}"
+    )
+
+
+def parse_benchmark_result_envelope(text: str) -> BenchmarkResultEnvelope:
+    """Parse the only result span/object a benchmark grader should see."""
+    import json
+
+    start = text.find(BENCHMARK_RESULT_BEGIN)
+    end = text.find(BENCHMARK_RESULT_END)
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("Benchmark result envelope is missing.")
+    second_start = text.find(BENCHMARK_RESULT_BEGIN, start + len(BENCHMARK_RESULT_BEGIN))
+    if second_start != -1:
+        raise ValueError("Benchmark output contains multiple result envelopes.")
+    payload_start = start + len(BENCHMARK_RESULT_BEGIN)
+    payload = text[payload_start:end].strip()
+    if not payload:
+        raise ValueError("Benchmark result envelope is empty.")
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Benchmark result envelope is malformed JSON: {exc}") from exc
+    return BenchmarkResultEnvelope.model_validate(parsed)
+
+
+def audit_benchmark_integrity(
+    *,
+    final_result_text: str,
+    tool_output_text: str = "",
+    evidence_text: str = "",
+    answer_terms: list[str] | None = None,
+    contamination_blocklist: list[str] | None = None,
+) -> dict[str, Any]:
+    """Detect benchmark contamination and transcript leakage signals.
+
+    This is intentionally deterministic. It does not decide correctness; it
+    flags cases where a benchmark answer source appears in the transcript but
+    is not present in the declared result evidence.
+    """
+    issues: list[dict[str, str]] = []
+    lower_result = final_result_text.lower()
+    lower_tools = tool_output_text.lower()
+    lower_evidence = evidence_text.lower()
+    for term in contamination_blocklist or []:
+        normalized = term.strip().lower()
+        if normalized and (normalized in lower_result or normalized in lower_tools):
+            issues.append(
+                {
+                    "type": "contamination_blocklist",
+                    "term": term,
+                    "summary": "Blocked benchmark-answer source appeared in benchmark material.",
+                }
+            )
+    for term in answer_terms or []:
+        normalized = term.strip().lower()
+        if not normalized:
+            continue
+        if normalized in lower_tools and normalized not in lower_evidence:
+            issues.append(
+                {
+                    "type": "retrieved_answer_leakage",
+                    "term": term,
+                    "summary": "Answer-like text appeared in tool output but not result evidence.",
+                }
+            )
+    return {
+        "passed": not issues,
+        "issue_count": len(issues),
+        "issues": issues,
+    }

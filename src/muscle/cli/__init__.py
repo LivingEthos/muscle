@@ -45,6 +45,7 @@ from . import (  # noqa: E402,F401
     plumbing,
     review,
 )
+from . import provider as _provider_module  # noqa: E402,F401
 
 # Shared state, the root group, helpers, and constants.
 from ._shared import (
@@ -155,6 +156,8 @@ from .plumbing import (  # noqa: E402
 from .provider import (  # noqa: E402
     provider,
     provider_list,
+    provider_login,
+    provider_setup,
     provider_show,
     provider_use,
     setup,
@@ -264,8 +267,10 @@ __all__ = [
     "optimize_host_docs",
     "probe",
     "provider",
+    "provider_login",
     "provider_list",
     "provider_show",
+    "provider_setup",
     "provider_use",
     "resume",
     "route_cmd",

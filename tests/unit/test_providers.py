@@ -8,18 +8,22 @@ import pytest
 
 from muscle.providers import (
     DEFAULT_PROVIDER,
+    OPENROUTER_DEFAULT_MODEL,
     PROVIDERS,
+    resolve_openrouter_model,
     resolve_provider,
 )
 
 
 class TestRegistry:
-    def test_exactly_four_providers(self):
+    def test_registered_providers(self):
         assert set(PROVIDERS) == {
             "minimax-plan",
             "minimax-api",
             "claude-subscription",
+            "codex-subscription",
             "anthropic-api",
+            "openrouter-api",
         }
 
     def test_profiles_shape(self):
@@ -29,8 +33,25 @@ class TestRegistry:
         assert PROVIDERS["claude-subscription"].kind == "claude-cli"
         assert PROVIDERS["claude-subscription"].billing == "agent-sdk-credit"
         assert PROVIDERS["claude-subscription"].model == "claude-opus-4-8"
+        assert PROVIDERS["codex-subscription"].kind == "codex-cli"
+        assert PROVIDERS["codex-subscription"].billing == "plan-quota"
+        assert PROVIDERS["codex-subscription"].model == "gpt-5.5"
         assert PROVIDERS["anthropic-api"].kind == "anthropic-http"
         assert PROVIDERS["anthropic-api"].model == "claude-opus-4-8"
+        assert PROVIDERS["openrouter-api"].kind == "openrouter-http"
+        assert PROVIDERS["openrouter-api"].provider_role == "user-selected-gateway"
+        assert PROVIDERS["openrouter-api"].identity_trust == "gateway-reported"
+        assert PROVIDERS["openrouter-api"].pricing_source == "unknown"
+        for profile in PROVIDERS.values():
+            assert profile.execution_surface in {"http-api", "official-cli", "manual-host"}
+            assert profile.provider_role in {
+                "cheap-worker",
+                "premium-host",
+                "fallback-host",
+                "user-selected-gateway",
+            }
+            assert profile.identity_trust in {"first-party", "gateway-reported", "alias-only"}
+            assert profile.pricing_source in {"known", "estimated", "unknown"}
 
     def test_registry_is_immutable(self):
         with pytest.raises(TypeError):
@@ -53,6 +74,13 @@ class TestResolution:
         monkeypatch.setattr("muscle.providers.GLOBAL_CONFIG_PATH", gcfg)
         profile, source = resolve_provider(project_path=tmp_path)
         assert profile.name == "anthropic-api"
+        assert source == "env"
+
+    def test_openrouter_provider_resolves_from_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MUSCLE_PROVIDER", "openrouter-api")
+        monkeypatch.setattr("muscle.providers.GLOBAL_CONFIG_PATH", tmp_path / "none.json")
+        profile, source = resolve_provider(project_path=tmp_path)
+        assert profile.name == "openrouter-api"
         assert source == "env"
 
     def test_project_beats_global(self, tmp_path, monkeypatch):
@@ -215,6 +243,47 @@ class TestProjectConfigRoundTrip:
         assert loaded.provider is None
 
 
+class TestOpenRouterModelResolution:
+    def test_default_model_when_unconfigured(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MUSCLE_OPENROUTER_MODEL", raising=False)
+        monkeypatch.setattr("muscle.providers.GLOBAL_CONFIG_PATH", tmp_path / "none.json")
+        model, source = resolve_openrouter_model(tmp_path)
+        assert model == OPENROUTER_DEFAULT_MODEL
+        assert source == "default"
+
+    def test_env_model_wins_over_project_and_global(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MUSCLE_OPENROUTER_MODEL", "anthropic/claude-sonnet-4")
+        _write_project_provider(tmp_path, "openrouter-api")
+        config_path = tmp_path / ".muscle" / "config.yaml"
+        data = json.loads(config_path.read_text())
+        data["project"]["openrouter_model"] = "openai/gpt-4o-mini"
+        config_path.write_text(json.dumps(data))
+        gcfg = tmp_path / "g.json"
+        gcfg.write_text(json.dumps({"openrouter_model": "google/gemini-pro"}))
+        monkeypatch.setattr("muscle.providers.GLOBAL_CONFIG_PATH", gcfg)
+
+        model, source = resolve_openrouter_model(tmp_path)
+
+        assert model == "anthropic/claude-sonnet-4"
+        assert source == "env"
+
+    def test_project_model_beats_global(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MUSCLE_OPENROUTER_MODEL", raising=False)
+        _write_project_provider(tmp_path, "openrouter-api")
+        config_path = tmp_path / ".muscle" / "config.yaml"
+        data = json.loads(config_path.read_text())
+        data["project"]["openrouter_model"] = "qwen/qwen3-coder"
+        config_path.write_text(json.dumps(data))
+        gcfg = tmp_path / "g.json"
+        gcfg.write_text(json.dumps({"openrouter_model": "google/gemini-pro"}))
+        monkeypatch.setattr("muscle.providers.GLOBAL_CONFIG_PATH", gcfg)
+
+        model, source = resolve_openrouter_model(tmp_path)
+
+        assert model == "qwen/qwen3-coder"
+        assert source == "project"
+
+
 class TestProviderProfileFrozen:
     def test_profile_is_frozen(self):
         from dataclasses import FrozenInstanceError
@@ -316,6 +385,43 @@ class TestFactory:
         assert isinstance(client, ClaudeCliClient)
         assert client.provider_profile is not None
         assert client.provider_profile.name == "claude-subscription"
+
+    def test_codex_subscription_returns_cli_client(self, monkeypatch):
+        from muscle.codex_cli_client import CodexCliClient
+        from muscle.providers import create_client
+
+        with (
+            mock.patch("muscle.codex_cli_client.shutil.which", return_value="/usr/bin/codex"),
+            mock.patch(
+                "muscle.codex_cli_client.codex_login_status",
+                return_value="Logged in using ChatGPT",
+            ),
+        ):
+            # api_key kwarg is filtered out without error on the CLI path.
+            client = create_client(provider="codex-subscription", api_key="eyJminimax")
+        assert isinstance(client, CodexCliClient)
+        assert client.model == "gpt-5.5"
+        assert client.provider_profile is not None
+        assert client.provider_profile.name == "codex-subscription"
+
+    def test_openrouter_api_returns_sync_client_with_requested_model(self, monkeypatch):
+        from muscle.openrouter_api_client import OpenRouterApiClient
+        from muscle.providers import create_client
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+        monkeypatch.setenv("MUSCLE_OPENROUTER_MODEL", "qwen/qwen3-coder")
+        client = create_client(provider="openrouter-api")
+        assert isinstance(client, OpenRouterApiClient)
+        assert client.model == "qwen/qwen3-coder"
+        assert client.provider_profile is not None
+        assert client.provider_profile.name == "openrouter-api"
+
+    def test_openrouter_missing_api_key_fails_clearly(self, monkeypatch):
+        from muscle.providers import create_client
+
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+            create_client(provider="openrouter-api")
 
     def test_explicit_provider_arg_overrides_env(self, monkeypatch):
         from muscle.providers import create_client

@@ -12,6 +12,7 @@ from muscle.m27_client import (
     OPENAI_BASE_URL_IO,
     ConcurrencyLimiter,
     M27Client,
+    M27ClientError,
     RateLimiter,
     TokenUsage,
     _apply_thinking_param,
@@ -496,6 +497,15 @@ class TestChatSuccess:
         assert call_args.args[0] == f"{OPENAI_BASE_URL_IO}/chat/completions"
         payload = call_args.kwargs["json"]
         assert payload["messages"][0] == {"role": "system", "content": "sys"}
+
+    def test_chat_streaming_rejects_openai_compatible_endpoint_before_http(self, mock_client):
+        client, mock_session = mock_client
+        client.base_url = OPENAI_BASE_URL_IO
+
+        with pytest.raises(M27ClientError, match="streaming is not supported"):
+            list(client.chat_streaming([{"role": "user", "content": "hi"}]))
+
+        mock_session.post.assert_not_called()
 
     def test_chat_estimates_zero_token_openai_response(self, mock_client):
         client, mock_session = mock_client

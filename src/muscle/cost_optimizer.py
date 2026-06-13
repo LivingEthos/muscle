@@ -172,7 +172,7 @@ class CostOptimizer:
         self.cache_dir = Path(cache_dir) if cache_dir else self.CACHE_DIR
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._conn: sqlite3.Connection | None = None
-        self._conn_lock = threading.Lock()
+        self._conn_lock = threading.RLock()
         self._init_db()
 
     def _init_db(self) -> None:
@@ -244,7 +244,8 @@ class CostOptimizer:
         tier = self.estimate_tier(task)
         max_tokens = self.get_max_tokens(tier)
 
-        estimated_input_tokens = len(task) * 2
+        # ~4 chars per token, matching estimate_tokens() in command_evidence.py.
+        estimated_input_tokens = max(1, len(task) // 4)
         estimated_output_tokens = max_tokens
 
         estimated_cost = estimate_request_cost(
@@ -275,37 +276,38 @@ class CostOptimizer:
 
     def get_from_cache(self, task: str) -> dict | None:
         task_hash = self._hash_task(task)
-        try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            now = datetime.now().isoformat()
+        with self._conn_lock:
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                now = datetime.now().isoformat()
 
-            cursor.execute(
-                """
-                UPDATE cost_cache
-                SET access_count = access_count + 1, last_accessed = ?
-                WHERE task_hash = ?
-                """,
-                (now, task_hash),
-            )
-            conn.commit()
+                cursor.execute(
+                    """
+                    UPDATE cost_cache
+                    SET access_count = access_count + 1, last_accessed = ?
+                    WHERE task_hash = ?
+                    """,
+                    (now, task_hash),
+                )
+                conn.commit()
 
-            if cursor.rowcount == 0:
-                return None
+                if cursor.rowcount == 0:
+                    return None
 
-            cursor.execute(
-                "SELECT task, result, files FROM cost_cache WHERE task_hash = ?",
-                (task_hash,),
-            )
-            row = cursor.fetchone()
-            if row:
-                return {
-                    "task": row["task"],
-                    "result": row["result"],
-                    "files": row["files"].split(",") if row["files"] else [],
-                }
-        except sqlite3.Error as e:
-            logger.warning(f"Cache lookup failed: {e}")
+                cursor.execute(
+                    "SELECT task, result, files FROM cost_cache WHERE task_hash = ?",
+                    (task_hash,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    return {
+                        "task": row["task"],
+                        "result": row["result"],
+                        "files": row["files"].split(",") if row["files"] else [],
+                    }
+            except sqlite3.Error as e:
+                logger.warning(f"Cache lookup failed: {e}")
         return None
 
     def save_to_cache(self, task: str, result: str, files: list[str]) -> None:
@@ -313,54 +315,56 @@ class CostOptimizer:
         now = datetime.now().isoformat()
         files_str = ",".join(files) if files else ""
 
-        try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
+        with self._conn_lock:
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
 
-            cursor.execute("SELECT COUNT(*) FROM cost_cache")
-            count = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) FROM cost_cache")
+                count = cursor.fetchone()[0]
 
-            if count >= self.MAX_CACHE_SIZE:
+                if count >= self.MAX_CACHE_SIZE:
+                    cursor.execute(
+                        """
+                        DELETE FROM cost_cache
+                        WHERE task_hash IN (
+                            SELECT task_hash FROM cost_cache
+                            ORDER BY last_accessed ASC
+                            LIMIT ?
+                        )
+                        """,
+                        (count - self.MAX_CACHE_SIZE + 100,),
+                    )
+
                 cursor.execute(
                     """
-                    DELETE FROM cost_cache
-                    WHERE task_hash IN (
-                        SELECT task_hash FROM cost_cache
-                        ORDER BY last_accessed ASC
-                        LIMIT ?
-                    )
+                    INSERT OR REPLACE INTO cost_cache
+                    (task_hash, task, result, files, created_at, access_count, last_accessed)
+                    VALUES (?, ?, ?, ?, ?, 1, ?)
                     """,
-                    (count - self.MAX_CACHE_SIZE + 100,),
+                    (task_hash, task, result, files_str, now, now),
                 )
-
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO cost_cache
-                (task_hash, task, result, files, created_at, access_count, last_accessed)
-                VALUES (?, ?, ?, ?, ?, 1, ?)
-                """,
-                (task_hash, task, result, files_str, now, now),
-            )
-            conn.commit()
-        except sqlite3.Error as e:
-            logger.warning(f"Cache save failed: {e}")
+                conn.commit()
+            except sqlite3.Error as e:
+                logger.warning(f"Cache save failed: {e}")
 
     def _hash_task(self, task: str) -> str:
         return hashlib.md5(task.lower().encode()).hexdigest()[:16]
 
     def clear_cache(self) -> int:
-        try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM cost_cache")
-            row = cursor.fetchone()
-            count = int(row[0]) if row else 0
-            cursor.execute("DELETE FROM cost_cache")
-            conn.commit()
-            return count
-        except sqlite3.Error as e:
-            logger.warning(f"Cache clear failed: {e}")
-            return 0
+        with self._conn_lock:
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM cost_cache")
+                row = cursor.fetchone()
+                count = int(row[0]) if row else 0
+                cursor.execute("DELETE FROM cost_cache")
+                conn.commit()
+                return count
+            except sqlite3.Error as e:
+                logger.warning(f"Cache clear failed: {e}")
+                return 0
 
     def get_cache_stats(self) -> dict:
         try:

@@ -42,6 +42,8 @@ _LAZY_EXPORTS: dict[str, str] = {
     "StaticAnalysisResult": "types",
     "Intensity": "types",
     "PressureFocus": "types",
+    "AsyncWorkerPolicyDecision": "async_worker_policy",
+    "AsyncWorkerPolicyInput": "async_worker_policy",
     # controllers / engines
     "ReviewController": "review_controller",
     "CodeReviewer": "code_reviewer",
@@ -67,6 +69,8 @@ if TYPE_CHECKING:  # pragma: no cover - import-time hints for type checkers only
     # Redundant ``as`` aliases mark these as explicit re-exports: the names are
     # surfaced at runtime via ``__getattr__`` (keyed off ``_LAZY_EXPORTS``), which
     # the linter cannot statically connect to ``__all__``.
+    from .async_worker_policy import AsyncWorkerPolicyDecision as AsyncWorkerPolicyDecision
+    from .async_worker_policy import AsyncWorkerPolicyInput as AsyncWorkerPolicyInput
     from .code_reviewer import CodeReviewer as CodeReviewer
     from .committee_reviewer import CommitteeReviewer as CommitteeReviewer
     from .fix_generator import FixGenerator as FixGenerator

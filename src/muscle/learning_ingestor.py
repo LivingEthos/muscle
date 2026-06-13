@@ -450,23 +450,25 @@ class LearningIngestor:
             try:
                 conn = self._pm._get_connection()
                 cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    SELECT rf.id, rf.file_path, rf.line_number, rf.severity,
-                           fa.verification_passed, fa.created_at
-                    FROM review_findings rf
-                    JOIN fix_attempts fa ON fa.finding_id = rf.id
-                    WHERE rf.rule_id = ?
-                      AND rf.file_path = ?
-                      AND rf.line_number = ?
-                      AND fa.verification_passed = 1
-                    ORDER BY fa.created_at DESC
-                    LIMIT 1
-                    """,
-                    (rule_id, issue.file_path, issue.line_number),
-                )
-                row = cursor.fetchone()
-                conn.close()
+                try:
+                    cursor.execute(
+                        """
+                        SELECT rf.id, rf.file_path, rf.line_number, rf.severity,
+                               fa.verification_passed, fa.created_at
+                        FROM review_findings rf
+                        JOIN fix_attempts fa ON fa.finding_id = rf.id
+                        WHERE rf.rule_id = ?
+                          AND rf.file_path = ?
+                          AND rf.line_number = ?
+                          AND fa.verification_passed = 1
+                        ORDER BY fa.created_at DESC
+                        LIMIT 1
+                        """,
+                        (rule_id, issue.file_path, issue.line_number),
+                    )
+                    row = cursor.fetchone()
+                finally:
+                    conn.close()
 
                 if row:
                     # Found a previously fixed issue at same location

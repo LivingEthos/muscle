@@ -26,7 +26,7 @@ DEFAULT_BUDGET_PATHS = [
 
 
 @dataclass
-class BudgetInfo:
+class BudgetSnapshot:
     total_tokens: int
     used_tokens: int
     remaining_tokens: int
@@ -131,17 +131,25 @@ class BudgetManager:
             return 0
         return avg_output_tokens
 
-    def check_budget(self, iteration_cost: int) -> tuple[bool, str]:
+    def can_afford(self, cost: int) -> bool:
+        """Return whether the budget can cover ``cost`` without consuming tokens."""
         if self.mode == BudgetMode.UNLIMITED:
-            return True, ""
+            return True
 
         if self.fixed_limit <= 0:
-            return True, ""
+            return True
 
-        if self.fixed_limit < iteration_cost:
+        return self.fixed_limit >= cost
+
+    def consume(self, cost: int) -> tuple[bool, str]:
+        """Consume ``cost`` tokens if available, returning the current warning state."""
+        if not self.can_afford(cost):
             return False, "Budget exceeded"
 
-        self.fixed_limit -= iteration_cost
+        if self.mode == BudgetMode.UNLIMITED or self.fixed_limit <= 0:
+            return True, ""
+
+        self.fixed_limit -= cost
 
         usage_percent = (
             ((self._original_limit - self.fixed_limit) / self._original_limit * 100)
@@ -156,8 +164,11 @@ class BudgetManager:
 
         return True, ""
 
-    def get_budget_info(self) -> BudgetInfo:
-        return BudgetInfo(
+    def check_budget(self, iteration_cost: int) -> tuple[bool, str]:
+        return self.consume(iteration_cost)
+
+    def get_budget_info(self) -> BudgetSnapshot:
+        return BudgetSnapshot(
             total_tokens=self._original_limit if self.mode != BudgetMode.UNLIMITED else 0,
             used_tokens=self._original_limit - self.fixed_limit
             if self.mode != BudgetMode.UNLIMITED

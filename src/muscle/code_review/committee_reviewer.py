@@ -47,22 +47,25 @@ _DIRECT_JSON_KEY_RE = re.compile(r"\b(?:payload|data|response)\s*\[\s*['\"][^'\"
 _TS_DEFAULT_ADMIN_RE = re.compile(r"role\s*:\s*data\.role\s*\|\|\s*['\"]admin['\"]")
 
 
-def _split_from_summary(summary: dict[str, object]) -> tuple[int, int]:
-    """Extract the (input, output) M3 token split from a review summary dict.
+def _split_from_summary(summary: dict[str, object]) -> tuple[int, int, int]:
+    """Extract the (input, output, cached-input) M3 token split from a summary dict.
 
-    Prefers the measured ``token_usage_input`` / ``token_usage_output`` keys.
-    Legacy fallback: if both split values are 0 but the combined ``token_usage``
-    is positive (an older summary that never carried the split), attribute the
-    entire combined total to input so the spend stays visible rather than being
-    silently dropped.
+    Prefers the measured ``token_usage_input`` / ``token_usage_output`` keys;
+    ``token_usage_cached_input`` is the prefix-cache-discounted subset of input
+    (0 on summaries that never carried it — cost is then conservatively
+    estimated at the full input rate). Legacy fallback: if both split values
+    are 0 but the combined ``token_usage`` is positive (an older summary that
+    never carried the split), attribute the entire combined total to input so
+    the spend stays visible rather than being silently dropped.
     """
     tin = _coerce_int(summary.get("token_usage_input", 0))
     tout = _coerce_int(summary.get("token_usage_output", 0))
+    tcached = max(0, _coerce_int(summary.get("token_usage_cached_input", 0)))
     if tin == 0 and tout == 0:
         combined = _coerce_int(summary.get("token_usage", 0))
         if combined > 0:
-            return combined, 0
-    return tin, tout
+            return combined, 0, min(tcached, combined)
+    return tin, tout, min(tcached, tin)
 
 
 def _coerce_int(value: object) -> int:
@@ -78,7 +81,7 @@ class CommitteeReviewer:
 
     def __init__(self, code_reviewer: CodeReviewer):
         self.code_reviewer = code_reviewer
-        self._agent_token_usage: dict[str, tuple[int, int]] = {}
+        self._agent_token_usage: dict[str, tuple[int, int, int]] = {}
         self._token_lock = Lock()
 
     def run_committee(
@@ -152,15 +155,6 @@ class CommitteeReviewer:
                 telemetry_session_id=telemetry_session_id,
                 language=language,
             )
-            if self._should_use_deterministic_fast_path(
-                deterministic,
-                scope,
-                workflow_name,
-                review_mode,
-            ):
-                self._record_agent_tokens(agent_name, 0, 0)
-                return [self._tag_issue(issue, agent_name) for issue in deterministic]
-
             issues, summary = self.code_reviewer.review(
                 target_path,
                 static_issues,
@@ -175,8 +169,8 @@ class CommitteeReviewer:
                 trace_reasons=trace_reasons,
             )
             if isinstance(summary, dict):
-                tin, tout = _split_from_summary(summary)
-                self._record_agent_tokens(agent_name, tin, tout)
+                tin, tout, tcached = _split_from_summary(summary)
+                self._record_agent_tokens(agent_name, tin, tout, tcached)
             combined = [*deterministic, *issues]
             return [self._tag_issue(issue, agent_name) for issue in combined]
         if agent_name == AGENT_ERROR_HANDLING:
@@ -201,9 +195,9 @@ class CommitteeReviewer:
             )
         return []
 
-    def consume_agent_tokens(self, agent_name: str) -> tuple[int, int]:
+    def consume_agent_tokens(self, agent_name: str) -> tuple[int, int, int]:
         with self._token_lock:
-            return self._agent_token_usage.pop(agent_name, (0, 0))
+            return self._agent_token_usage.pop(agent_name, (0, 0, 0))
 
     def _deterministic_correctness_review(
         self,
@@ -236,20 +230,6 @@ class CommitteeReviewer:
             )
         return findings
 
-    @staticmethod
-    def _should_use_deterministic_fast_path(
-        findings: list[ReviewIssue],
-        scope: ReviewScope,
-        workflow_name: str | None,
-        review_mode: str | None,
-    ) -> bool:
-        """Skip the model only for small, high-confidence smart-review findings."""
-        if workflow_name != "review-smart" or review_mode != "review":
-            return False
-        if scope.complexity not in {"trivial", "small"}:
-            return False
-        return any(issue.severity.value >= Severity.MEDIUM.value for issue in findings)
-
     def _record_lesson_usage_for_deterministic_review(
         self,
         *,
@@ -258,7 +238,7 @@ class CommitteeReviewer:
         session_id: str | None,
         language: str | None,
     ) -> None:
-        """Resolve lessons for traceability when the fast path replaces an LLM call."""
+        """Resolve lessons for traceability alongside deterministic findings."""
         if not session_id:
             return
         resolver = getattr(self.code_reviewer, "lesson_resolver", None)
@@ -492,21 +472,22 @@ class CommitteeReviewer:
         missing timeout" collapse into a single synthesized issue instead of
         being surfaced twice to reviewers.
         """
-        grouped: dict[tuple[str, int, str], list[ReviewIssue]] = {}
-        # Track representative normalized titles per (file, line) so we can
-        # fuzzy-bucket near-duplicates without quadratic cost on large inputs.
-        bucket_titles: dict[tuple[str, int], list[str]] = {}
+        grouped: dict[tuple[str, int, IssueCategory, str, str], list[ReviewIssue]] = {}
+        # Track representative normalized titles per (file, line, category, CWE) so
+        # fuzzy-bucket near-duplicates without merging semantically distinct issues.
+        bucket_titles: dict[tuple[str, int, IssueCategory, str], list[str]] = {}
         for issues in agent_findings.values():
             for issue in issues:
                 normalized = self._normalize_title(issue.title)
-                location = (issue.file_path, issue.line_number)
+                cwe_id = issue.cwe_id or ""
+                location = (issue.file_path, issue.line_number, issue.category, cwe_id)
                 representative = self._find_similar_title(
                     normalized, bucket_titles.get(location, [])
                 )
                 if representative is None:
                     bucket_titles.setdefault(location, []).append(normalized)
                     representative = normalized
-                key = (issue.file_path, issue.line_number, representative)
+                key = (issue.file_path, issue.line_number, issue.category, cwe_id, representative)
                 grouped.setdefault(key, []).append(issue)
 
         synthesized: list[ReviewIssue] = []
@@ -518,14 +499,15 @@ class CommitteeReviewer:
             issues_sorted = sorted(issues, key=lambda issue: issue.severity.value, reverse=True)
             primary = issues_sorted[0]
             merged_description = " ".join(
-                description
-                for description in {
-                    issue.description.strip() for issue in issues if issue.description.strip()
-                }
+                sorted({issue.description.strip() for issue in issues if issue.description.strip()})
             )
-            merged_fix = next(
-                (issue.suggested_fix for issue in issues if issue.suggested_fix), None
-            )
+            merged_fixes: list[str] = []
+            for issue in issues:
+                if issue.suggested_fix and issue.suggested_fix.strip():
+                    fix = issue.suggested_fix.strip()
+                    if fix not in merged_fixes:
+                        merged_fixes.append(fix)
+            merged_fix = "\n\n".join(merged_fixes) if merged_fixes else None
             merged_agents = sorted({issue.source_agent for issue in issues if issue.source_agent})
 
             synthesized.append(
@@ -741,8 +723,8 @@ class CommitteeReviewer:
             )
             summary = pressure.get("summary", {})
             if isinstance(summary, dict):
-                tin, tout = _split_from_summary(summary)
-                self._record_agent_tokens(AGENT_PRESSURE, tin, tout)
+                tin, tout, tcached = _split_from_summary(summary)
+                self._record_agent_tokens(AGENT_PRESSURE, tin, tout, tcached)
             for item in pressure.get("pressure_findings", []):
                 findings.append(
                     ReviewIssue(
@@ -761,12 +743,19 @@ class CommitteeReviewer:
                 )
         return findings
 
-    def _record_agent_tokens(self, agent_name: str, input_tokens: int, output_tokens: int) -> None:
+    def _record_agent_tokens(
+        self,
+        agent_name: str,
+        input_tokens: int,
+        output_tokens: int,
+        cached_input_tokens: int = 0,
+    ) -> None:
         with self._token_lock:
-            prev_in, prev_out = self._agent_token_usage.get(agent_name, (0, 0))
+            prev_in, prev_out, prev_cached = self._agent_token_usage.get(agent_name, (0, 0, 0))
             self._agent_token_usage[agent_name] = (
                 prev_in + input_tokens,
                 prev_out + output_tokens,
+                prev_cached + cached_input_tokens,
             )
 
     @staticmethod

@@ -75,16 +75,37 @@ def provider_metadata(client: object) -> dict[str, object]:
     profile = getattr(client, "provider_profile", None)
     if profile is None:
         return {}
+    execution_model = str(getattr(client, "model", profile.model) or profile.model)
     return {
         "provider": profile.name,
-        "execution_model": profile.model,
+        "execution_model": execution_model,
         "billing": profile.billing,
+        "executor_provider": profile.name,
+        "executor_model_requested": execution_model,
+        "executor_model_served": execution_model,
+        "executor_provider_role": profile.provider_role,
+        "executor_capability_profile": profile.capability_profile,
+        "executor_identity_trust": profile.identity_trust,
+        "executor_cost_confidence": profile.pricing_source,
+        "provider_cost_confidence": profile.pricing_source,
     }
 
 
-def estimate_m27_cents(model: str | None, tokens_in: int, tokens_out: int) -> int:
-    """Estimate MUSCLE's M3 spend for a delegation event, in whole USD cents."""
-    cost = estimate_request_cost(model or DEFAULT_PRICING_MODEL, tokens_in, tokens_out)
+def estimate_m27_cents(
+    model: str | None, tokens_in: int, tokens_out: int, cached_input_tokens: int = 0
+) -> int:
+    """Estimate MUSCLE's M3 spend for a delegation event, in whole USD cents.
+
+    ``cached_input_tokens`` is the subset of ``tokens_in`` served from MiniMax's
+    passive prefix cache, billed at the 80%-discounted cache-hit rate. Omitting
+    it overstates spend (everything billed at the full input rate).
+    """
+    cost = estimate_request_cost(
+        model or DEFAULT_PRICING_MODEL,
+        tokens_in,
+        tokens_out,
+        cached_input_tokens=cached_input_tokens,
+    )
     return round(cost * 100)
 
 
@@ -140,6 +161,9 @@ class ProviderUsage:
     cached_tokens_in: int = 0
     usd_cents: int | None = None
     billing_label: str = ""
+    provider_role: str = ""
+    identity_trust: str = ""
+    cost_confidence: str = ""
 
 
 @dataclass
@@ -155,6 +179,9 @@ class DelegationReport:
     route_breakdown: dict[str, dict[str, float | int]] = field(default_factory=dict)
     provider_breakdown: dict[str, ProviderUsage] = field(default_factory=dict)
     host_model: str = DEFAULT_HOST_MODEL
+    likely_fable_fallbacks_avoided: int = 0
+    actual_fable_fallbacks_observed: int = 0
+    avoided_effort_escalations: int = 0
     estimated_host_usd_avoided: float = 0.0
     estimated_net_savings_usd: float = 0.0
 
@@ -168,6 +195,7 @@ class DelegationMetrics:
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self._db_path))
+        conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
@@ -250,11 +278,14 @@ class DelegationMetrics:
         provider_has_dollars: set[str] = set()
 
         for r in rows:
-            tier = r[0] or "unknown"
-            rpt.m27_tokens_by_tier[tier] = rpt.m27_tokens_by_tier.get(tier, 0) + r[1] + r[2]
-            rpt.m27_usd_cents += r[3]
-            rpt.cache_tokens_saved += r[5]
-            metadata = _load_json_dict(r[7] if len(r) > 7 else None)
+            tier = r["task_tier"] or "unknown"
+            tokens_in = int(r["m27_tokens_in"] or 0)
+            tokens_out = int(r["m27_tokens_out"] or 0)
+            rpt.m27_tokens_by_tier[tier] = (
+                rpt.m27_tokens_by_tier.get(tier, 0) + tokens_in + tokens_out
+            )
+            rpt.cache_tokens_saved += int(r["cache_tokens_saved"] or 0)
+            metadata = _load_json_dict(r["metadata_json"])
             route_key = str(metadata.get("route_recommended") or "unknown")
             route_bucket = rpt.route_breakdown.setdefault(
                 route_key,
@@ -263,6 +294,9 @@ class DelegationMetrics:
                     "cache_tokens_saved": 0,
                     "verification_failures": 0,
                     "verification_verified": 0,
+                    "likely_fable_fallbacks": 0,
+                    "host_risk_confirmations": 0,
+                    "avoided_effort_escalations": 0,
                     "avg_route_confidence": 0.0,
                 },
             )
@@ -282,35 +316,91 @@ class DelegationMetrics:
             route_bucket["avg_route_confidence"] = _as_float(
                 route_bucket["avg_route_confidence"]
             ) + (_as_float(metadata.get("route_confidence", 0.0)))
+            if _as_bool(metadata.get("host_risk_likely_fallback")):
+                rpt.likely_fable_fallbacks_avoided += 1
+                route_bucket["likely_fable_fallbacks"] = (
+                    _as_int(route_bucket["likely_fable_fallbacks"]) + 1
+                )
+            if _as_bool(metadata.get("host_risk_needs_user_confirmation")):
+                route_bucket["host_risk_confirmations"] = (
+                    _as_int(route_bucket["host_risk_confirmations"]) + 1
+                )
+            if _as_bool(metadata.get("fallback_observed")):
+                rpt.actual_fable_fallbacks_observed += 1
+            if _as_bool(metadata.get("host_effort_avoided_escalation")):
+                rpt.avoided_effort_escalations += 1
+                route_bucket["avoided_effort_escalations"] = (
+                    _as_int(route_bucket["avoided_effort_escalations"]) + 1
+                )
 
             # Provider rollup. Events written before provider stamping carry no
             # "provider" key and are attributed to the historical default backend.
             provider = str(metadata.get("provider") or _LEGACY_PROVIDER)
             execution_model = str(metadata.get("execution_model") or _LEGACY_EXECUTION_MODEL)
             billing = str(metadata.get("billing") or _LEGACY_BILLING)
-            tokens_in, tokens_out = r[1], r[2]
+            # Prefix-cache-discounted input tokens stamped at record time. The
+            # cache_hits / cache_tokens_saved COLUMNS are structured-call cache
+            # metrics (whole responses skipped) — never a pricing input here.
+            cached_tokens_in = min(_as_int(metadata.get("m27_cached_tokens_in", 0)), tokens_in)
             usage = rpt.provider_breakdown.setdefault(
                 provider,
-                ProviderUsage(billing_label=_billing_label_for(provider, billing)),
+                ProviderUsage(
+                    billing_label=_billing_label_for(provider, billing),
+                    provider_role=str(
+                        metadata.get("executor_provider_role")
+                        or getattr(PROVIDERS.get(provider), "provider_role", "")
+                    ),
+                    identity_trust=str(
+                        metadata.get("executor_identity_trust")
+                        or getattr(PROVIDERS.get(provider), "identity_trust", "")
+                    ),
+                    cost_confidence=str(
+                        metadata.get("executor_cost_confidence")
+                        or getattr(PROVIDERS.get(provider), "pricing_source", "")
+                    ),
+                ),
             )
             usage.events += 1
             usage.tokens_in += tokens_in
             usage.tokens_out += tokens_out
-            if billing not in _NON_DOLLAR_BILLING:
+            usage.cached_tokens_in += cached_tokens_in
+            profile = PROVIDERS.get(provider)
+            # A provider missing from the registry has unverifiable pricing —
+            # never fabricate dollar spend for it (fail toward "cost unknown").
+            pricing_known = profile is not None and profile.pricing_source == "known"
+            # An event whose host-priced model is billed in real api-dollars has its
+            # execution cost captured below via provider_usd → api_dollar_execution_usd.
+            # estimate_m27_cents stamps the SAME host cost into the m27_usd_cents
+            # column for such events (it routes claude-*/codex models to host
+            # pricing), so counting that column as "M3 spend" here too would
+            # double-subtract the cost from net savings. Exclude exactly the events
+            # added to api_dollar_execution_usd to keep the two terms disjoint.
+            host_priced_api_dollar = (
+                billing not in _NON_DOLLAR_BILLING
+                and pricing_known
+                and profile is not None
+                and profile.model in HOST_MODEL_PRICING
+            )
+            if not host_priced_api_dollar:
+                rpt.m27_usd_cents += int(r["m27_usd_cents"] or 0)
+            if billing not in _NON_DOLLAR_BILLING and pricing_known:
                 # api-dollars: real marginal spend on the execution model.
                 provider_has_dollars.add(provider)
                 provider_usd[provider] = provider_usd.get(provider, 0.0) + estimate_request_cost(
-                    execution_model, tokens_in, tokens_out
+                    execution_model,
+                    tokens_in,
+                    tokens_out,
+                    cached_input_tokens=cached_tokens_in,
                 )
 
         total = rpt.total_events
         # cache_hit_rate is the *fraction of events that saw at least one cache
-        # hit* — a true rate in [0, 1]. r[4] (cache_hits) is an unbounded per-event
-        # count, so summing it and dividing by event count could exceed 1.0 (e.g.
-        # render as "1200%"). Count events with hits>0 instead.
-        events_with_cache_hit = sum(1 for r in rows if r[4] > 0)
+        # hit* — a true rate in [0, 1]. cache_hits is an unbounded per-event count,
+        # so summing it and dividing by event count could exceed 1.0 (e.g. render
+        # as "1200%"). Count events with hits>0 instead.
+        events_with_cache_hit = sum(1 for r in rows if int(r["cache_hits"] or 0) > 0)
         rpt.cache_hit_rate = events_with_cache_hit / total if total else 0.0
-        total_escalations = sum(1 for r in rows if r[6] > 0)
+        total_escalations = sum(1 for r in rows if int(r["escalations_emitted"] or 0) > 0)
         rpt.escalation_rate = total_escalations / total if total else 0.0
         for route_bucket in rpt.route_breakdown.values():
             events = _as_int(route_bucket["events"]) or 1
@@ -368,6 +458,9 @@ class DelegationMetrics:
                 f"Cache hit rate:              {rpt.cache_hit_rate:.1%}",
                 f"Cache tokens saved:          {rpt.cache_tokens_saved:,}",
                 f"Escalation rate:             {rpt.escalation_rate:.1%}",
+                f"Likely Fable fallbacks avoided: {rpt.likely_fable_fallbacks_avoided}",
+                f"Observed Fable fallbacks:    {rpt.actual_fable_fallbacks_observed}",
+                f"Avoided effort escalations:  {rpt.avoided_effort_escalations}",
                 f"Host model:                  {rpt.host_model}",
                 f"Estimated host tokens        {rpt.estimated_host_tokens_avoided:,}",
                 "  avoided (NOT measured):",
@@ -383,9 +476,12 @@ class DelegationMetrics:
                 if usage.usd_cents is None:
                     # Quota/credit billing: report tokens consumed, never a
                     # fabricated $0.00 that would read as measured spend.
+                    cost_note = (
+                        "cost unknown" if usage.cost_confidence == "unknown" else "$0 marginal"
+                    )
                     lines.append(
                         f"  {provider_name:20s} {usage.billing_label}: "
-                        f"{tokens_total:,} tokens consumed ($0 marginal)"
+                        f"{tokens_total:,} tokens consumed ({cost_note})"
                     )
                 else:
                     lines.append(
@@ -400,6 +496,8 @@ class DelegationMetrics:
                     f"{route_name:20s} events={int(route_stats['events']):>3} "
                     f"verified={int(route_stats['verification_verified']):>3} "
                     f"failed={int(route_stats['verification_failures']):>3} "
+                    f"fable_risk={int(route_stats['likely_fable_fallbacks']):>3} "
+                    f"effort_avoided={int(route_stats['avoided_effort_escalations']):>3} "
                     f"saved={int(route_stats['cache_tokens_saved']):>6}"
                 )
         return "\n".join(lines)
@@ -417,6 +515,9 @@ class DelegationMetrics:
                 "escalation_rate": rpt.escalation_rate,
                 "estimated_host_tokens_avoided": rpt.estimated_host_tokens_avoided,
                 "host_model": rpt.host_model,
+                "likely_fable_fallbacks_avoided": rpt.likely_fable_fallbacks_avoided,
+                "actual_fable_fallbacks_observed": rpt.actual_fable_fallbacks_observed,
+                "avoided_effort_escalations": rpt.avoided_effort_escalations,
                 "estimated_host_usd_avoided": round(rpt.estimated_host_usd_avoided, 4),
                 "estimated_net_savings_usd": round(rpt.estimated_net_savings_usd, 4),
                 "route_breakdown": rpt.route_breakdown,
@@ -428,6 +529,9 @@ class DelegationMetrics:
                         "cached_tokens_in": usage.cached_tokens_in,
                         "usd_cents": usage.usd_cents,
                         "billing_label": usage.billing_label,
+                        "provider_role": usage.provider_role,
+                        "identity_trust": usage.identity_trust,
+                        "cost_confidence": usage.cost_confidence,
                     }
                     for provider_name, usage in rpt.provider_breakdown.items()
                 },
@@ -470,3 +574,13 @@ def _as_float(value: object) -> float:
         except ValueError:
             return 0.0
     return 0.0
+
+
+def _as_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return False

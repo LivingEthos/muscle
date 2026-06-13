@@ -25,6 +25,7 @@ ALLOWED_MODEL_PACK_SAFETY_SCOPES = frozenset(
         "review-only",
         "review-and-fix",
         "all-stages",
+        "host-orchestration",
     }
 )
 ALLOWED_MODEL_PACK_PORTABILITY = frozenset({"portable"})
@@ -38,6 +39,19 @@ REVIEW_STAGES = frozenset({"semantic_review", "committee_review", "pressure_revi
 SAFETY_SCOPE_STAGE_ALLOWLIST: dict[str, frozenset[str]] = {
     "review-only": REVIEW_STAGES,
     "review-and-fix": REVIEW_STAGES | frozenset({"fix_generation", "handoff"}),
+    "host-orchestration": frozenset(
+        {
+            "generate",
+            "evolve",
+            "semantic_review",
+            "committee_review",
+            "pressure_review",
+            "fix_generation",
+            "handoff",
+            "route",
+            "routing",
+        }
+    ),
     "all-stages": frozenset(),
 }
 

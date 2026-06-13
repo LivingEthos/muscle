@@ -14,7 +14,7 @@ from pathlib import Path
 import click
 from rich.table import Table
 
-from ..providers import create_client
+from ..providers import create_client, resolve_provider
 from ._shared import (
     _build_context_budgeter,
     _emit_json,
@@ -317,30 +317,32 @@ def route_cmd(task: str, scope: Path | None, as_json: bool) -> None:
     """
     from ..routing import ROUTING_PROFILE_CURRENT, TaskRouter, offline_route
 
-    api_key = os.environ.get("MINIMAX_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
     decision = None
     fallback_reason: str | None = None
-    if api_key:
+    profile, _source = resolve_provider(Path.cwd())
+    provider_credential_missing = (
+        profile.kind == "minimax-http"
+        and not (os.environ.get("MINIMAX_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"))
+    ) or (profile.kind == "openrouter-http" and not os.environ.get("OPENROUTER_API_KEY"))
+    if provider_credential_missing:
+        fallback_reason = (
+            "OPENROUTER_API_KEY not set"
+            if profile.kind == "openrouter-http"
+            else "MINIMAX_API_KEY not set"
+        )
+    else:
         try:
-            client = create_client(api_key=api_key)
+            client = create_client(project_path=Path.cwd())
             router = TaskRouter(client)
             decision = router.route(task, scope=scope)
         except Exception as exc:
-            fallback_reason = f"MiniMax M3 classifier unavailable: {exc}"
-    else:
-        fallback_reason = "MINIMAX_API_KEY not set"
+            fallback_reason = f"MUSCLE route classifier unavailable: {exc}"
 
     if decision is None:
         decision = offline_route(task, ROUTING_PROFILE_CURRENT)
 
     if as_json:
-        payload = {
-            "tier": decision.tier.value,
-            "recommended": decision.recommended.value,
-            "confidence": decision.confidence,
-            "rationale": decision.rationale,
-            "from_cache": decision.from_cache,
-        }
+        payload = decision.to_dict()
         if fallback_reason is not None:
             payload["fallback"] = "offline_heuristic"
             payload["fallback_reason"] = fallback_reason
@@ -352,3 +354,12 @@ def route_cmd(task: str, scope: Path | None, as_json: bool) -> None:
         click.echo(f"Recommended: {decision.recommended.value}")
         click.echo(f"Confidence:  {decision.confidence:.2f}")
         click.echo(f"Rationale:   {decision.rationale}")
+        if decision.host_risk is not None:
+            click.echo(f"Fable safe:  {str(decision.host_risk.safe_for_fable).lower()}")
+            click.echo(f"Fable risk:  {str(decision.host_risk.likely_fallback).lower()}")
+            click.echo(f"Host model:  {decision.host_risk.recommended_host}")
+        if decision.host_effort is not None:
+            click.echo(f"Host effort: {decision.host_effort.effort.value}")
+        if decision.provider_metadata:
+            click.echo(f"Host role:   {decision.provider_metadata['recommended_host_role']}")
+            click.echo(f"Executor:    {decision.provider_metadata['executor_provider']}")

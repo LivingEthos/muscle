@@ -1,6 +1,6 @@
 # MUSCLE Remaining Plan
 
-Last updated: 2026-06-09
+Last updated: 2026-06-12
 Status: Living backlog
 
 This is the single living document for remaining MUSCLE work.
@@ -30,8 +30,50 @@ still need to be folded back into this file when the design pass ends.
 - No production-readiness blocker is currently tracked in this file.
 - Historical point-in-time plan docs have been retired and their remaining work
   has been folded into this document.
+- New temporary design plan:
+  `docs/plans/fable-5-orchestration-updates-2026-06-12.md`. Current product
+  direction is Claude Code/Fable 5 first as the host workflow, MUSCLE CLI as the
+  orchestration surface, and MiniMax/OpenRouter as current optional MUSCLE-agent
+  execution backends for reducing Claude subscription/API spend.
 
 ## Just completed
+
+### 2026-06-12 — OpenAI-compatible tool schema compatibility
+
+Status: completed and verified.
+
+Completed:
+
+- added `src/muscle/llm/tool_schema_compat.py` for provider-boundary
+  normalization and validation of OpenAI-compatible function/tool schemas
+- guaranteed provider-facing function `parameters` schemas have root
+  `type: object` and no top-level `oneOf`, `anyOf`, `allOf`, `enum`, `const`,
+  or `not`
+- wrapped generated top-level arrays under `items`, scalar/enum schemas under
+  `value`, and root combinator schemas under `payload`
+- returned a per-function unwrap registry so existing handler behavior can be
+  preserved before dispatch
+- wired normalization into `M27Client.chat()` for OpenAI-compatible endpoints
+  and the async OpenAI-compatible adapters for OpenAI, OpenRouter, Kimi, Z.AI,
+  and the MiniMax chat-completions adapter
+- added regression coverage for array, scalar/enum, combinator, stable object
+  root, `_multicategorysearchitems`, legacy `functions`, local invalid-schema
+  rejection, and no-network provider failure
+
+Current live rerun result:
+
+- baseline focused provider/routing/model identity gate:
+  `68 passed`
+- new focused schema compatibility gate:
+  `11 passed`
+- `uv run mypy src/muscle/`:
+  `Success: no issues found in 189 source files`
+- `uv run ruff check src/muscle/`:
+  `All checks passed!`
+- `uv run ruff format --check src/muscle/`:
+  `189 files already formatted`
+- full suite:
+  `2940 passed, 3 skipped`
 
 ### 2026-06-09 — host context crusher + Fable 5 host-dollar accounting
 
@@ -428,9 +470,13 @@ Next production-facing choice:
 - open a new product slice before changing behavior; remaining candidates should
   preserve the standing guardrails below and be benchmark-gated before any risky
   promotion
+- the current recommended slice is the Fable/Claude-first orchestration plan,
+  starting with deterministic host-risk preflight, then effort policy and typed
+  verification claims before OpenRouter provider wiring or async-worker work
 
 Remaining non-blocking local state:
-- none currently tracked in this file
+- temporary Fable/Claude-first provider strategy plan is open and should be
+  folded back into this living plan after the design/implementation train lands
 
 Standing guardrails for future work:
 

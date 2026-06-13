@@ -15,6 +15,7 @@ import httpx
 
 from muscle.llm.adapters._shared import handle_llm_error
 from muscle.llm.client import LLMClient, LLMRequest, LLMResponse, LLMStreamChunk
+from muscle.llm.tool_schema_compat import normalize_openai_compatible_payload
 
 
 class OpenAIClient(LLMClient):
@@ -67,7 +68,7 @@ class OpenAIClient(LLMClient):
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
         payload.update(request.extra)
-        return payload
+        return normalize_openai_compatible_payload(payload).payload
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         client = await self._get_client()

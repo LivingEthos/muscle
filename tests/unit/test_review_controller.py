@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from muscle.command_evidence import CommandEvidence
 from muscle.code_review.code_reviewer import CodeReviewer
 from muscle.code_review.fix_generator import FixGenerator, FixResult, GeneratedFix
 from muscle.code_review.handoff_generator import HandoffGenerator
@@ -31,6 +32,10 @@ from muscle.code_review.types import (
     Severity,
     StaticAnalysisResult,
     StaticIssue,
+)
+from muscle.code_review.async_worker_policy import (
+    SKIP_EASY_TASK,
+    TRIGGER_VERIFICATION_FAILED_ONCE,
 )
 from muscle.code_review.verification_loop import VerificationResult
 from muscle.m27_client import M27Client
@@ -178,6 +183,123 @@ class TestReviewModes:
         )
         assert manifest["artifact_count"] >= 3
         assert "summary.md" in manifest["artifacts"]
+        assert "verification-claims.json" in manifest["artifacts"]
+        claims = json.loads(
+            (Path(ctx.artifact_dir) / "verification-claims.json").read_text(encoding="utf-8")
+        )
+        assert claims["not_run"][0]["claim_type"] == "not_run"
+
+    def test_auto_fix_validation_writes_verification_claims(self, tmp_path):
+        target = tmp_path / "module.py"
+        target.write_text("print('hello')\n", encoding="utf-8")
+        config = ReviewConfig(target_path=str(target), mode=ReviewMode.AUTO_FIX)
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+        ctx = ReviewContext(session_id="claims-session", config=config, stats=ReviewStats())
+        artifact_store = controller._ensure_artifact_store(ctx)
+        evidence = CommandEvidence(
+            command=["ruff", "check"],
+            cwd=str(tmp_path),
+            exit_code=0,
+            duration_ms=5,
+            artifact_dir=str(tmp_path / ".muscle" / "review_artifacts" / "command-evidence"),
+        )
+        static_results = [
+            StaticAnalysisResult(
+                tool_name="ruff",
+                language="python",
+                issues=[],
+                duration_seconds=0.1,
+                evidence=evidence,
+            )
+        ]
+
+        with patch.object(controller.static_analyzer, "analyze", return_value=static_results):
+            payload = controller._validate_post_fix_state(ctx)
+
+        assert payload["status"] == "passed"
+        claims_path = Path(artifact_store.artifact_dir) / "verification-claims.json"
+        claims = json.loads(claims_path.read_text(encoding="utf-8"))
+        assert claims["allowed_claims"][0]["claim_type"] == "linted"
+        assert claims["allowed_claims"][0]["evidence_id"] == evidence.evidence_id
+
+    def test_async_workers_easy_task_writes_skipped_artifact(self, tmp_path):
+        target = tmp_path / "module.py"
+        target.write_text("print('hello')\n", encoding="utf-8")
+        config = ReviewConfig(
+            target_path=str(target),
+            mode=ReviewMode.REVIEW,
+            async_workers=True,
+        )
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+
+        with (
+            patch.object(controller.static_analyzer, "analyze", return_value=[]),
+            patch.object(controller, "_route_review_request", return_value=False),
+            patch.object(
+                controller.code_reviewer,
+                "review",
+                return_value=(
+                    [self._make_review_issue(file_path=str(target))],
+                    {"token_usage": 0},
+                ),
+            ),
+        ):
+            ctx = controller.run()
+
+        assert ctx.artifact_dir is not None
+        payload = json.loads(
+            (Path(ctx.artifact_dir) / "async-worker-policy.json").read_text(encoding="utf-8")
+        )
+        assert payload["enabled"] is True
+        assert payload["should_run"] is False
+        assert payload["skipped_reason"] == SKIP_EASY_TASK
+        assert payload["worker_jobs"] == []
+
+    def test_async_workers_verification_failure_queues_evidence_backed_worker(self, tmp_path):
+        target = tmp_path / "module.py"
+        target.write_text("print('hello')\n", encoding="utf-8")
+        config = ReviewConfig(
+            target_path=str(target),
+            mode=ReviewMode.AUTO_FIX,
+            async_workers=True,
+            async_worker_limit=1,
+        )
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+        ctx = ReviewContext(
+            session_id="async-session",
+            config=config,
+            stats=ReviewStats(failed_fixes=1),
+            issues=[self._make_review_issue(file_path=str(target))],
+            scope_summary={
+                "delegation_route": {
+                    "confidence": 0.9,
+                    "tier": "reasoning",
+                },
+                "source_files": [str(target)],
+            },
+        )
+
+        with patch("muscle.code_review.shadow_worker.WorkerManager") as mock_manager_cls:
+            mock_manager = MagicMock()
+            mock_manager.submit_shadow_job.return_value = "job12345"
+            mock_manager_cls.return_value = mock_manager
+            decision = controller._finalize_async_worker_policy(
+                ctx,
+                {"status": "issues-remaining", "performed": True},
+            )
+
+        assert decision.should_run is True
+        assert TRIGGER_VERIFICATION_FAILED_ONCE in decision.trigger_reasons
+        assert decision.worker_jobs[0].evidence_id.startswith("async-worker:")
+        assert decision.worker_evidence_ids == [decision.worker_jobs[0].evidence_id]
+        mock_manager.submit_shadow_job.assert_called_once()
+        artifact_dir = ctx.artifact_dir
+        assert artifact_dir is not None
+        payload = json.loads(
+            (Path(artifact_dir) / "async-worker-policy.json").read_text(encoding="utf-8")
+        )
+        assert payload["worker_jobs"][0]["job_id"] == "job12345"
+        assert payload["worker_jobs"][0]["evidence_id"].startswith("async-worker:")
 
     def test_run_plan_mode(self):
         config = ReviewConfig(target_path="/tmp/test", mode=ReviewMode.PLAN)
@@ -267,6 +389,40 @@ class TestReviewModes:
                     ctx = controller.run()
 
         assert ctx is not None
+
+    def test_auto_fix_mode_sets_auto_fixed_stat(self):
+        # Regression: legacy auto-fix mode must set auto_fixed alongside
+        # fixed_issues. auto_fixed is the authoritative count for delegation
+        # verification status (_delegation_verification_status) and the public
+        # ReviewResult.auto_fixed_count; leaving it 0 mislabels verified auto-fixes.
+        config = ReviewConfig(target_path="/tmp/test", mode=ReviewMode.AUTO_FIX)
+        mock_client = MockM27Client()
+        controller = ReviewController(config=config, m27_client=mock_client, use_kb=False)
+
+        issue = self._make_fixable_issue()
+        mock_static_result = [
+            StaticAnalysisResult(
+                tool_name="ruff",
+                language="python",
+                issues=[],
+                duration_seconds=0.1,
+            )
+        ]
+
+        with patch.object(controller.static_analyzer, "analyze", return_value=mock_static_result):
+            with patch.object(
+                controller.code_reviewer, "review", return_value=([issue], "summary")
+            ):
+                with patch.object(
+                    controller, "_apply_fix_with_verification", return_value=(True, None)
+                ):
+                    ctx = controller.run()
+
+        assert ctx.stats.fixed_issues == 1
+        assert ctx.stats.auto_fixed == ctx.stats.fixed_issues
+        result = controller.get_review_result()
+        assert result is not None
+        assert result.auto_fixed_count == 1
 
     def test_run_hybrid_mode(self):
         config = ReviewConfig(target_path="/tmp/test", mode=ReviewMode.HYBRID)
@@ -1133,6 +1289,62 @@ class TestReviewDelegationTokenSplit:
         assert recorded[0].m27_tokens_in == 1200
         assert recorded[0].m27_tokens_out == 0
         assert recorded[0].m27_usd_cents == estimate_m27_cents("MiniMax-M2.7", 1200, 0)
+
+    def test_record_delegation_event_includes_host_risk_metadata(self, tmp_path):
+        config = ReviewConfig(target_path=str(tmp_path), mode=ReviewMode.PRESSURE)
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+        ctx = ReviewContext(
+            session_id="rev-risk",
+            config=config,
+            scope_summary={
+                "delegation_route": {
+                    "tier": "architectural",
+                    "recommended": "escalate_to_host",
+                    "confidence": 0.82,
+                    "host_risk": {
+                        "requested_host_model": "claude-fable-5",
+                        "recommended_host": "claude-opus-4-8",
+                        "safe_for_fable": False,
+                        "likely_fallback": True,
+                        "reason_codes": ["cyber_dual_use"],
+                        "needs_user_confirmation": True,
+                        "fallback_policy": "confirm_before_fable_or_use_executor",
+                    },
+                    "host_effort": {
+                        "effort": "xhigh",
+                        "max_output_tokens": 16384,
+                        "retry_ladder": ["xhigh", "max"],
+                        "stop_condition": "stop_after_evidence_backed_synthesis",
+                        "must_not_downgrade": True,
+                        "avoided_escalation": True,
+                    },
+                }
+            },
+            stats=ReviewStats(input_tokens=100, output_tokens=20, tokens_used=120),
+        )
+
+        recorded = []
+        fake_metrics = MagicMock()
+        fake_metrics.record.side_effect = lambda event: recorded.append(event)
+        with patch(
+            "muscle.code_review.review_controller.DelegationMetrics",
+            return_value=fake_metrics,
+        ):
+            controller._record_delegation_event(ctx)
+
+        metadata = recorded[0].metadata
+        assert metadata["requested_host_model"] == "claude-fable-5"
+        assert metadata["recommended_host_model"] == "claude-opus-4-8"
+        assert metadata["host_risk_safe_for_fable"] is False
+        assert metadata["host_risk_likely_fallback"] is True
+        assert metadata["host_risk_reason_codes"] == ["cyber_dual_use"]
+        assert metadata["host_risk_needs_user_confirmation"] is True
+        assert metadata["fallback_policy"] == "confirm_before_fable_or_use_executor"
+        assert metadata["host_effort_level"] == "xhigh"
+        assert metadata["host_effort_max_output_tokens"] == 16384
+        assert metadata["host_effort_retry_ladder"] == ["xhigh", "max"]
+        assert metadata["host_effort_must_not_downgrade"] is True
+        assert metadata["host_effort_avoided_escalation"] is True
 
 
 def test_apply_fix_accumulates_verification_token_split(tmp_path):

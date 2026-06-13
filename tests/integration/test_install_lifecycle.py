@@ -59,6 +59,8 @@ class TestProjectManagerInit:
         assert data["project"]["languages"] == ["Python", "TypeScript"]
         assert data["project"]["automation_level"] == "hybrid"
         assert data["project"]["review_gate"] == "warn"
+        assert data["project"]["review"]["async_workers"] is False
+        assert data["project"]["review"]["async_worker_limit"] == 3
         assert data["project"]["hooks_enabled"] is True
         assert data["project"]["platform"] == "claude-code"
 

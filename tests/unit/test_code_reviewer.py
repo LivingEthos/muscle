@@ -5,6 +5,7 @@ Unit tests for code_reviewer.py
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -24,6 +25,28 @@ def _structured_metadata(
         usage=TokenUsage(input_tokens=0, output_tokens=total_tokens),
         cache_hit=cache_hit,
     )
+
+
+def test_read_file_cache_invalidates_when_mtime_changes(tmp_path):
+    from muscle.code_review.code_reviewer import (
+        _read_file_cached,
+        _read_file_cached_for_mtime,
+    )
+
+    target = tmp_path / "sample.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+
+    _read_file_cached_for_mtime.cache_clear()
+    assert _read_file_cached(str(target)) == "value = 1\n"
+
+    target.write_text("value = 2\n", encoding="utf-8")
+    current_ns = target.stat().st_mtime_ns
+    target.touch()
+    if target.stat().st_mtime_ns == current_ns:
+        forced_ns = current_ns + 1_000_000_000
+        os.utime(target, ns=(forced_ns, forced_ns))
+
+    assert _read_file_cached(str(target)) == "value = 2\n"
 
 
 class TestParseSeverity:
@@ -492,6 +515,52 @@ class TestPressureReview:
         assert "pressure_findings" in result
         assert len(result["pressure_findings"]) == 1
         assert result["pressure_findings"][0]["severity"] == "HIGH"
+
+    def test_pressure_review_passes_system_prompt_as_kwarg(self):
+        # Regression: pressure_review used to pass the pressure prompt as a
+        # {"role": "system"} message instead of system=. chat_structured collapses
+        # effective_system to "" when a system-role message is present, so BOTH the
+        # pressure instructions and the JSON schema hint were silently dropped. The
+        # prompt must reach the model via system=, with only the user turn in
+        # messages.
+        mock_m27 = MagicMock()
+        response = json.dumps(
+            {
+                "pressure_findings": [],
+                "summary": {
+                    "total_examined": 1,
+                    "critical_findings": 0,
+                    "high_findings": 0,
+                    "concerns_addressed": 0,
+                    "confidence_score": 5,
+                },
+            }
+        )
+        mock_m27.chat_structured.return_value = (
+            MagicMock(model_dump=lambda: json.loads(response)),
+            _structured_metadata(120),
+        )
+        reviewer = CodeReviewer(mock_m27)
+        focus = PressureFocus(
+            design_tradeoffs=False,
+            failure_modes=True,
+            race_conditions=False,
+            auth_security=False,
+            data_loss=False,
+            rollback=False,
+            reliability=False,
+            custom_focus=None,
+        )
+
+        reviewer.pressure_review("test.py", "x = 1", focus)
+
+        _, kwargs = mock_m27.chat_structured.call_args
+        assert kwargs.get("system"), "pressure prompt must be passed via system="
+        messages = kwargs["messages"]
+        assert all(m["role"] != "system" for m in messages), (
+            "no system-role message — it would null out effective_system"
+        )
+        assert any(m["role"] == "user" for m in messages)
 
     def test_pressure_review_fragility_challenge_normalizes_hardening_guidance(self):
         mock_m27 = MagicMock()

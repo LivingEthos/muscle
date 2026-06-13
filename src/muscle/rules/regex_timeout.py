@@ -11,12 +11,22 @@ from __future__ import annotations
 
 import logging
 import multiprocessing
+import queue as queue_module
 import re
 from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 5
+
+
+def _get_regex_process_context() -> Any:
+    """Return the fastest available process context for short regex workers."""
+    try:
+        return multiprocessing.get_context("fork")
+    except ValueError:  # pragma: no cover - Windows fallback
+        return multiprocessing.get_context()
 
 
 @dataclass(frozen=True)
@@ -67,13 +77,29 @@ def regex_finditer(
     """
     if timeout <= 0:
         raise ValueError(f"timeout must be positive, got {timeout}")
+    try:
+        re.compile(pattern)
+    except re.error as exc:
+        return RegexResult(matches=[], error=str(exc))
 
-    queue: multiprocessing.Queue[RegexResult] = multiprocessing.Queue()
-    process = multiprocessing.Process(target=_worker, args=(pattern, text, queue))
+    ctx = _get_regex_process_context()
+    result_queue: multiprocessing.Queue[RegexResult] = ctx.Queue()
+    process = ctx.Process(target=_worker, args=(pattern, text, result_queue))
     process.start()
-    process.join(timeout)
 
     try:
+        try:
+            result = result_queue.get(timeout=timeout)
+        except queue_module.Empty:
+            result = None
+
+        if result is not None:
+            process.join(timeout=1.0)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=1.0)
+            return result
+
         if process.is_alive():
             logger.warning("Regex timeout after %s seconds for pattern: %s", timeout, pattern)
             process.terminate()
@@ -83,10 +109,13 @@ def regex_finditer(
                 process.join(timeout=1.0)
             return RegexResult(matches=[], timed_out=True)
 
-        try:
-            return queue.get_nowait()
-        except Exception:  # noqa: BLE001
-            return RegexResult(matches=[], error="Failed to retrieve result from worker")
+        return RegexResult(matches=[], error="Failed to retrieve result from worker")
     finally:
-        queue.close()
-        queue.join_thread()
+        # Do NOT join_thread() here: when the worker is hard-killed (process.kill()
+        # above) mid-write, the parent's queue feeder thread is left blocked on a
+        # dead pipe, and join_thread() would then deadlock the caller indefinitely
+        # (documented CPython multiprocessing behavior). cancel_join_thread() lets
+        # the feeder abandon any unflushed bytes — the result was already drained
+        # (or the worker timed out) so there is nothing left worth flushing.
+        result_queue.cancel_join_thread()
+        result_queue.close()

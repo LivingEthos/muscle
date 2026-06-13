@@ -658,6 +658,11 @@ def settings_show() -> None:
         table.add_row("CLI Path", project.cli_path or "Not set")
         table.add_row("Review Gate", project.review_gate)
         table.add_row("Review Execution", project.review_execution)
+        table.add_row(
+            "Async Review Workers",
+            "enabled" if project.review_async_workers else "disabled",
+        )
+        table.add_row("Async Worker Limit", str(project.review_async_worker_limit))
         table.add_row("Automation Level", project.automation_level)
         table.add_row("Related Project Mode", project.related_project_mode)
         table.add_row("Model Pack Mode", project.model_pack_mode)
@@ -771,24 +776,68 @@ def settings_hooks(enable: bool | None, gate: str | None) -> None:
     type=click.Choice(["local", "worktree"]),
     help="Review execution mode",
 )
-def settings_review(execution: str | None) -> None:
+@click.option(
+    "--async-workers/--no-async-workers",
+    default=None,
+    help="Enable or disable opt-in hard-tail async review workers",
+)
+@click.option(
+    "--async-worker-limit",
+    type=click.IntRange(1, 10),
+    help="Maximum detached async worker jobs per foreground review",
+)
+def settings_review(
+    execution: str | None,
+    async_workers: bool | None,
+    async_worker_limit: int | None,
+) -> None:
     """Configure review execution settings."""
     from ..tui.project_manager import ProjectManager
 
     manager = ProjectManager()
     project_path, project = _resolve_project_context(Path.cwd())
 
+    updated = False
     if execution:
         if not manager.update_muscle_config(project_path, review_execution=execution):
             console.print("[red]Failed to update review execution mode.[/red]")
             return
         console.print(f"[green]Review execution set to: {execution}[/green]")
+        updated = True
+
+    if async_workers is not None:
+        if not manager.update_muscle_config(project_path, review_async_workers=async_workers):
+            console.print("[red]Failed to update async worker setting.[/red]")
+            return
+        console.print(
+            f"[green]Async review workers {'enabled' if async_workers else 'disabled'}[/green]"
+        )
+        updated = True
+
+    if async_worker_limit is not None:
+        if not manager.update_muscle_config(
+            project_path,
+            review_async_worker_limit=async_worker_limit,
+        ):
+            console.print("[red]Failed to update async worker limit.[/red]")
+            return
+        console.print(f"[green]Async worker limit set to: {async_worker_limit}[/green]")
+        updated = True
+
+    if updated:
         _refresh_active_review_safe(project_path, reason="settings-review")
         return
 
     current = project.review_execution if project is not None else "local"
+    current_async = project.review_async_workers if project is not None else False
+    current_limit = project.review_async_worker_limit if project is not None else 3
     console.print(f"Current review execution: {current}")
-    console.print("Use --execution local|worktree to change it.")
+    console.print(f"Async review workers: {'enabled' if current_async else 'disabled'}")
+    console.print(f"Async worker limit: {current_limit}")
+    console.print(
+        "Use --execution local|worktree, --async-workers/--no-async-workers, "
+        "or --async-worker-limit N to change it."
+    )
 
 
 @settings_group.command(name="platform")

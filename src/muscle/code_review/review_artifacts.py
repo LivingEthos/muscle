@@ -107,6 +107,14 @@ class ReviewArtifactStore:
     def write_validation(self, validation: dict[str, Any]) -> Path:
         return self._write_json("validation.json", validation, artifact_type="validation")
 
+    def write_claims(self, claims: Any) -> Path:
+        payload = claims.to_dict() if hasattr(claims, "to_dict") else claims
+        return self._write_json(
+            "verification-claims.json",
+            payload,
+            artifact_type="verification_claims",
+        )
+
     def write_summary(self, markdown: str) -> Path:
         path = self.root / "summary.md"
         atomic_write_text(path, markdown)

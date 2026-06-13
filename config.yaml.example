@@ -29,6 +29,28 @@ project:
   # Where reviews run: "local" (this machine) vs other execution backends.
   review_execution: local
 
+  # Review-orchestration knobs. Async workers are opt-in and only queue detached
+  # review-only worker jobs for hard-tail cases (wide target, failed verification,
+  # multi-subsystem issue, low non-architectural route confidence, or poor
+  # historical pass rate). Easy reviews record a skipped reason instead.
+  review:
+    async_workers: false
+    async_worker_limit: 3
+
+  # MUSCLE execution provider. Default is "minimax-plan"; other current options
+  # include "minimax-api", "openrouter-api", "claude-subscription",
+  # "codex-subscription", and "anthropic-api". Use `muscle provider list` and
+  # `muscle provider use`.
+  provider: minimax-plan
+
+  # Codex subscription provider uses the official `codex` CLI with ChatGPT
+  # sign-in and defaults to GPT-5.5. Run:
+  #   muscle provider login codex-subscription
+
+  # Optional OpenRouter model label. MUSCLE preserves this exact gateway label
+  # and does not treat it as first-party model identity evidence.
+  openrouter_model: null
+
   # Event triggers that should kick off automated reviews (empty = none).
   triggers: []
 

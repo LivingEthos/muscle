@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SYSTEM_DB_PATH = Path("~/.muscle/system.db").expanduser()
 CURRENT_SYSTEM_SCHEMA_VERSION = "1.0.0"
+SQLITE_BUSY_TIMEOUT_MS = 5000
 
 
 class SystemDatabase:
@@ -44,6 +45,8 @@ class SystemDatabase:
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=30.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
         return conn
 
     def _init_db(self) -> None:

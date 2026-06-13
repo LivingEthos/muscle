@@ -33,6 +33,7 @@ CODEX_MANIFEST_PATH = PLUGIN_ROOT / ".codex-plugin" / "plugin.json"
 CLAUDE_HOOKS_PATH = PLUGIN_ROOT / "hooks" / "hooks.json"
 CODEX_HOOKS_PATH = PLUGIN_ROOT / "hooks.json"
 PLUGIN_COMMAND_PATTERN = re.compile(r"/muscle:([a-z0-9][a-z0-9\-]*)")
+DEPRECATED_UNADVERTISED_COMMANDS = frozenset({"nightly-status"})
 
 
 @dataclass
@@ -113,7 +114,11 @@ def _plugin_command_parity_detail() -> tuple[str, str]:
     except json.JSONDecodeError:
         return "fail", "Claude manifest is invalid JSON"
     manifest_commands = set(PLUGIN_COMMAND_PATTERN.findall(str(manifest.get("description", ""))))
-    filesystem_commands = {path.stem for path in (PLUGIN_ROOT / "commands").glob("*.md")}
+    filesystem_commands = {
+        path.stem
+        for path in (PLUGIN_ROOT / "commands").glob("*.md")
+        if path.stem not in DEPRECATED_UNADVERTISED_COMMANDS
+    }
     missing_files = sorted(manifest_commands - filesystem_commands)
     unadvertised = sorted(filesystem_commands - manifest_commands)
     if missing_files or unadvertised:

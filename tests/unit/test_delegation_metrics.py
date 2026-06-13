@@ -14,6 +14,7 @@ from muscle.delegation_metrics import (
     DelegationEvent,
     DelegationMetrics,
     estimate_m27_cents,
+    provider_metadata,
     resolve_m27_token_split,
 )
 from muscle.migrations._0013_delegation_events import MIGRATION_SQL
@@ -179,6 +180,43 @@ class TestReportFormatting:
         assert "Route outcomes" in text
         assert "m27_with_verify" in text
 
+    def test_report_counts_likely_fable_fallbacks(self, project_db: Path) -> None:
+        metrics = DelegationMetrics(project_db)
+        metrics.record(
+            DelegationEvent(
+                session_id="sess-risk",
+                entry_point="review:pressure",
+                task_tier="architectural",
+                metadata={
+                    "route_recommended": "escalate_to_host",
+                    "route_confidence": 0.82,
+                    "host_risk_likely_fallback": True,
+                    "host_risk_needs_user_confirmation": True,
+                    "host_risk_reason_codes": ["cyber_dual_use"],
+                    "requested_host_model": "claude-fable-5",
+                    "recommended_host_model": "claude-opus-4-8",
+                    "fallback_policy": "confirm_before_fable_or_use_executor",
+                    "host_effort_level": "xhigh",
+                    "host_effort_avoided_escalation": True,
+                },
+            )
+        )
+
+        rpt = metrics.report(since=timedelta(days=1))
+        text = metrics.format_text(rpt)
+        parsed = json.loads(metrics.format_json(rpt))
+
+        assert rpt.likely_fable_fallbacks_avoided == 1
+        assert rpt.avoided_effort_escalations == 1
+        assert "Likely Fable fallbacks avoided: 1" in text
+        assert "Avoided effort escalations:  1" in text
+        assert parsed["likely_fable_fallbacks_avoided"] == 1
+        assert parsed["avoided_effort_escalations"] == 1
+        route = parsed["route_breakdown"]["escalate_to_host"]
+        assert route["likely_fable_fallbacks"] == 1
+        assert route["host_risk_confirmations"] == 1
+        assert route["avoided_effort_escalations"] == 1
+
     def test_json_format_is_valid_json(self, project_db: Path) -> None:
         _insert_event(project_db, session_id="s1")
 
@@ -310,6 +348,21 @@ class TestSplitAndCostHelpers:
 
     def test_estimate_cents_defaults_model_when_none(self) -> None:
         assert estimate_m27_cents(None, 100, 50) == estimate_m27_cents("MiniMax-M3", 100, 50)
+
+    def test_estimate_cents_credits_prefix_cache_discount(self) -> None:
+        cents = estimate_m27_cents("MiniMax-M3", 1_000_000, 2000, cached_input_tokens=800_000)
+        expected = round(
+            estimate_request_cost("MiniMax-M3", 1_000_000, 2000, cached_input_tokens=800_000) * 100
+        )
+        assert cents == expected
+        # The cache-hit rate is 80% off the input rate, so the discounted
+        # estimate must be strictly cheaper than the full-rate one.
+        assert cents < estimate_m27_cents("MiniMax-M3", 1_000_000, 2000)
+
+    def test_estimate_cents_zero_cached_matches_legacy(self) -> None:
+        assert estimate_m27_cents("MiniMax-M3", 6000, 2000, cached_input_tokens=0) == (
+            estimate_m27_cents("MiniMax-M3", 6000, 2000)
+        )
 
 
 class TestCacheHitRateBounded:
@@ -460,6 +513,23 @@ class TestProviderBreakdown:
         assert bucket.usd_cents is None
         assert "agent sdk credit" in bucket.billing_label.lower()
 
+    def test_codex_subscription_label_uses_allowance_not_dollars(self, project_db: Path) -> None:
+        _insert_event_with_metadata(
+            project_db,
+            session_id="cx1",
+            metadata={
+                "provider": "codex-subscription",
+                "execution_model": "gpt-5.5",
+                "billing": "plan-quota",
+            },
+        )
+
+        metrics = DelegationMetrics(project_db)
+        rpt = metrics.report(since=timedelta(days=1))
+        bucket = rpt.provider_breakdown["codex-subscription"]
+        assert bucket.usd_cents is None
+        assert "chatgpt codex subscription allowance" in bucket.billing_label.lower()
+
     def test_api_dollars_provider_computes_usd_from_opus_pricing(self, project_db: Path) -> None:
         _insert_event_with_metadata(
             project_db,
@@ -479,6 +549,53 @@ class TestProviderBreakdown:
         expected_usd = estimate_request_cost("claude-opus-4-8", 100_000, 20_000)
         assert bucket.usd_cents == round(expected_usd * 100)
         assert "anthropic api dollars" in bucket.billing_label.lower()
+
+    def test_api_dollars_provider_credits_cached_input_tokens(self, project_db: Path) -> None:
+        # m27_cached_tokens_in in event metadata is the prefix-cache-discounted
+        # subset of input — provider spend must be priced with the discount and
+        # the cached count must surface in the provider rollup.
+        _insert_event_with_metadata(
+            project_db,
+            session_id="a1",
+            metadata={
+                "provider": "minimax-api",
+                "execution_model": "MiniMax-M3",
+                "billing": "api-dollars",
+                "m27_cached_tokens_in": 60_000,
+            },
+            m27_tokens_in=100_000,
+            m27_tokens_out=20_000,
+        )
+
+        metrics = DelegationMetrics(project_db)
+        rpt = metrics.report(since=timedelta(days=1))
+        bucket = rpt.provider_breakdown["minimax-api"]
+        assert bucket.cached_tokens_in == 60_000
+        expected_usd = estimate_request_cost(
+            "MiniMax-M3", 100_000, 20_000, cached_input_tokens=60_000
+        )
+        assert bucket.usd_cents == round(expected_usd * 100)
+        assert bucket.usd_cents < round(estimate_request_cost("MiniMax-M3", 100_000, 20_000) * 100)
+
+    def test_cached_tokens_clamped_to_event_input(self, project_db: Path) -> None:
+        # A corrupt/oversized cached count must never exceed the event's input.
+        _insert_event_with_metadata(
+            project_db,
+            session_id="a1",
+            metadata={
+                "provider": "minimax-api",
+                "execution_model": "MiniMax-M3",
+                "billing": "api-dollars",
+                "m27_cached_tokens_in": 999_999_999,
+            },
+            m27_tokens_in=10_000,
+            m27_tokens_out=2_000,
+        )
+
+        metrics = DelegationMetrics(project_db)
+        rpt = metrics.report(since=timedelta(days=1))
+        bucket = rpt.provider_breakdown["minimax-api"]
+        assert bucket.cached_tokens_in == 10_000
 
     def test_json_includes_provider_breakdown(self, project_db: Path) -> None:
         _insert_event_with_metadata(
@@ -524,8 +641,14 @@ class TestProviderBreakdown:
         rpt = metrics.report(since=timedelta(days=1))
 
         host_exec = estimate_request_cost("claude-opus-4-8", 100_000, 20_000)
-        expected = rpt.estimated_host_usd_avoided - 0.50 - host_exec
+        # The host execution cost is subtracted exactly ONCE. For a host-model
+        # event the m27_usd_cents column holds that same host spend (record-time
+        # estimate_m27_cents routes claude-* to host pricing), so it must not be
+        # counted as separate "M3 spend" on top of api_dollar_execution_usd.
+        expected = rpt.estimated_host_usd_avoided - host_exec
         assert rpt.estimated_net_savings_usd == pytest.approx(expected)
+        # A pure Claude-execution period has no MiniMax M3 spend.
+        assert rpt.m27_usd_cents == 0
 
     def test_minimax_api_execution_not_double_subtracted(self, project_db: Path) -> None:
         # MiniMax api-dollar spend is already represented by m27_usd_cents, so it
@@ -550,6 +673,54 @@ class TestProviderBreakdown:
         assert rpt.estimated_net_savings_usd == pytest.approx(rpt.estimated_host_usd_avoided - 0.40)
         # The provider bucket still reports its own estimated MiniMax dollars.
         assert rpt.provider_breakdown["minimax-api"].usd_cents is not None
+
+    def test_openrouter_unknown_pricing_is_labeled_not_estimated_as_minimax(
+        self,
+        project_db: Path,
+    ) -> None:
+        _insert_event_with_metadata(
+            project_db,
+            session_id="or1",
+            metadata={
+                "provider": "openrouter-api",
+                "execution_model": "qwen/qwen3-coder",
+                "billing": "api-dollars",
+                "executor_provider_role": "user-selected-gateway",
+                "executor_identity_trust": "gateway-reported",
+                "executor_cost_confidence": "unknown",
+            },
+            m27_tokens_in=1000,
+            m27_tokens_out=250,
+        )
+
+        metrics = DelegationMetrics(project_db)
+        rpt = metrics.report(since=timedelta(days=1))
+        parsed = json.loads(metrics.format_json(rpt))
+        text = metrics.format_text(rpt)
+
+        usage = parsed["provider_breakdown"]["openrouter-api"]
+        assert usage["usd_cents"] is None
+        assert usage["provider_role"] == "user-selected-gateway"
+        assert usage["identity_trust"] == "gateway-reported"
+        assert usage["cost_confidence"] == "unknown"
+        assert "cost unknown" in text
+
+
+def test_provider_metadata_preserves_openrouter_requested_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from muscle.providers import create_client
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    client = create_client(provider="openrouter-api", model="anthropic/claude-sonnet-4")
+
+    metadata = provider_metadata(client)
+
+    assert metadata["provider"] == "openrouter-api"
+    assert metadata["execution_model"] == "anthropic/claude-sonnet-4"
+    assert metadata["executor_model_requested"] == "anthropic/claude-sonnet-4"
+    assert metadata["executor_identity_trust"] == "gateway-reported"
+    assert metadata["executor_cost_confidence"] == "unknown"
 
 
 class TestMissingDb:

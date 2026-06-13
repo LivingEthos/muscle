@@ -434,6 +434,11 @@ def init(
     default=True,
     help="Include AGENTS.md (alias of --skip-agents). Default: true.",
 )
+@click.option(
+    "--cache-layout",
+    is_flag=True,
+    help="Print cache-prefix layout metadata for host-memory docs.",
+)
 def optimize_host_docs(
     dry_run: bool,
     yes: bool,
@@ -441,6 +446,7 @@ def optimize_host_docs(
     skip_agents: bool,
     target: str | None,
     agents: bool,
+    cache_layout: bool,
 ) -> None:
     """Non-destructively optimize root CLAUDE.md / AGENTS.md into the MUSCLE-preferred format."""
     from ..code_review.host_memory_optimizer import run_optimizer
@@ -466,6 +472,8 @@ def optimize_host_docs(
             any_changed = True
 
     if dry_run:
+        if cache_layout:
+            _print_host_doc_cache_layout(project_root, only, effective_skip_agents)
         sys.exit(1 if any_changed else 0)
 
     if any_changed and not yes:
@@ -473,6 +481,36 @@ def optimize_host_docs(
             click.echo("Aborted.")
             sys.exit(1)
     click.echo("Done." if any_changed else "No changes needed.")
+
+
+def _print_host_doc_cache_layout(
+    project_root: Path,
+    only: str | None,
+    skip_agents: bool,
+) -> None:
+    """Print cache-prefix metadata for existing host docs."""
+    from ..optimization.prompt_prefix import PromptPrefixPlanner
+
+    filenames = [only] if only else ["CLAUDE.md", *([] if skip_agents else ["AGENTS.md"])]
+    planner = PromptPrefixPlanner()
+    for filename in filenames:
+        if filename is None:
+            continue
+        path = project_root / filename
+        if not path.exists():
+            click.echo(f"\n=== {filename} cache layout ===")
+            click.echo("missing")
+            continue
+        plan = planner.plan_rendered_prompt(path.read_text(encoding="utf-8"))
+        metadata = plan.to_metadata()
+        click.echo(f"\n=== {filename} cache layout ===")
+        click.echo(f"cache_prefix_chars: {metadata['cache_prefix_chars']}")
+        click.echo(f"cache_prefix_digest: {metadata['cache_prefix_digest']}")
+        click.echo(
+            f"cache_prefix_lint_warning_count: {metadata['cache_prefix_lint_warning_count']}"
+        )
+        click.echo(f"estimated_cache_fresh_cost: {metadata['estimated_cache_fresh_cost']}")
+        click.echo(f"estimated_cache_read_cost: {metadata['estimated_cache_read_cost']}")
 
 
 @cli.command()

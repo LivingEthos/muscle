@@ -935,6 +935,61 @@ class TestObservabilityHelpers:
         assert history[1]["identity_source"] == "unresolved"
 
 
+class TestTransferredLessonTransactions:
+    """Regression tests for cross-project lesson transaction boundaries."""
+
+    def test_promote_rolls_back_rule_insert_when_status_update_fails(
+        self,
+        pm,
+        temp_project_dir,
+        monkeypatch,
+    ):
+        lesson_id = pm.upsert_transferred_lesson(
+            project_path=str(temp_project_dir),
+            source_project_path="/source/project",
+            lesson_text="Validate incoming payment payloads.",
+            trigger_pattern="payment validation",
+            validation_status="provisional",
+        )
+        lesson = pm.get_transferred_lesson(lesson_id)
+        assert lesson is not None
+        for _ in range(3):
+            assert pm.record_transferred_lesson_outcome(str(lesson["lesson_key"]), success=True)
+
+        def fail_status_update(conn, failed_lesson_id, local_rule_id):
+            raise RuntimeError("crash between rule insert and status update")
+
+        monkeypatch.setattr(
+            ProjectMemory,
+            "_mark_transferred_lesson_promoted",
+            staticmethod(fail_status_update),
+        )
+        with pytest.raises(RuntimeError, match="crash between rule insert"):
+            pm.promote_transferred_lesson(lesson_id)
+
+        assert (
+            pm.list_learned_rules(
+                project_path=str(temp_project_dir),
+                trigger_pattern="payment validation",
+            )
+            == []
+        )
+        assert pm.get_transferred_lesson(lesson_id)["validation_status"] == "validated"
+
+        monkeypatch.undo()
+        promoted_rule_id = pm.promote_transferred_lesson(lesson_id)
+
+        assert promoted_rule_id > 0
+        promoted_lesson = pm.get_transferred_lesson(lesson_id)
+        assert promoted_lesson["validation_status"] == "promoted"
+        assert promoted_lesson["promoted_rule_id"] == promoted_rule_id
+        rules = pm.list_learned_rules(
+            project_path=str(temp_project_dir),
+            trigger_pattern="payment validation",
+        )
+        assert len(rules) == 1
+
+
 class TestConnectionContextManager:
     """Tests for the ``connection()`` / ``_conn()`` context manager (PM-01)."""
 

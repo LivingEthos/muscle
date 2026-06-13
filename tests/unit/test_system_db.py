@@ -42,6 +42,21 @@ def test_system_db_initializes_schema_version_and_integrity(tmp_path: Path) -> N
     assert len(reopened.list_registered_projects()) == 1
 
 
+def test_system_db_connections_enable_wal_and_busy_timeout(tmp_path: Path) -> None:
+    db_path = tmp_path / "system.db"
+    system_db = SystemDatabase(db_path)
+
+    conn = system_db._get_connection()
+    try:
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert str(journal_mode).lower() == "wal"
+    assert int(busy_timeout) == 5000
+
+
 def test_system_db_reopens_versionless_schema_and_preserves_rows(tmp_path: Path) -> None:
     db_path = tmp_path / "system.db"
     conn = sqlite3.connect(str(db_path))

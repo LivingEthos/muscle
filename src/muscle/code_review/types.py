@@ -144,6 +144,8 @@ class ReviewConfig:
     worktree_enabled: bool = False
     fetch_sources: bool = False
     fetch_source_packages: list[str] | None = None
+    async_workers: bool = False
+    async_worker_limit: int = 3
     # Maximum number of static-analysis issues forwarded to the M2.7 semantic
     # review per file per batch.  Tune down to reduce token spend; tune up to
     # allow the reviewer to see more context per call.
@@ -199,6 +201,9 @@ class ReviewStats:
     tokens_used: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    # Subset of input_tokens served from the provider's prefix cache at the
+    # discounted rate (cached_input_tokens <= input_tokens).
+    cached_input_tokens: int = 0
     duration_seconds: float = 0
 
 

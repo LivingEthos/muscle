@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from ..io_safety import advisory_file_lock
+from ..untrusted_content import line_has_untrusted_instruction_signal
 from .structured_compactor import compact_records
 
 HANDLE_PREFIX = "ccr:"
@@ -171,7 +172,7 @@ class CcrStore:
 
 
 def _is_anomaly(line: str) -> bool:
-    return bool(_ANOMALY_RE.search(line))
+    return bool(_ANOMALY_RE.search(line) or line_has_untrusted_instruction_signal(line))
 
 
 def _try_parse_records(text: str) -> list[dict[str, Any]] | None:

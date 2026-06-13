@@ -13,6 +13,7 @@ import httpx
 
 from muscle.llm.adapters._shared import handle_llm_error
 from muscle.llm.client import LLMClient, LLMRequest, LLMResponse, LLMStreamChunk
+from muscle.llm.tool_schema_compat import normalize_openai_compatible_payload
 
 
 class OpenRouterClient(LLMClient):
@@ -58,6 +59,7 @@ class OpenRouterClient(LLMClient):
         if request.max_tokens:
             payload["max_tokens"] = request.max_tokens
         payload.update(request.extra)
+        payload = normalize_openai_compatible_payload(payload).payload
 
         try:
             resp = await self._client.post("/chat/completions", json=payload)

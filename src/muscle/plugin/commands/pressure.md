@@ -16,4 +16,6 @@ append `--focus <focus>`.
 
 Valid `--intensity` values: `minimal`, `moderate`, `intensive`, `exhaustive`. Any other value will be rejected by the CLI.
 
+Append `--async-workers` only when the pressure target is a hard-tail sweep that needs detached follow-up evidence; Fable/host arbitration should stay limited to compact disagreements, not full worker transcripts.
+
 Present pressure findings as challenges to the code's design. For each finding show the exploit scenario and suggested safer approach.
