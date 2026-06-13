@@ -120,8 +120,15 @@ def test_profile_for_none_returns_default_quietly():
 
 def test_profile_for_unknown_key_warns_and_defaults():
     with pytest.warns(RuntimeWarning):
-        result = profile_for("anthropic/some-unreleased-model@9")
+        result = profile_for("garbage/not-a-real-model@9")
     assert result is PROFILES["default"]
+
+
+def test_profile_for_recognized_unprofiled_model_is_quiet():
+    for key in ("minimax/m2.7@1", "anthropic/claude-sonnet@4", "openai/gpt-5.5@1"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any warning fails
+            assert profile_for(key) is PROFILES["default"]
 
 
 def test_opus_stage_effort_is_immutable():

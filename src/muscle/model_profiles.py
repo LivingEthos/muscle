@@ -112,6 +112,7 @@ def validate_profile(profile: ModelProfile) -> None:
     assert profile.security.prompt_injection_sensitivity in VALID_INJECTION_SENSITIVITY
     assert profile.security.dependency_snippet_policy in VALID_DEPENDENCY_POLICY
     assert profile.security.untrusted_envelope_emphasis in VALID_ENVELOPE_EMPHASIS
+    # TODO(plan-3): validate HostBehavior.doc_fragment_keys against the fragment library once it exists.
 
 
 OPUS_4_8_KEY = "anthropic/claude-opus-4-8@2026-05-28"
@@ -221,9 +222,14 @@ PROFILES: Mapping[str, ModelProfile] = MappingProxyType(_REGISTERED)
 def profile_for(canonical_key: str | None) -> ModelProfile:
     """Return the profile for a canonical key, or the ``default`` profile.
 
-    A ``None`` key (e.g. an unresolved host) is the expected path and resolves
-    to ``default`` quietly. A *non-empty* key with no registered profile is a
-    real gap — warn (RuntimeWarning) and log, never silently swallow it.
+    Resolution rules:
+    - ``None`` (e.g. an unresolved host) -> ``default`` quietly (expected path).
+    - A registered key -> its profile.
+    - A *recognized* canonical model (in ``SUPPORTED_CANONICAL_MODELS``) with no
+      populated profile yet -> ``default`` with an info log (intentional: these
+      models use the conservative default until a profile is authored).
+    - An *unrecognized* key -> ``default`` with a ``RuntimeWarning`` (likely a typo
+      or identity drift; the no-silent-fallback rule wants this loud).
     """
     if canonical_key is None:
         logger.debug("profile_for: no canonical key; using default profile")
@@ -231,13 +237,22 @@ def profile_for(canonical_key: str | None) -> ModelProfile:
     profile = PROFILES.get(canonical_key)
     if profile is not None:
         return profile
+    # Lazy import to avoid a heavier import-time dependency graph in this module.
+    from .model_identity import SUPPORTED_CANONICAL_MODELS  # noqa: PLC0415
+
+    if canonical_key in SUPPORTED_CANONICAL_MODELS:
+        logger.info(
+            "profile_for: recognized model %r has no populated profile; using default",
+            canonical_key,
+        )
+        return PROFILES[DEFAULT_PROFILE_KEY]
     warnings.warn(
         f"No model profile registered for {canonical_key!r}; using "
         f"'{DEFAULT_PROFILE_KEY}'. Optimizations for this model will not apply.",
         RuntimeWarning,
         stacklevel=2,
     )
-    logger.info("profile_for: unresolved canonical_key=%r -> default", canonical_key)
+    logger.info("profile_for: unrecognized canonical_key=%r -> default", canonical_key)
     return PROFILES[DEFAULT_PROFILE_KEY]
 
 
