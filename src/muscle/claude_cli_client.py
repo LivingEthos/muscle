@@ -45,9 +45,10 @@ logger = logging.getLogger("muscle.claude_cli_client")
 
 DEFAULT_CLI_MODEL = "claude-opus-4-8"
 
-# MUSCLE thinking-policy stage mode -> claude CLI --effort level. Mirrors the
-# anthropic_client mapping: adaptive/enabled stages get high effort, disabled
-# and unspecified stages run at the medium default.
+# MUSCLE thinking-policy mode -> claude CLI --effort level. This path is
+# thinking-MODE-based, NOT stage-based: unlike the anthropic-api Opus path
+# (which now derives per-stage effort from the Opus ModelProfile), the
+# claude-subscription transport does not consume the `stage` arg.
 _EFFORT_FOR_THINKING: dict[str | None, str] = {
     "adaptive": "high",
     "enabled": "high",
@@ -143,6 +144,11 @@ class ClaudeCliClient(M27Client):
 
         prompt = self._render_prompt(messages)
         mode = str(thinking).strip().lower() if thinking is not None else None
+        # NOTE: effort here comes from the thinking MODE, not the review stage, so the
+        # same call site yields different effort on this transport vs anthropic-api
+        # (e.g. semantic_review -> "high" here vs "xhigh" via the Opus profile).
+        # Wiring per-stage effort into the CLI transports is a future task; Plan 2 scope
+        # is the anthropic-api provider only.
         effort = _EFFORT_FOR_THINKING.get(mode, "medium")
 
         cmd = [

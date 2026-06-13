@@ -1616,6 +1616,7 @@ description, and line number. Format as a simple list."""
         schema = FragilityPressureReviewResponse if is_fragility else PressureReviewResponse
 
         try:
+            # pressure review shares the semantic_review execution path/stage.
             result, metadata = self.m27_client.chat_structured(
                 schema=schema,
                 system=system_prompt,
