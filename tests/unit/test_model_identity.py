@@ -6,8 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from muscle.model_identity import ModelIdentityResolver, SUPPORTED_CANONICAL_MODELS
+from muscle.model_identity import (
+    SUPPORTED_CANONICAL_MODELS,
+    ModelIdentityResolver,
+    canonical_for_label,
+)
 from muscle.system_db import SystemDatabase
+
+OPUS_KEY = "anthropic/claude-opus-4-8@2026-05-28"
 
 
 @pytest.fixture
@@ -91,3 +97,23 @@ def test_openrouter_gateway_response_does_not_become_provider_introspection(
     )
 
     assert identity is None
+
+
+def test_canonical_for_label_resolves_opus_aliases():
+    assert canonical_for_label("claude-opus-4-8") == OPUS_KEY
+    assert canonical_for_label("Opus 4.8") == OPUS_KEY
+    assert canonical_for_label("opus-4-8") == OPUS_KEY
+
+
+def test_canonical_for_label_resolves_existing_models():
+    assert canonical_for_label("MiniMax-M3") == "minimax/m3@1"
+    assert canonical_for_label("claude-fable-5") == "anthropic/claude-fable-5@2026-06-09"
+
+
+def test_canonical_for_label_unknown_returns_none():
+    assert canonical_for_label("totally-unknown-model") is None
+    assert canonical_for_label(None) is None
+
+
+def test_opus_key_is_supported():
+    assert OPUS_KEY in SUPPORTED_CANONICAL_MODELS

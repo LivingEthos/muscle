@@ -38,6 +38,10 @@ HEURISTIC_ALIAS_MAP = {
     "minimax-m2.7": "minimax/m2.7@1",
     "minimax m2.7": "minimax/m2.7@1",
     "m2.7": "minimax/m2.7@1",
+    "claude-opus-4-8": "anthropic/claude-opus-4-8@2026-05-28",
+    "opus 4.8": "anthropic/claude-opus-4-8@2026-05-28",
+    "opus-4-8": "anthropic/claude-opus-4-8@2026-05-28",
+    "anthropic/claude-opus-4-8@2026-05-28": "anthropic/claude-opus-4-8@2026-05-28",
     "claude-sonnet-4": "anthropic/claude-sonnet@4",
     "claude 4 sonnet": "anthropic/claude-sonnet@4",
     "claude-3-7-sonnet": "anthropic/claude-sonnet@3.7",
@@ -52,10 +56,23 @@ HEURISTIC_ALIAS_MAP = {
     "gemini-2.5-flash": "google/gemini-flash@2.5",
 }
 
+
+def canonical_for_label(label: str | None) -> str | None:
+    """Map a free-form model label to a canonical model key, or None.
+
+    Pure alias lookup (no endpoint/provenance). Used to canonicalize a
+    provider's configured model string or a host label into a registry key.
+    """
+    if not label:
+        return None
+    return HEURISTIC_ALIAS_MAP.get(label.strip().lower())
+
+
 SUPPORTED_CANONICAL_MODELS = sorted(
     {
         "minimax/m3@1",
         "minimax/m2.7@1",
+        "anthropic/claude-opus-4-8@2026-05-28",
         "anthropic/claude-sonnet@4",
         "anthropic/claude-sonnet@3.7",
         "anthropic/claude-fable-5@2026-06-09",
@@ -75,6 +92,8 @@ INTROSPECTION_MODEL_PATTERNS: dict[str, tuple[tuple[str, str], ...]] = {
         ("m2.7", "minimax/m2.7@1"),
     ),
     "anthropic": (
+        ("claude-opus-4-8", "anthropic/claude-opus-4-8@2026-05-28"),
+        ("opus-4-8", "anthropic/claude-opus-4-8@2026-05-28"),
         ("claude-fable-5", "anthropic/claude-fable-5@2026-06-09"),
         ("fable-5", "anthropic/claude-fable-5@2026-06-09"),
         ("claude-sonnet-4", "anthropic/claude-sonnet@4"),
