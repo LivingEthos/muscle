@@ -1597,7 +1597,6 @@ class TestCachePlan:
 
     def test_chat_structured_forwards_cache_plan(self, mock_client, tmp_path):
         """cache_plan passed to chat_structured must be forwarded to chat()."""
-        from unittest.mock import call as mock_call
 
         from pydantic import BaseModel
 
@@ -1631,7 +1630,6 @@ class TestCachePlan:
 
     def test_prepare_payload_hook_receives_final_payload(self, mock_client):
         """Subclass _prepare_payload hook receives thinking + cache_plan; its changes reach POST."""
-        import json as json_mod
 
         from muscle.m27_client import CachePlan, M27Client
 
@@ -1653,6 +1651,7 @@ class TestCachePlan:
                 is_openai_compatible,
                 thinking=None,
                 cache_plan=None,
+                stage=None,
             ):
                 received_kwargs["thinking"] = thinking
                 received_kwargs["cache_plan"] = cache_plan
@@ -1678,3 +1677,32 @@ class TestCachePlan:
         assert posted.get("_hook_marker") == 1
         assert received_kwargs["thinking"] == "adaptive"
         assert received_kwargs["cache_plan"] is plan
+
+
+# ---------------------------------------------------------------------------
+# Task 1 & 2: stage param is a MiniMax no-op
+# ---------------------------------------------------------------------------
+
+
+class TestStageParamIsMiniMaxNoOp:
+    def test_stage_does_not_change_minimax_payload(self, mock_client):
+        """The new stage arg must be a byte-identical no-op on the MiniMax path."""
+        client, mock_session = mock_client
+        mock_session.post.return_value = _make_mock_response(
+            200,
+            json_data={
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": 5, "output_tokens": 2},
+            },
+        )
+
+        client.chat([{"role": "user", "content": "hi"}], thinking="adaptive")
+        baseline = dict(mock_session.post.call_args.kwargs["json"])
+
+        client.chat(
+            [{"role": "user", "content": "hi"}], thinking="adaptive", stage="semantic_review"
+        )
+        with_stage = dict(mock_session.post.call_args.kwargs["json"])
+
+        assert with_stage == baseline  # stage must not alter the MiniMax request
+        assert "stage" not in with_stage  # never serialized into the payload

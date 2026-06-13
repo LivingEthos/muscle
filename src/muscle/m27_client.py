@@ -658,11 +658,13 @@ class M27Client:
         is_openai_compatible: bool,
         thinking: str | None = None,
         cache_plan: CachePlan | None = None,
+        stage: str | None = None,
     ) -> dict[str, Any]:
         """Provider hook: final payload adjustment before POST.
 
         Base (MiniMax) implementation is a strict no-op — in particular it
-        never emits cache_control (MiniMax prefix-caches passively).
+        never emits cache_control (MiniMax prefix-caches passively) and ignores
+        ``stage`` (per-stage effort is an Opus-only concern).
         """
         return payload
 
@@ -704,6 +706,7 @@ class M27Client:
         stream: bool = False,
         telemetry_context: TelemetryContext | None = None,
         thinking: str | None = None,
+        stage: str | None = None,
         response_format: dict[str, Any] | None = None,
         _metadata_sink: dict[str, Any] | None = None,
         cache_plan: CachePlan | None = None,
@@ -775,7 +778,7 @@ class M27Client:
         estimated_input_tokens = max(1, prompt_chars // 4)
 
         payload = self._prepare_payload(
-            payload, is_openai_compatible, thinking=thinking, cache_plan=cache_plan
+            payload, is_openai_compatible, thinking=thinking, cache_plan=cache_plan, stage=stage
         )
         if is_openai_compatible:
             compatibility = normalize_openai_compatible_payload(payload)
