@@ -14,6 +14,8 @@ import urllib.parse
 from typing import Any
 
 from .m27_client import CachePlan, M27Client
+from .model_identity import canonical_for_label
+from .model_profiles import profile_for
 
 logger = logging.getLogger("muscle.anthropic_client")
 
@@ -113,6 +115,14 @@ class AnthropicApiClient(M27Client):
             model=model,
             **kwargs,
         )
+        # This client is Opus-only, so its profile is always the Opus profile.
+        # Resolving via the registry keeps per-stage effort/thinking knobs in one
+        # place (model_profiles) rather than hardcoded here.
+        self._agent_behavior = profile_for(canonical_for_label(self.model)).agent
+        assert self._agent_behavior.keep_thinking_on_all_stages, (
+            "Opus profile must have keep_thinking_on_all_stages=True; check "
+            f"canonical_for_label({self.model!r}) resolves to the Opus profile in the registry"
+        )
 
     def _get_headers(self) -> dict[str, str]:
         """Anthropic auth headers (x-api-key, never an Authorization bearer)."""
@@ -128,20 +138,42 @@ class AnthropicApiClient(M27Client):
         is_openai_compatible: bool,
         thinking: str | None = None,
         cache_plan: CachePlan | None = None,
+        stage: str | None = None,
     ) -> dict[str, Any]:
-        """Adapt the MiniMax-shaped payload to the Opus 4.8 request contract."""
+        """Adapt the MiniMax-shaped payload to the Opus 4.8 request contract.
+
+        Per-stage effort and always-on thinking come from this model's
+        ``ModelProfile.agent`` (the Opus profile). ``thinking`` (the resolved
+        MiniMax mode) is intentionally NOT used to gate thinking on Opus: with
+        thinking disabled, Opus 4.8 leaks verbose reasoning into the visible
+        response, so ``keep_thinking_on_all_stages`` keeps it adaptive and
+        expresses the per-stage difference through effort instead.
+        """
         # Opus 4.8 returns 400 on sampling params — never send them.
         for param in ("temperature", "top_p", "top_k"):
             payload.pop(param, None)
 
-        mode = str(thinking).strip().lower() if thinking is not None else None
-        if mode in ("adaptive", "enabled"):
-            # Adaptive is the only on-mode on Opus 4.8.
-            payload["thinking"] = {"type": "adaptive"}
+        behavior = self._agent_behavior
+        if behavior.keep_thinking_on_all_stages:
+            think_block: dict[str, str] = {"type": "adaptive"}
+            if behavior.reasoning_display is not None:
+                think_block["display"] = behavior.reasoning_display
+            payload["thinking"] = think_block
+            effort = (
+                behavior.stage_effort.get(stage, behavior.default_effort)
+                if stage is not None
+                else behavior.default_effort
+            )
         else:
-            # Disabled/None: omit the thinking key entirely (the safe off-shape).
-            payload.pop("thinking", None)
-        payload["output_config"] = {"effort": _EFFORT_FOR_THINKING.get(mode, "medium")}
+            # Defensive fallback for a hypothetical non-keep-on profile: mode-based,
+            # mirroring the pre-profile behavior.
+            mode = str(thinking).strip().lower() if thinking is not None else None
+            if mode in ("adaptive", "enabled"):
+                payload["thinking"] = {"type": "adaptive"}
+            else:
+                payload.pop("thinking", None)
+            effort = _EFFORT_FOR_THINKING.get(mode, "medium")
+        payload["output_config"] = {"effort": effort}
 
         # Write-amortization rule: a cache write only pays off when at least
         # one more call is expected to reuse the prefix within the TTL.

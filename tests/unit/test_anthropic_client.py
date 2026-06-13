@@ -41,9 +41,7 @@ def _make_mock_session():
     import requests
 
     mock_session = MagicMock(spec=requests.Session)
-    mock_session.post.return_value = _make_mock_response(
-        200, json_data=_default_response_payload()
-    )
+    mock_session.post.return_value = _make_mock_response(200, json_data=_default_response_payload())
     return mock_session
 
 
@@ -98,9 +96,7 @@ class TestSamplingParamStrip:
             },
         )
         with _patched_client(mock_session, cache_db_path=tmp_path / "cache.db") as client:
-            result = client.chat_structured(
-                _TrivialSchema, [{"role": "user", "content": "hi"}]
-            )
+            result = client.chat_structured(_TrivialSchema, [{"role": "user", "content": "hi"}])
         assert result.ok is True
         # chat_structured passes temperature=0.1 internally — must still be stripped.
         payload = _posted_payload(mock_session)
@@ -110,26 +106,80 @@ class TestSamplingParamStrip:
 
 
 class TestThinkingEffortMapping:
-    def test_thinking_adaptive_maps_to_adaptive_plus_high_effort(self, mock_client):
+    def test_adaptive_no_stage_keeps_thinking_and_default_high_effort(self, mock_client):
         client, mock_session = mock_client
         client.chat([{"role": "user", "content": "hi"}], thinking="adaptive")
         payload = _posted_payload(mock_session)
         assert payload["thinking"] == {"type": "adaptive"}
-        assert payload["output_config"] == {"effort": "high"}
+        assert payload["output_config"] == {"effort": "high"}  # Opus default_effort
 
-    def test_thinking_disabled_omits_thinking_and_uses_medium_effort(self, mock_client):
+    def test_disabled_mode_still_keeps_thinking_on_opus(self, mock_client):
+        # On Opus, keep_thinking_on_all_stages=True overrides a 'disabled' mode:
+        # thinking stays adaptive (avoids the verbose-reasoning leak).
         client, mock_session = mock_client
         client.chat([{"role": "user", "content": "hi"}], thinking="disabled")
         payload = _posted_payload(mock_session)
-        assert "thinking" not in payload
-        assert payload["output_config"] == {"effort": "medium"}
+        assert payload["thinking"] == {"type": "adaptive"}
+        assert payload["output_config"] == {"effort": "high"}  # no stage -> default_effort
 
-    def test_thinking_none_defaults_to_medium_effort(self, mock_client):
+    def test_none_thinking_keeps_thinking_on_opus(self, mock_client):
         client, mock_session = mock_client
         client.chat([{"role": "user", "content": "hi"}], thinking=None)
         payload = _posted_payload(mock_session)
-        assert "thinking" not in payload
-        assert payload["output_config"] == {"effort": "medium"}
+        assert payload["thinking"] == {"type": "adaptive"}
+        assert payload["output_config"] == {"effort": "high"}
+
+
+class TestPerStageEffort:
+    def test_coding_stages_use_xhigh(self, mock_client):
+        client, mock_session = mock_client
+        for stage in ("semantic_review", "committee_review", "fix_generation"):
+            client.chat([{"role": "user", "content": "hi"}], thinking="adaptive", stage=stage)
+            payload = _posted_payload(mock_session)
+            assert payload["output_config"] == {"effort": "xhigh"}, stage
+            assert payload["thinking"] == {"type": "adaptive"}, stage
+
+    def test_verification_and_pattern_use_high(self, mock_client):
+        client, mock_session = mock_client
+        for stage in ("verification", "pattern_detection"):
+            client.chat([{"role": "user", "content": "hi"}], thinking="adaptive", stage=stage)
+            payload = _posted_payload(mock_session)
+            assert payload["output_config"] == {"effort": "high"}, stage
+            assert payload["thinking"] == {"type": "adaptive"}, stage
+
+    def test_formatting_stages_use_low_with_thinking_on(self, mock_client):
+        client, mock_session = mock_client
+        for stage in (
+            "memory_consolidation",
+            "handoff_generation",
+            "skill_generation",
+            "agent_generation",
+            "strategy_evolution",
+        ):
+            client.chat([{"role": "user", "content": "hi"}], thinking="disabled", stage=stage)
+            payload = _posted_payload(mock_session)
+            assert payload["output_config"] == {"effort": "low"}, stage
+            assert payload["thinking"] == {"type": "adaptive"}, stage  # never omitted on Opus
+
+    def test_unknown_stage_falls_back_to_default_effort(self, mock_client):
+        client, mock_session = mock_client
+        client.chat(
+            [{"role": "user", "content": "hi"}], thinking="adaptive", stage="nonexistent_stage"
+        )
+        payload = _posted_payload(mock_session)
+        assert payload["output_config"] == {"effort": "high"}  # Opus default_effort
+
+    def test_reasoning_display_passed_through_when_set(self, mock_client):
+        from dataclasses import replace
+
+        client, mock_session = mock_client
+        # Opt-in summarized reasoning display via a profile override on this client.
+        client._agent_behavior = replace(client._agent_behavior, reasoning_display="summarized")
+        client.chat(
+            [{"role": "user", "content": "hi"}], thinking="adaptive", stage="semantic_review"
+        )
+        payload = _posted_payload(mock_session)
+        assert payload["thinking"] == {"type": "adaptive", "display": "summarized"}
 
 
 class TestModelGuard:
