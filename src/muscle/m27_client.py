@@ -1357,6 +1357,7 @@ class M27Client:
         telemetry_context: TelemetryContext | None = None,
         include_metadata: bool = False,
         thinking: str | None = None,
+        stage: str | None = None,
         cache_plan: CachePlan | None = None,
     ) -> Any:
         """Call M2.7, parse response as JSON, validate against Pydantic schema.
@@ -1441,6 +1442,7 @@ class M27Client:
                 temperature=0.1,
                 telemetry_context=telemetry_context,
                 thinking=thinking,
+                stage=stage,
                 _metadata_sink=call_meta,
                 cache_plan=cache_plan,
             )

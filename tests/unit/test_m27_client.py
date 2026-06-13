@@ -1706,3 +1706,29 @@ class TestStageParamIsMiniMaxNoOp:
 
         assert with_stage == baseline  # stage must not alter the MiniMax request
         assert "stage" not in with_stage  # never serialized into the payload
+
+    def test_chat_structured_forwards_stage(self, mock_client, tmp_path):
+        """chat_structured must accept stage and forward it to chat()."""
+        from pydantic import BaseModel
+
+        client, _ = mock_client
+        client._cache_db_path = tmp_path / "test.db"
+        seen: dict[str, object] = {}
+
+        def _fake_chat(*args, _metadata_sink=None, **kwargs):
+            seen["stage"] = kwargs.get("stage")
+            if _metadata_sink is not None:
+                _metadata_sink["truncated"] = False
+            return "{}", TokenUsage()
+
+        monkeypatch_attr = patch.object(client, "chat", side_effect=_fake_chat)
+
+        class _Schema(BaseModel):
+            pass
+
+        with monkeypatch_attr:
+            client.chat_structured(
+                _Schema, [{"role": "user", "content": "hi"}], stage="fix_generation"
+            )
+
+        assert seen["stage"] == "fix_generation"
