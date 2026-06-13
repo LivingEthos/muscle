@@ -209,6 +209,7 @@ Provide the JSON output with the fixed code."""
             system=SYSTEM_PROMPT,
             telemetry_context=telemetry_context,
             thinking=thinking_for("fix_generation"),
+            stage="fix_generation",
         )
 
         try:
@@ -309,6 +310,7 @@ Provide ONLY the corrected code that should replace the buggy snippet. Return pl
                 temperature=0.1,
                 telemetry_context=telemetry_context,
                 thinking=thinking_for("fix_generation"),
+                stage="fix_generation",
             )
             fix = response_text.strip()
             if fix and len(fix) > 10:

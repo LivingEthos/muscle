@@ -234,6 +234,7 @@ Provide the JSON handoff plan."""
             ],
             telemetry_context=telemetry_context,
             thinking=thinking_for("handoff_generation"),
+            stage="handoff_generation",
         )
 
         try:
@@ -329,6 +330,7 @@ CONTEXT: {context}
                         ],
                         telemetry_context=telemetry_context,
                         thinking=thinking_for("handoff_generation"),
+                        stage="handoff_generation",
                     )
                     data = self._load_json_response(response_text)
                     self._update_telemetry_call(telemetry_context.call_id, parse_success=True)

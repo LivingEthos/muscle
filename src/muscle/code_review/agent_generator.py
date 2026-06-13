@@ -180,6 +180,7 @@ class AgentGenerator:
             messages=[{"role": "user", "content": prompt}],
             system="You are an expert at designing Claude Code sub-agents. Generate an agent definition.",
             thinking=thinking_for("agent_generation"),
+            stage="agent_generation",
         )
 
         if response_text:
@@ -418,6 +419,7 @@ class AgentGenerator:
             messages=[{"role": "user", "content": prompt}],
             system="You are an expert at revising Claude Code sub-agents. Generate an improved agent definition.",
             thinking=thinking_for("agent_generation"),
+            stage="agent_generation",
         )
 
         if not response_text:

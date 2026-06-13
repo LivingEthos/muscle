@@ -300,6 +300,7 @@ class VerificationLoop:
                 temperature=0.3,
                 telemetry_context=telemetry_context,
                 thinking=thinking_for("verification"),
+                stage="verification",
             )
             verification_status = self._parse_verification_status(response_text)
             verification_failed = verification_status is not VerificationStatus.VERIFIED
@@ -426,6 +427,7 @@ Return a brief analysis (2-3 sentences)."""
                 temperature=0.5,
                 telemetry_context=telemetry_context,
                 thinking=thinking_for("verification"),
+                stage="verification",
             )
             if telemetry_context:
                 self.m27_client.update_telemetry_call(

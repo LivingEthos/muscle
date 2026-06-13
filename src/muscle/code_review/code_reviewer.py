@@ -983,6 +983,7 @@ class CodeReviewer:
                 telemetry_context=telemetry_context,
                 include_metadata=True,
                 thinking=thinking_for("semantic_review"),
+                stage="semantic_review",
             )
             logger.info(
                 "CodeReviewer used %s tokens for %s (cache_hit=%s)",
@@ -1097,6 +1098,7 @@ Provide your review in JSON format."""
                         telemetry_context=retry_context,
                         include_metadata=True,
                         thinking=thinking_for("semantic_review"),
+                        stage="semantic_review",
                     )
                     retry_final_trace = self._finalize_trace_metadata(
                         artifact_store,
@@ -1263,6 +1265,7 @@ description, and line number. Format as a simple list."""
                 temperature=0.1,
                 telemetry_context=telemetry_context,
                 thinking=thinking_for("semantic_review"),
+                stage="semantic_review",
             )
             parsed_issues = self._parse_text_review(response_text, file_path)
             final_trace = self._finalize_trace_metadata(
@@ -1622,6 +1625,7 @@ description, and line number. Format as a simple list."""
                 telemetry_context=telemetry_context,
                 include_metadata=True,
                 thinking=thinking_for("semantic_review"),
+                stage="semantic_review",
             )
             data = dict(result.model_dump())
             if is_fragility:

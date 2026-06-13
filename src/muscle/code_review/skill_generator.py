@@ -141,6 +141,7 @@ class SkillGenerator:
                 messages=[{"role": "user", "content": prompt}],
                 system="You are a skilled technical writer. Generate a skill file in markdown format.",
                 thinking=thinking_for("skill_generation"),
+                stage="skill_generation",
             )
         except (ValueError, TypeError) as e:
             # M27 client not properly configured (e.g., no API key in tests)

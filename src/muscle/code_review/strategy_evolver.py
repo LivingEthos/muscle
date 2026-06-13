@@ -136,6 +136,7 @@ Return a JSON object with your analysis:
                 max_tokens=2048,
                 temperature=0.3,
                 thinking=thinking_for("strategy_evolution"),
+                stage="strategy_evolution",
             )
 
             if "```json" in response_text:
@@ -266,6 +267,7 @@ Return the evolved strategy as a complete prompt that can be used for future rev
                 max_tokens=4096,
                 temperature=0.5,
                 thinking=thinking_for("strategy_evolution"),
+                stage="strategy_evolution",
             )
             return response_text.strip()  # type: ignore[no-any-return]
 
@@ -368,6 +370,7 @@ Return a JSON object:
                 max_tokens=1024,
                 temperature=0.3,
                 thinking=thinking_for("strategy_evolution"),
+                stage="strategy_evolution",
             )
 
             if "```json" in response_text:

@@ -268,6 +268,7 @@ Only cluster issues with clear semantic similarity. Return at most 20 clusters."
                 max_tokens=4096,
                 temperature=0.3,
                 thinking=thinking_for("pattern_detection"),
+                stage="pattern_detection",
             )
 
             clusters = self._parse_clusters_response(response_text)
@@ -409,6 +410,7 @@ Return a JSON object:
                 max_tokens=2048,
                 temperature=0.3,
                 thinking=thinking_for("pattern_detection"),
+                stage="pattern_detection",
             )
 
             if "```json" in response_text:

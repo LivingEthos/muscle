@@ -150,6 +150,7 @@ Return ONLY the summarized text, no quotes or explanation."""
                 max_tokens=256,
                 temperature=0.5,
                 thinking=thinking_for("memory_consolidation"),
+                stage="memory_consolidation",
             )
             return self._truncate_clean(response_text)
         except Exception as e:
@@ -323,6 +324,7 @@ Return a JSON array of memory contents (the original content strings), ordered b
                 max_tokens=2048,
                 temperature=0.3,
                 thinking=thinking_for("memory_consolidation"),
+                stage="memory_consolidation",
             )
 
             if "```json" in response_text:
@@ -400,6 +402,7 @@ Return ONLY the summary, no quotes or explanation."""
                 max_tokens=512,
                 temperature=0.5,
                 thinking=thinking_for("memory_consolidation"),
+                stage="memory_consolidation",
             )
             return response_text.strip()  # type: ignore[no-any-return]
         except Exception as e:
@@ -516,6 +519,7 @@ Return a JSON array of the consolidated entries:
                     max_tokens=4096,
                     temperature=0.5,
                     thinking=thinking_for("memory_consolidation"),
+                    stage="memory_consolidation",
                 )
 
                 if "```json" in response_text:
