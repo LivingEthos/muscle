@@ -125,3 +125,56 @@ def test_session_evidence_empty_returns_none():
 
 def test_session_evidence_none_project_returns_none():
     assert default_session_host_label(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Task 7: full-precedence characterization
+# ---------------------------------------------------------------------------
+
+
+def test_precedence_session_beats_settings(monkeypatch, tmp_path):
+    monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+    resolver = HostModelResolver(
+        explicit_fn=lambda _p: None,
+        session_fn=lambda _p: "claude-opus-4-8",
+        settings_fn=lambda _p: "fable",
+    )
+    identity = resolver.resolve(tmp_path)
+    assert identity.canonical_model_key == OPUS_KEY
+    assert identity.identity_source == "host_session_evidence"
+    assert identity.confidence == 0.8
+
+
+def test_precedence_settings_used_when_higher_absent(tmp_path):
+    resolver = HostModelResolver(
+        explicit_fn=lambda _p: None,
+        session_fn=lambda _p: None,
+        settings_fn=lambda _p: "fable",
+    )
+    identity = resolver.resolve(tmp_path)
+    assert identity.canonical_model_key == FABLE_KEY
+    assert identity.identity_source == "host_settings"
+
+
+def test_unresolved_when_all_signals_silent(tmp_path):
+    resolver = HostModelResolver(
+        explicit_fn=lambda _p: None,
+        session_fn=lambda _p: None,
+        settings_fn=lambda _p: None,
+    )
+    identity = resolver.resolve(tmp_path)
+    assert identity.canonical_model_key is None
+    assert identity.identity_source == "host_unresolved"
+    assert identity.confidence == 0.0
+
+
+def test_uncanonicalizable_label_halves_confidence(tmp_path):
+    resolver = HostModelResolver(
+        explicit_fn=lambda _p: "some-unknown-host",
+        session_fn=lambda _p: None,
+        settings_fn=lambda _p: None,
+    )
+    identity = resolver.resolve(tmp_path)
+    assert identity.canonical_model_key is None
+    assert identity.requested_label == "some-unknown-host"
+    assert identity.confidence == 0.5
