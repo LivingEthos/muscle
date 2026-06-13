@@ -63,6 +63,7 @@ class OpenRouterApiClient(M27Client):
         is_openai_compatible: bool,
         thinking: str | None = None,
         cache_plan: CachePlan | None = None,
+        stage: str | None = None,
     ) -> dict[str, Any]:
         """Strip provider-specific fields OpenRouter should not receive."""
         payload.pop("thinking", None)

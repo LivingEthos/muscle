@@ -129,13 +129,14 @@ class CodexCliClient(M27Client):
         stream: bool = False,
         telemetry_context: TelemetryContext | None = None,
         thinking: str | None = None,
+        stage: str | None = None,
         response_format: dict[str, Any] | None = None,
         _metadata_sink: dict[str, Any] | None = None,
         cache_plan: CachePlan | None = None,
         tools: list[dict[str, Any]] | None = None,
         functions: list[dict[str, Any]] | None = None,
     ) -> tuple[str, TokenUsage]:
-        # max_tokens/temperature/stream/thinking/cache_plan/tools/functions are
+        # max_tokens/temperature/stream/thinking/stage/cache_plan/tools/functions are
         # accepted for interface parity; Codex manages its own generation
         # controls here.
         if not self._validate_messages(messages):

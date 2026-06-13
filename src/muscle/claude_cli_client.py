@@ -127,13 +127,14 @@ class ClaudeCliClient(M27Client):
         stream: bool = False,
         telemetry_context: TelemetryContext | None = None,
         thinking: str | None = None,
+        stage: str | None = None,
         response_format: dict[str, Any] | None = None,
         _metadata_sink: dict[str, Any] | None = None,
         cache_plan: CachePlan | None = None,
         tools: list[dict[str, Any]] | None = None,
         functions: list[dict[str, Any]] | None = None,
     ) -> tuple[str, TokenUsage]:
-        # max_tokens/temperature/stream/response_format/cache_plan/tools/functions
+        # max_tokens/temperature/stream/thinking/stage/response_format/cache_plan/tools/functions
         # are accepted for interface parity with the base chat() but
         # intentionally unused: Claude Code manages its own sampling, output
         # limits, tools, and caching.
