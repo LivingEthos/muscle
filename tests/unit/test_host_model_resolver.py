@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path  # noqa: F401 — used in Tasks 6+
+from pathlib import Path
 
 from muscle.host_model_resolver import (
     HostModelResolver,
     canonical_for_host_label,
     default_explicit_host_label,
-    default_session_host_label,  # noqa: F401 — used in Task 6
+    default_session_host_label,
     default_settings_host_label,
 )
 
@@ -81,3 +81,47 @@ def test_settings_falls_back_to_home(monkeypatch, tmp_path):
 def test_settings_absent_returns_none(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
     assert default_settings_host_label(tmp_path / "no-proj") is None
+
+
+# ---------------------------------------------------------------------------
+# Task 6: imported-session evidence signal
+# ---------------------------------------------------------------------------
+
+
+class _FakeMemory:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+
+    def list_external_benchmark_turns(
+        self,
+        project_path: object,
+        provider: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
+        rows = self._rows
+        if provider:
+            rows = [r for r in rows if r.get("provider") == provider]
+        return rows[:limit]
+
+
+def test_session_evidence_takes_most_recent_model():
+    # Rows are ASC by id; the most recent host turn is last.
+    rows: list[dict[str, object]] = [
+        {"id": 1, "provider": "claude", "model": "claude-fable-5"},
+        {"id": 2, "provider": "claude", "model": "claude-opus-4-8"},
+    ]
+    label = default_session_host_label(Path("/proj"), memory=_FakeMemory(rows))
+    assert label == "claude-opus-4-8"
+
+
+def test_session_evidence_ignores_non_host_providers():
+    rows: list[dict[str, object]] = [{"id": 3, "provider": "minimax", "model": "MiniMax-M3"}]
+    assert default_session_host_label(Path("/proj"), memory=_FakeMemory(rows)) is None
+
+
+def test_session_evidence_empty_returns_none():
+    assert default_session_host_label(Path("/proj"), memory=_FakeMemory([])) is None
+
+
+def test_session_evidence_none_project_returns_none():
+    assert default_session_host_label(None) is None

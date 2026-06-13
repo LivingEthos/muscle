@@ -83,7 +83,33 @@ def default_session_host_label(
     *,
     memory: Any | None = None,
 ) -> str | None:
-    """Placeholder until Task 6 wires imported-session evidence."""
+    """Most-recent host model from imported Claude/Codex sessions, or None.
+
+    ``memory`` is injectable for testing; in production it is a ``ProjectMemory``
+    bound to ``project_path``. Turn rows arrive id-ASC, so the most recent host
+    turn with a non-empty model is the last match.
+    """
+    if project_path is None:
+        return None
+    if memory is None:
+        try:
+            from .project_memory import ProjectMemory
+
+            memory = ProjectMemory(str(project_path))
+        except Exception:
+            logger.debug("host_model_resolver: ProjectMemory unavailable", exc_info=True)
+            return None
+    try:
+        turns = memory.list_external_benchmark_turns(str(project_path), limit=200)
+    except Exception:
+        logger.debug("host_model_resolver: could not list session turns", exc_info=True)
+        return None
+    for row in reversed(list(turns)):
+        if row.get("provider") not in _HOST_SESSION_PROVIDERS:
+            continue
+        model = row.get("model")
+        if isinstance(model, str) and model.strip():
+            return model.strip()
     return None
 
 
