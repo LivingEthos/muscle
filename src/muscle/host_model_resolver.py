@@ -45,6 +45,8 @@ def canonical_for_host_label(label: str | None) -> str | None:
     if not label:
         return None
     normalized = label.strip().lower()
+    # Deliberately strict: only a trailing "[1m]" suffix is stripped, not any
+    # other bracket annotation, so future additions don't broaden this silently.
     if normalized.endswith("[1m]"):
         normalized = normalized[: -len("[1m]")].strip()
     direct = canonical_for_label(normalized)
@@ -81,7 +83,7 @@ def default_explicit_host_label(project_path: Path | None) -> str | None:
 def default_session_host_label(
     project_path: Path | None,
     *,
-    memory: Any | None = None,
+    memory: Any = None,
 ) -> str | None:
     """Most-recent host model from imported Claude/Codex sessions, or None.
 

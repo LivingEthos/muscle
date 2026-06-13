@@ -83,6 +83,21 @@ def test_settings_absent_returns_none(monkeypatch, tmp_path):
     assert default_settings_host_label(tmp_path / "no-proj") is None
 
 
+def test_explicit_config_malformed_json(monkeypatch, tmp_path):
+    monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+    muscle_dir = tmp_path / ".muscle"
+    muscle_dir.mkdir()
+    (muscle_dir / "config.yaml").write_text("{not valid json")
+    assert default_explicit_host_label(tmp_path) is None  # must not raise
+
+
+def test_settings_malformed_json(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text("not-json")
+    assert default_settings_host_label(tmp_path) is None  # must not raise
+
+
 # ---------------------------------------------------------------------------
 # Task 6: imported-session evidence signal
 # ---------------------------------------------------------------------------
@@ -98,6 +113,9 @@ class _FakeMemory:
         provider: str | None = None,
         limit: int = 200,
     ) -> list[dict[str, object]]:
+        # NOTE: production default_session_host_label does NOT pass provider= to
+        # this method; provider filtering is done client-side in the resolver.
+        # The provider= parameter here is signature-compatibility only.
         rows = self._rows
         if provider:
             rows = [r for r in rows if r.get("provider") == provider]
