@@ -87,9 +87,29 @@ def default_session_host_label(
     return None
 
 
+def _read_settings_model(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("host_model_resolver: could not read %s", path, exc_info=True)
+        return None
+    value = data.get("model") if isinstance(data, dict) else None
+    return value if isinstance(value, str) and value.strip() else None
+
+
 def default_settings_host_label(project_path: Path | None) -> str | None:
-    """Placeholder until Task 5 wires settings.json."""
-    return None
+    """Project ``.claude/settings.json`` model, else ``~/.claude/settings.json``.
+
+    This is the *configured* default and may lag a mid-session ``/model`` switch;
+    it sits below explicit override and session evidence in precedence.
+    """
+    if project_path is not None:
+        project_model = _read_settings_model(Path(project_path) / ".claude" / "settings.json")
+        if project_model:
+            return project_model
+    return _read_settings_model(Path.home() / ".claude" / "settings.json")
 
 
 class HostModelResolver:
