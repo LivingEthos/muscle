@@ -1103,7 +1103,7 @@ class ActiveProfiles:
     host: ModelProfile
     agent: ModelProfile
     host_identity: ModelIdentity
-    agent_identity: ModelIdentity | None
+    agent_identity: ModelIdentity  # _agent_identity always returns an identity (agent_unresolved on failure), never None
 
 
 def _agent_identity(project_path: Path | None) -> ModelIdentity:
