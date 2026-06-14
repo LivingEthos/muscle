@@ -246,6 +246,9 @@ Provide the JSON handoff plan."""
                 verification_steps=self._get_string_list(data, "verification_steps", []),
                 effort_estimate=self._get_string(data, "effort_estimate", "Medium"),
                 related_files=self._get_string_list(data, "related_files", related_files),
+                fix_approach=self._get_string(data, "fix_approach", ""),
+                risks=self._get_string_list(data, "risks", []),
+                context_needed=self._get_string(data, "context_needed", ""),
             )
         except json.JSONDecodeError:
             logger.error("Failed to parse handoff response")
@@ -263,7 +266,7 @@ Provide the JSON handoff plan."""
                 related_files=related_files,
             )
 
-        markdown = self._generate_markdown(session_id, target_path, [handoff_issue])
+        markdown = self._generate_markdown(session_id, target_path, [handoff_issue], review_mode)
 
         return HandoffPlan(
             session_id=session_id,
@@ -345,6 +348,9 @@ CONTEXT: {context}
                             ),
                             effort_estimate=self._get_string(data, "effort_estimate", "Medium"),
                             related_files=self._get_string_list(data, "related_files", related),
+                            fix_approach=self._get_string(data, "fix_approach", ""),
+                            risks=self._get_string_list(data, "risks", []),
+                            context_needed=self._get_string(data, "context_needed", ""),
                         )
                     )
                 except json.JSONDecodeError:
@@ -362,7 +368,7 @@ CONTEXT: {context}
                         )
                     )
 
-        markdown = self._generate_markdown(session_id, target_path, handoff_issues)
+        markdown = self._generate_markdown(session_id, target_path, handoff_issues, review_mode)
 
         return HandoffPlan(
             session_id=session_id,
@@ -377,13 +383,26 @@ CONTEXT: {context}
         session_id: str,
         target_path: str,
         issues: list[HandoffIssue],
+        review_mode: str | None = None,
     ) -> str:
+        abs_target = str(Path(target_path).resolve())
+        scope_line = f"- **Scope:** `{abs_target}`"
+        if review_mode:
+            scope_line += f" (review mode: {review_mode})"
         lines = [
             "# Code Review Handoff Plan",
             "",
             f"**Session:** {session_id}",
             f"**Target:** {target_path}",
             f"**Generated:** {datetime.now(timezone.utc).isoformat()}",
+            "",
+            "## Delegation Spec",
+            "",
+            scope_line,
+            f"- **Delegate to MUSCLE:** `muscle review --target {abs_target}`",
+            "- **Acceptance:** every issue below is resolved and its verification steps "
+            "pass; no new HIGH/CRITICAL findings remain in the scope above.",
+            f"- **Resume session:** reference session id `{session_id}` for follow-up.",
             "",
             "---",
             "",
@@ -404,6 +423,14 @@ CONTEXT: {context}
                     "",
                     _sanitize_markdown_text(hi.root_cause),
                     "",
+                ]
+            )
+
+            if hi.fix_approach:
+                lines.extend(["### Fix Approach", "", _sanitize_markdown_text(hi.fix_approach), ""])
+
+            lines.extend(
+                [
                     "### Code Context",
                     "",
                     "```",
@@ -463,6 +490,18 @@ CONTEXT: {context}
                         ", ".join(f"`{f}`" for f in hi.related_files),
                         "",
                     ]
+                )
+
+            if hi.risks:
+                lines.extend(
+                    ["### Risks", ""]
+                    + [f"- {_sanitize_markdown_text(r, max_len=500)}" for r in hi.risks]
+                    + [""]
+                )
+
+            if hi.context_needed:
+                lines.extend(
+                    ["### Context Needed", "", _sanitize_markdown_text(hi.context_needed), ""]
                 )
 
             lines.extend(["---", ""])

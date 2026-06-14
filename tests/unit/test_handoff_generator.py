@@ -359,6 +359,89 @@ class TestRelatedFiles:
         assert isinstance(related, list)
 
 
+class TestDelegationSpec:
+    """Test delegation spec section in handoff markdown."""
+
+    def test_handoff_includes_delegation_spec(self, sample_issue, tmp_path):
+        """Test that handoff markdown includes a Delegation Spec section."""
+        mock_client = MockM27Client()
+        generator = HandoffGenerator(mock_client)
+
+        plan = generator.generate_handoff(
+            issue=sample_issue,
+            all_issues=[sample_issue],
+            session_id="sess-deleg",
+            target_path=str(tmp_path),
+            review_mode="auto-fix",
+        )
+
+        md = plan.markdown
+        assert "## Delegation Spec" in md
+        assert str(tmp_path.resolve()) in md
+        assert "muscle review" in md
+        assert "Acceptance" in md
+        assert "auto-fix" in md
+        assert "sess-deleg" in md
+
+    def test_handoff_recovered_fields(self, sample_issue, tmp_path):
+        """Test that fix_approach, risks, and context_needed are recovered from M3 response."""
+
+        class RichMockClient:
+            def chat(self, messages, system=None, **kwargs):
+                import json
+
+                response = {
+                    "root_cause": "Root cause explanation",
+                    "fix_approach": "Use parameterized queries with ? placeholders",
+                    "verification_steps": ["Run tests", "Check output"],
+                    "effort_estimate": "Low",
+                    "related_files": ["src/database.py"],
+                    "risks": ["May break existing queries", "Requires migration"],
+                    "context_needed": "This is a legacy module requiring careful changes",
+                }
+                return json.dumps(response), MagicMock(total=100)
+
+        generator = HandoffGenerator(RichMockClient())
+
+        plan = generator.generate_handoff(
+            issue=sample_issue,
+            all_issues=[sample_issue],
+            session_id="sess-rich",
+            target_path=str(tmp_path),
+            review_mode="auto-fix",
+        )
+
+        hi = plan.issues[0]
+        assert hi.fix_approach
+        assert hi.risks
+        assert hi.context_needed
+        assert "### Fix Approach" in plan.markdown
+        assert "### Risks" in plan.markdown
+        assert "### Context Needed" in plan.markdown
+
+    def test_handoffs_includes_delegation_spec_and_recovered_fields(
+        self, multiple_issues, tmp_path
+    ):
+        """The multi-issue path (generate_handoffs) also emits the spec + recovered fields."""
+        generator = HandoffGenerator(MockM27Client())
+
+        plan = generator.generate_handoffs(
+            issues=multiple_issues,
+            session_id="sess-multi",
+            target_path=str(tmp_path),
+            review_mode="auto_fix",
+        )
+
+        assert plan.issues  # at least one HIGH/SECURITY issue was included
+        md = plan.markdown
+        assert "## Delegation Spec" in md
+        assert str(tmp_path.resolve()) in md
+        assert "muscle review" in md
+        assert "auto_fix" in md
+        assert "### Fix Approach" in md  # recovered field rendered on the multi-issue path
+        assert "### Risks" in md
+
+
 class TestCodeContext:
     """Test code context retrieval."""
 

@@ -95,6 +95,9 @@ class HandoffIssue:
     verification_steps: list[str]
     effort_estimate: str
     related_files: list[str]
+    fix_approach: str = ""
+    risks: list[str] = field(default_factory=list)
+    context_needed: str = ""
 
 
 @dataclass
