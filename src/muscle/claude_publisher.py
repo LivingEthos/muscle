@@ -37,10 +37,11 @@ from typing import Any
 
 from .backup_manager import BackupManager
 from .code_review.host_memory_templates import (
-    PINNED_TEMPLATE,
     SECTION_DELEGATION,
     SECTION_EFFORT,
     SECTION_METHODOLOGY,
+    render_pinned_block,
+    resolve_host_fragment_keys,
 )
 from .io_safety import advisory_file_lock, atomic_write_text
 from .optimization.prompt_compactor import compact_prompt_text
@@ -666,14 +667,16 @@ Return ONLY the JSON array, nothing else."""
         """Build the compact published content section.
 
         Pinned sections (Methodology, Delegation Protocol, Effort & Tool
-        Guidance) are always rendered first, byte-identical across runs,
-        regardless of dynamic-section content. Dynamic sections follow.
+        Guidance) are always rendered first, regardless of dynamic-section
+        content. For a fixed host model they are byte-identical across runs;
+        the resolved host profile selects which model-specific fragments are
+        appended after the model-agnostic base. Dynamic sections follow.
         """
         lines: list[str] = []
 
-        # Pinned block — always first, always verbatim. Sourced from
-        # host_memory_templates.PINNED_TEMPLATE. Do not edit here.
-        lines.append(PINNED_TEMPLATE.rstrip())
+        # Pinned block — model-agnostic base + host-model fragments (Plan 3),
+        # selected by the resolved host profile's doc_fragment_keys.
+        lines.append(render_pinned_block(resolve_host_fragment_keys(self.project_path)).rstrip())
         lines.append("")
 
         # Critical Rules (high score rules first)

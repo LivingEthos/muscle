@@ -9,11 +9,15 @@ unmodified (see claude_publisher._m27_summarize_entries).
 
 from __future__ import annotations
 
+import logging
 import warnings
 from collections.abc import Mapping
+from pathlib import Path
 from types import MappingProxyType
 
 from ..model_profiles import VALID_DOC_FRAGMENT_KEYS
+
+logger = logging.getLogger(__name__)
 
 # Section headings that count as "pinned" inside MUSCLE_PUBLISHED markers.
 # Kept in sync with the headings below and with PINNED_SECTIONS in
@@ -128,3 +132,22 @@ def render_pinned_block(fragment_keys: tuple[str, ...] = ()) -> str:
             continue
         parts.append(fragment)
     return "\n".join(parts) + "\n"
+
+
+def resolve_host_fragment_keys(project_path: Path | str | None) -> tuple[str, ...]:
+    """Resolve the active host profile's doc-fragment keys, defensively.
+
+    Returns ``()`` (base-only) on any resolution failure so publishing never
+    breaks on profile-resolution edge cases.
+    """
+    try:
+        from ..model_profiles import resolve_active_profiles
+
+        resolved = Path(project_path) if project_path is not None else None
+        # ActiveProfiles.host is the host ModelProfile; ModelProfile.host is its
+        # HostBehavior, which carries doc_fragment_keys.
+        host_profile = resolve_active_profiles(resolved).host
+        return tuple(host_profile.host.doc_fragment_keys)
+    except Exception:
+        logger.debug("resolve_host_fragment_keys failed; using base only", exc_info=True)
+        return ()

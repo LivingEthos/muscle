@@ -11,6 +11,7 @@ from muscle.code_review.host_memory_templates import (
     SECTION_EFFORT,
     SECTION_METHODOLOGY,
     render_pinned_block,
+    resolve_host_fragment_keys,
 )
 from muscle.model_profiles import VALID_DOC_FRAGMENT_KEYS
 
@@ -94,3 +95,16 @@ def test_fragment_library_keys_match_the_contract():
     for key, text in HOST_DOC_FRAGMENTS.items():
         assert text.strip(), f"Fragment {key!r} has empty text"
         assert text.startswith("- "), f"Fragment {key!r} does not start with a list bullet"
+
+
+def test_resolve_host_fragment_keys_opus(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUSCLE_HOST_MODEL", "opus")
+    keys = resolve_host_fragment_keys(tmp_path)
+    assert "literalism_narration" in keys
+    assert "untrusted_content_and_thinking" in keys
+
+
+def test_resolve_host_fragment_keys_unknown_is_empty(monkeypatch, tmp_path):
+    monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))  # isolate real settings.json
+    assert resolve_host_fragment_keys(tmp_path) == ()
