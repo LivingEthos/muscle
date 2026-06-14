@@ -36,6 +36,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from .m27_client import CachePlan, M27Client, TokenUsage
+from .model_identity import canonical_for_label
+from .model_profiles import profile_for
 from .providers import ProviderBillingError, ProviderError
 
 if TYPE_CHECKING:
@@ -45,10 +47,10 @@ logger = logging.getLogger("muscle.claude_cli_client")
 
 DEFAULT_CLI_MODEL = "claude-opus-4-8"
 
-# MUSCLE thinking-policy mode -> claude CLI --effort level. This path is
-# thinking-MODE-based, NOT stage-based: unlike the anthropic-api Opus path
-# (which now derives per-stage effort from the Opus ModelProfile), the
-# claude-subscription transport does not consume the `stage` arg.
+# MUSCLE thinking-policy mode -> claude CLI --effort level. Used as the
+# fallback when the agent model's profile has no per-stage effort map (e.g.
+# non-Opus models) or when chat() is called without a stage. For Opus, the
+# stage-first path in chat() takes precedence (see _agent_behavior lookup).
 _EFFORT_FOR_THINKING: dict[str | None, str] = {
     "adaptive": "high",
     "enabled": "high",
@@ -118,6 +120,11 @@ class ClaudeCliClient(M27Client):
         # Override the parent's HTTP-oriented clamp (<=300s): headless CLI
         # turns legitimately run longer.
         self.timeout = max(30, timeout)
+        # Per-stage effort comes from the agent model's ModelProfile when it
+        # populates stage_effort (e.g. Opus); otherwise we fall back to the
+        # thinking-mode-derived effort below. Resolved from self.model (this
+        # transport has no project_path).
+        self._agent_behavior = profile_for(canonical_for_label(self.model)).agent
 
     def chat(
         self,
@@ -135,21 +142,31 @@ class ClaudeCliClient(M27Client):
         tools: list[dict[str, Any]] | None = None,
         functions: list[dict[str, Any]] | None = None,
     ) -> tuple[str, TokenUsage]:
-        # max_tokens/temperature/stream/thinking/stage/response_format/cache_plan/tools/functions
+        # max_tokens/temperature/stream/response_format/cache_plan/tools/functions
         # are accepted for interface parity with the base chat() but
         # intentionally unused: Claude Code manages its own sampling, output
         # limits, tools, and caching.
+        # thinking and stage ARE used: thinking feeds the mode-based effort
+        # fallback; stage drives per-stage effort when the agent profile
+        # populates stage_effort (e.g. Opus -> xhigh on semantic_review).
         if not self._validate_messages(messages):
             return "", TokenUsage()
 
         prompt = self._render_prompt(messages)
         mode = str(thinking).strip().lower() if thinking is not None else None
-        # NOTE: effort here comes from the thinking MODE, not the review stage, so the
-        # same call site yields different effort on this transport vs anthropic-api
-        # (e.g. semantic_review -> "high" here vs "xhigh" via the Opus profile).
-        # Wiring per-stage effort into the CLI transports is a future task; Plan 2 scope
-        # is the anthropic-api provider only.
-        effort = _EFFORT_FOR_THINKING.get(mode, "medium")
+        # Effort precedence: when the agent model's profile populates per-stage
+        # effort (e.g. the Opus profile) and a review stage is given, use it so
+        # this transport matches the anthropic-api Opus path (semantic_review ->
+        # xhigh, etc.). Otherwise fall back to the thinking-mode-derived effort.
+        behavior = self._agent_behavior
+        # Discriminator is a populated stage_effort (not keep_thinking_on_all_stages
+        # as in anthropic_client): CLI effort is independent of the thinking toggle.
+        # For all current profiles the two coincide; a future "always-think,
+        # flat-effort" profile would take the mode-based fallback here.
+        if stage is not None and behavior.stage_effort:
+            effort = behavior.stage_effort.get(stage, behavior.default_effort)
+        else:
+            effort = _EFFORT_FOR_THINKING.get(mode, "medium")
 
         cmd = [
             self._binary,

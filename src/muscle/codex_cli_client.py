@@ -138,7 +138,9 @@ class CodexCliClient(M27Client):
     ) -> tuple[str, TokenUsage]:
         # max_tokens/temperature/stream/thinking/stage/cache_plan/tools/functions are
         # accepted for interface parity; Codex manages its own generation
-        # controls here.
+        # controls here. Note: `codex exec` exposes no --effort flag and runs
+        # gpt-5.5 (not Opus), so stage/thinking cannot influence effort on this
+        # transport — no per-stage effort logic is applied.
         if not self._validate_messages(messages):
             return "", TokenUsage()
 

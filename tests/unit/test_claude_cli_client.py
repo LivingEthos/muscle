@@ -62,6 +62,20 @@ def _has_eq_token(cmd: list[str], flag: str, value: str) -> bool:
     return f"{flag}={value}" in cmd
 
 
+def _captured_cmd(client: ClaudeCliClient, **chat_kwargs) -> list[str]:
+    """Invoke client.chat() with one trivial user message and return the spawned cmd list.
+
+    Patches subprocess.run so no binary is executed; any chat() kwargs (e.g.
+    stage=, thinking=) are forwarded verbatim.
+    """
+    with patch(
+        "muscle.claude_cli_client.subprocess.run",
+        return_value=_proc(_result_stdout()),
+    ) as mock_run:
+        client.chat([{"role": "user", "content": "hi"}], **chat_kwargs)
+    return mock_run.call_args.args[0]
+
+
 class _TrivialSchema(BaseModel):
     ok: bool
 
@@ -88,6 +102,9 @@ class TestCommandConstruction:
         assert "-p" in cmd
         assert _has_pair(cmd, "--output-format", "json")
         assert _has_pair(cmd, "--model", "claude-opus-4-8")
+        # No stage and no thinking → mode-based fallback, _EFFORT_FOR_THINKING[None]
+        # = "medium" (NOT the Opus default_effort "high"; stage-based effort applies
+        # only when a review stage is passed — see TestPerStageEffort).
         assert _has_pair(cmd, "--effort", "medium")
         assert _has_pair(cmd, "--tools", "")
         assert "--no-session-persistence" in cmd
@@ -318,3 +335,38 @@ class TestMessageValidationParity:
         client = _make_client()
         with pytest.raises(ValueError):
             client.chat([{"content": "hi"}])
+
+
+class TestPerStageEffort:
+    """Per-stage effort parity with the anthropic-api Opus path.
+
+    When the agent model's profile populates stage_effort (Opus), the CLI
+    transport must derive --effort from the stage, not the thinking mode.
+    Non-Opus / unknown models fall back to the mode-based effort.
+    """
+
+    def test_stage_semantic_review_maps_to_xhigh_for_opus_model(self) -> None:
+        client = _make_client()  # default model = claude-opus-4-8
+        cmd = _captured_cmd(client, stage="semantic_review")
+        assert _has_pair(cmd, "--effort", "xhigh")
+
+    def test_stage_formatting_maps_to_low_for_opus_model(self) -> None:
+        client = _make_client()
+        cmd = _captured_cmd(client, stage="handoff_generation")
+        assert _has_pair(cmd, "--effort", "low")
+
+    def test_unknown_stage_uses_opus_default_high(self) -> None:
+        client = _make_client()
+        cmd = _captured_cmd(client, stage="not_a_real_stage")
+        assert _has_pair(cmd, "--effort", "high")
+
+    def test_no_stage_falls_back_to_thinking_mode_effort(self) -> None:
+        # stage=None -> mode-based behavior preserved (no-op vs today).
+        client = _make_client()
+        cmd = _captured_cmd(client, thinking="disabled")  # no stage
+        assert _has_pair(cmd, "--effort", "medium")
+
+    def test_non_opus_model_falls_back_to_thinking_mode_effort(self) -> None:
+        client = _make_client(model="some-other-model")
+        cmd = _captured_cmd(client, stage="semantic_review", thinking="adaptive")
+        assert _has_pair(cmd, "--effort", "high")  # mode-based, not stage-based
