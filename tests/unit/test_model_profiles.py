@@ -14,6 +14,7 @@ from muscle.model_profiles import (
     profile_for,
     resolve_active_profiles,
     resolve_agent_security_posture,
+    resolve_host_learning_posture,
     resolve_host_synthesis_floor,
     validate_profile,
 )
@@ -213,3 +214,18 @@ def test_resolve_host_synthesis_floor_unknown_is_medium(monkeypatch, tmp_path):
     monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
     assert resolve_host_synthesis_floor(tmp_path) == HostEffortLevel.MEDIUM
+
+
+def test_resolve_host_learning_posture_opus(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUSCLE_HOST_MODEL", "opus")
+    posture = resolve_host_learning_posture(tmp_path)
+    assert posture.point_of_action_reinforcement is True
+    assert posture.repeated_violation_escalation is True
+
+
+def test_resolve_host_learning_posture_unknown_is_off(monkeypatch, tmp_path):
+    monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    posture = resolve_host_learning_posture(tmp_path)
+    assert posture.point_of_action_reinforcement is False
+    assert posture.repeated_violation_escalation is False

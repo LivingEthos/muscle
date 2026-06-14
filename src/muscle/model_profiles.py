@@ -344,6 +344,21 @@ def resolve_agent_security_posture(project_path: Path | str | None) -> SecurityP
         return PROFILES[DEFAULT_PROFILE_KEY].security
 
 
+def resolve_host_learning_posture(project_path: Path | str | None) -> LearningPosture:
+    """Resolve the active HOST profile's LearningPosture, defensively.
+
+    Returns the conservative default posture (both flags ``False``) on any
+    resolution failure, so publishing/verification never break on profile edge
+    cases. Mirrors resolve_host_synthesis_floor / resolve_agent_security_posture.
+    """
+    try:
+        resolved = Path(project_path) if project_path is not None else None
+        return resolve_active_profiles(resolved).host.learning
+    except Exception:
+        logger.debug("resolve_host_learning_posture failed; using default posture", exc_info=True)
+        return PROFILES[DEFAULT_PROFILE_KEY].learning
+
+
 def resolve_active_profiles(project_path: Path | None = None) -> ActiveProfiles:
     """Resolve host + agent profiles for the current context.
 
