@@ -164,7 +164,10 @@ class TestReviewBenchmarkRunner:
         second = runner._get_client()
 
         assert first is not second
-        assert [item[1]["project_path"] for item in created] == [runner.project_path, runner.project_path]
+        assert [item[1]["project_path"] for item in created] == [
+            runner.project_path,
+            runner.project_path,
+        ]
 
     def test_zero_scenario_manifest_fails_hard(self, tmp_path: Path):
         fixture_root = tmp_path / "fixtures"
@@ -1054,3 +1057,55 @@ class TestBenchmarkSecurity:
 
         with pytest.raises(ValueError, match="symlink"):
             runner._assert_no_symlinks(proj)
+
+
+def test_oracle_forbid_tokens_reject_match(tmp_path):
+    runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
+    expected = benchmark_module.BenchmarkExpectedFinding(
+        file_path="sample.py",
+        minimum_severity="high",
+        matchers=["sql injection"],
+        forbid_tokens=["false positive"],
+    )
+    target = str(tmp_path / "sample.py")
+    matching = _issue(target, Severity.HIGH, "SQL injection vulnerability", "Unsanitized query.")
+    forbidden = _issue(
+        target, Severity.HIGH, "SQL injection vulnerability", "This is a false positive note."
+    )
+    assert runner._issue_matches_expected(matching, expected, target) is True
+    assert runner._issue_matches_expected(forbidden, expected, target) is False
+
+
+def test_oracle_forbid_tokens_default_empty_is_no_op(tmp_path):
+    runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
+    expected = benchmark_module.BenchmarkExpectedFinding(
+        file_path="sample.py", minimum_severity="high", matchers=["sql injection"]
+    )
+    target = str(tmp_path / "sample.py")
+    issue = _issue(target, Severity.HIGH, "SQL injection vulnerability", "Unsanitized query.")
+    assert expected.forbid_tokens == ()
+    assert runner._issue_matches_expected(issue, expected, target) is True
+
+
+def test_oracle_grader_aware_requires_word_boundary(tmp_path):
+    runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
+    runner._grader_aware = True  # exercise the strict branch directly
+    expected = benchmark_module.BenchmarkExpectedFinding(
+        file_path="sample.py", minimum_severity="high", matchers=["query"]
+    )
+    target = str(tmp_path / "sample.py")
+    whole_word = _issue(target, Severity.HIGH, "Unsafe query", "Raw query string.")
+    substring_only = _issue(target, Severity.HIGH, "queryString builder", "Builds queryString.")
+    assert runner._issue_matches_expected(whole_word, expected, target) is True
+    assert runner._issue_matches_expected(substring_only, expected, target) is False
+
+
+def test_oracle_non_strict_keeps_substring(tmp_path):
+    runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
+    assert runner._grader_aware is False  # default agent (unknown/M3) is not grader_aware
+    expected = benchmark_module.BenchmarkExpectedFinding(
+        file_path="sample.py", minimum_severity="high", matchers=["query"]
+    )
+    target = str(tmp_path / "sample.py")
+    substring_only = _issue(target, Severity.HIGH, "queryString builder", "Builds queryString.")
+    assert runner._issue_matches_expected(substring_only, expected, target) is True

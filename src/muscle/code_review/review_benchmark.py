@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import tempfile
 from collections.abc import Callable
@@ -83,6 +84,7 @@ class BenchmarkExpectedFinding:
     file_path: str
     minimum_severity: str
     matchers: list[str]
+    forbid_tokens: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -127,6 +129,20 @@ class ReviewBenchmarkRunner:
         self.m27_client = m27_client
         self.client_factory = client_factory or create_client
         self.fixture_manifest_version = FIXTURE_MANIFEST_VERSION
+        # Oracle strictness for grader-speculating agent models (eval-only). The
+        # model under test in a benchmark is the AGENT, so key on the agent
+        # profile. Defensive: any resolution failure -> False (substring matching),
+        # so constructing a runner never depends on profile resolution succeeding.
+        self._grader_aware = self._resolve_grader_aware()
+
+    def _resolve_grader_aware(self) -> bool:
+        try:
+            from ..model_profiles import resolve_active_profiles
+
+            return bool(resolve_active_profiles(self.project_path).agent.evaluation.grader_aware)
+        except Exception:
+            logger.debug("benchmark grader_aware resolution failed; using False", exc_info=True)
+            return False
 
     def run_benchmark(
         self,
@@ -353,6 +369,7 @@ class ReviewBenchmarkRunner:
                     file_path=finding["file_path"],
                     minimum_severity=finding["minimum_severity"],
                     matchers=list(finding.get("matchers", [])),
+                    forbid_tokens=tuple(finding.get("forbid_tokens", [])),
                 )
                 for finding in item.get("expected_findings", [])
             ]
@@ -718,7 +735,24 @@ class ReviewBenchmarkRunner:
         if issue.severity.value < SEVERITY_VALUES[expected.minimum_severity]:
             return False
         haystack = f"{issue.title} {issue.description}".lower()
-        return any(matcher.lower() in haystack for matcher in expected.matchers)
+
+        def _present(token: str) -> bool:
+            token = token.lower()
+            if self._grader_aware:
+                # Whole-word match: a grader-speculating model can't earn credit
+                # from an incidental substring (e.g. "query" inside "queryString").
+                # \b anchors the outer edges; space-separated phrase tokens ("sql
+                # injection", "api key") match correctly since the interior space is
+                # a non-word char. (A token with an interior word char like "_" would
+                # only anchor at its ends — fine for today's plain-phrase matchers.)
+                return re.search(rf"\b{re.escape(token)}\b", haystack) is not None
+            return token in haystack
+
+        if not any(_present(matcher) for matcher in expected.matchers):
+            return False
+        if any(_present(token) for token in expected.forbid_tokens):
+            return False
+        return True
 
     @staticmethod
     def _scenario_answer_terms(scenario: BenchmarkScenario) -> list[str]:
