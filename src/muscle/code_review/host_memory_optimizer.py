@@ -26,6 +26,7 @@ from ..project_memory import ProjectMemory
 from .host_memory_templates import (
     PINNED_SECTION_ORDER,
     render_pinned_block,
+    resolve_host_fragment_keys,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,11 @@ class HostMemoryOptimizer:
 
     def __init__(self, project_path: str | Path) -> None:
         self.project_path = Path(project_path)
+        # Host-model doc fragments selected by the resolved host profile, so this
+        # writer stays consistent with ClaudePublisher (both append the same
+        # fragments inside the pinned region). Resolved once: deterministic for a
+        # fixed host, and reused at all three render sites.
+        self._fragment_keys = resolve_host_fragment_keys(self.project_path)
         self._pm = ProjectMemory(str(self.project_path))
         self._backup = BackupManager(self._pm, str(self.project_path))
         # Reconcile any revision left 'pending' by a crash between the file swap
@@ -158,7 +164,7 @@ class HostMemoryOptimizer:
 
     def _render_new_file(self) -> str:
         """Content for a freshly-created target."""
-        return f"# Host Memory\n\n{PUBLISHED_START}\n{render_pinned_block()}{PUBLISHED_END}\n"
+        return f"# Host Memory\n\n{PUBLISHED_START}\n{render_pinned_block(self._fragment_keys)}{PUBLISHED_END}\n"
 
     def _rewrite_region(self, original: str) -> str:
         """Rewrite only the region inside PUBLISHED_START/END.
@@ -172,7 +178,7 @@ class HostMemoryOptimizer:
         if start_idx == -1 or end_idx == -1 or end_idx < start_idx:
             # No markers: append a new managed region at end of file.
             sep = "" if original.endswith("\n") else "\n"
-            return f"{original}{sep}\n{PUBLISHED_START}\n{render_pinned_block()}{PUBLISHED_END}\n"
+            return f"{original}{sep}\n{PUBLISHED_START}\n{render_pinned_block(self._fragment_keys)}{PUBLISHED_END}\n"
 
         # Markers present: extract dynamic body (anything after the pinned
         # sections, if pinned is already there) and reassemble.
@@ -184,7 +190,7 @@ class HostMemoryOptimizer:
 
         dynamic_tail = self._strip_pinned_from_body(body)
 
-        new_region = f"{PUBLISHED_START}\n{render_pinned_block()}{dynamic_tail}{PUBLISHED_END}"
+        new_region = f"{PUBLISHED_START}\n{render_pinned_block(self._fragment_keys)}{dynamic_tail}{PUBLISHED_END}"
         return f"{before}{new_region}{after}"
 
     def _strip_pinned_from_body(self, body: str) -> str:

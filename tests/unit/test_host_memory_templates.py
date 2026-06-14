@@ -97,6 +97,19 @@ def test_fragment_library_keys_match_the_contract():
         assert text.startswith("- "), f"Fragment {key!r} does not start with a list bullet"
 
 
+def test_no_fragment_contains_h3_heading():
+    # HostMemoryOptimizer._strip_pinned_from_body locates the dynamic tail by the
+    # first "### " heading not in PINNED_SECTION_ORDER. A fragment carrying its own
+    # "### " heading would be misread as a dynamic section and silently break the
+    # optimizer's idempotency, so fragments must stay heading-free (bullets only).
+    for key, text in HOST_DOC_FRAGMENTS.items():
+        for line in text.splitlines():
+            assert not line.startswith("### "), (
+                f"Fragment {key!r} contains a '### ' heading, which breaks "
+                "HostMemoryOptimizer idempotency"
+            )
+
+
 def test_resolve_host_fragment_keys_opus(monkeypatch, tmp_path):
     monkeypatch.setenv("MUSCLE_HOST_MODEL", "opus")
     keys = resolve_host_fragment_keys(tmp_path)
