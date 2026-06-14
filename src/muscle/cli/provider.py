@@ -91,6 +91,23 @@ def provider_show() -> None:
     console.print(f"[bold]Pricing source:[/bold] {profile.pricing_source}")
     console.print(f"[bold]Effort control:[/bold] {profile.effort_transport}")
     console.print(f"[bold]Credentials:[/bold] {_credential_status(profile.name)}")
+    # Cyber-safeguard friction (data-driven from the provider model's profile).
+    # When the model flags dual-use refusal friction (Opus 4.8), warn that using
+    # it as the EXECUTOR may hit refusals on security/exploit-adjacent tasks.
+    try:
+        from ..model_identity import canonical_for_label
+        from ..model_profiles import profile_for
+
+        canonical = canonical_for_label(profile.model)
+        if profile_for(canonical).security.cyber_safeguard_friction:
+            console.print(
+                "[yellow]Cyber-safeguard friction:[/yellow] this model as the executor "
+                "may refuse or heavily caveat dual-use/security tasks (exploit-adjacent "
+                "code, offensive tooling). Prefer it as the host/planner and MiniMax M3 "
+                "as the executor for those tasks."
+            )
+    except Exception:  # pragma: no cover - defensive; never break `provider show`
+        pass
 
 
 @provider.command("list")

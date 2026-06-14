@@ -291,3 +291,23 @@ def test_setup_interactive_selects_third_provider(
     assert result.exit_code == 0, result.output
     data = json.loads(config_path.read_text(encoding="utf-8"))
     assert data["provider"] == "claude-subscription"
+
+
+def test_show_reports_cyber_safeguard_friction_for_opus_provider() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            cli, ["provider", "show"], env={"MUSCLE_PROVIDER": "claude-subscription"}
+        )
+    assert result.exit_code == 0, result.output
+    # "cyber-safeguard" is the distinctive prefix of the note; anchor on it alone.
+    assert "cyber-safeguard" in result.output.lower()
+
+
+def test_show_omits_cyber_safeguard_note_for_minimax_provider() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["provider", "show"], env={"MUSCLE_PROVIDER": "minimax-plan"})
+    assert result.exit_code == 0, result.output
+    assert "cyber-safeguard" not in result.output.lower()
+    assert "friction" not in result.output.lower()
