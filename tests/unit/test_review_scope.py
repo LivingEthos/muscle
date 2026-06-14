@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.muscle.code_review.review_scope import ReviewScopeClassifier, ScopeInputs
-from tools.muscle.code_review.types import ReviewMode
+from muscle.code_review.review_scope import ReviewScopeClassifier, ScopeInputs
+from muscle.code_review.types import ReviewMode
 
 
 class TestReviewScopeClassifier:
@@ -150,3 +150,38 @@ class TestReviewScopeClassifier:
 
         assert scope.changed_files == [str(memory.resolve())]
         assert scope.doc_files == [str(memory.resolve())]
+
+    def test_single_file_target_resolved_once_at_boundary(self, tmp_path: Path):
+        # The target is canonicalized once in classify(); _discover_files must
+        # reuse it rather than re-resolving (which would reopen a TOCTOU window).
+        real = tmp_path / "real.py"
+        real.write_text("x = 1\n", encoding="utf-8")
+        link = tmp_path / "link.py"
+        link.symlink_to(real)
+
+        classifier = ReviewScopeClassifier()
+        scope = classifier.classify(
+            ScopeInputs(
+                target_path=str(link),
+                workflow_name="review-smart",
+                mode=ReviewMode.REVIEW,
+            )
+        )
+
+        # Result is the canonical (resolved) path, proving the single boundary
+        # resolve is honored end-to-end.
+        assert scope.source_files == [str(real.resolve())]
+
+    def test_discover_files_reuses_resolved_target_without_reresolving(self, tmp_path: Path):
+        real = tmp_path / "mod.py"
+        real.write_text("y = 2\n", encoding="utf-8")
+        resolved = real.resolve()
+
+        from unittest.mock import patch
+
+        classifier = ReviewScopeClassifier()
+        # Given the already-resolved target, _discover_files must NOT call
+        # Path.resolve() again (the re-resolve was the TOCTOU window).
+        with patch.object(Path, "resolve", side_effect=AssertionError("re-resolved")):
+            files = classifier._discover_files(resolved)
+        assert files == [resolved]

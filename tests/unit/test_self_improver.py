@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.muscle.self_improver import SelfImprover, SessionOutcome
+from muscle.self_improver import SelfImprover, SessionOutcome
 
 
 class TestSessionOutcome:

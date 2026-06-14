@@ -4,7 +4,7 @@ Unit tests for adapters/git_adapter.py
 
 from unittest.mock import Mock
 
-from tools.muscle.adapters.git_adapter import GitAdapter
+from muscle.adapters.git_adapter import GitAdapter
 
 
 class TestGitAdapter:

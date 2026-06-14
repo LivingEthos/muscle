@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from tools.muscle.review_cache import CachedReview, ReviewCache
+from muscle.review_cache import CachedReview, ReviewCache
 
 
 def test_compute_hash_is_stable():
@@ -41,7 +41,9 @@ def test_memory_cache_lru_ordering(tmp_path: Path) -> None:
     cache.set(Path("c.py"), "c", [{"msg": "c"}])
     assert len(cache._memory_cache) == 2
     # 'a' should still be in memory (MRU), 'b' evicted
-    assert "a.py:" in str(list(cache._memory_cache.keys())) or cache.get(Path("a.py"), "a") is not None
+    assert (
+        "a.py:" in str(list(cache._memory_cache.keys())) or cache.get(Path("a.py"), "a") is not None
+    )
     # 'b' should be on disk but not in memory
     assert cache.get(Path("b.py"), "b") is not None  # falls back to disk
 
@@ -95,9 +97,7 @@ def test_get_stats_reports_sizes(tmp_path: Path) -> None:
 def test_cached_review_is_expired():
     from datetime import UTC, datetime, timedelta
 
-    cr = CachedReview(
-        file_hash="h", file_path="p.py", suggestions=[], timestamp=datetime.now(UTC)
-    )
+    cr = CachedReview(file_hash="h", file_path="p.py", suggestions=[], timestamp=datetime.now(UTC))
     assert not cr.is_expired(ttl_seconds=3600)
     cr_old = CachedReview(
         file_hash="h",
@@ -106,3 +106,51 @@ def test_cached_review_is_expired():
         timestamp=datetime.now(UTC) - timedelta(seconds=7200),
     )
     assert cr_old.is_expired(ttl_seconds=3600)
+
+
+def test_set_writes_atomically_no_tempfiles_left(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "cache"
+    cache = ReviewCache(cache_dir=cache_dir)
+    cache.set(Path("src/foo.py"), "content", [{"msg": "issue"}], review_id="r1")
+    # The committed file exists and no temp turds remain from the atomic swap.
+    json_files = list(cache_dir.rglob("*.json"))
+    assert len(json_files) == 1
+    leftovers = [p for p in cache_dir.rglob("*") if p.is_file() and p.suffix == ".tmp"]
+    assert leftovers == []
+
+
+def test_set_writes_version_field(tmp_path: Path) -> None:
+    import json
+
+    cache_dir = tmp_path / "cache"
+    cache = ReviewCache(cache_dir=cache_dir)
+    cache.set(Path("src/foo.py"), "content", [{"msg": "issue"}])
+    cache_file = next(cache_dir.rglob("*.json"))
+    data = json.loads(cache_file.read_text())
+    assert data["version"] == 1
+
+
+def test_get_rejects_unknown_version_on_disk(tmp_path: Path) -> None:
+    import json
+
+    cache_dir = tmp_path / "cache"
+    cache = ReviewCache(cache_dir=cache_dir)
+    cache.set(Path("src/foo.py"), "content", [{"msg": "issue"}])
+    cache_file = next(cache_dir.rglob("*.json"))
+    data = json.loads(cache_file.read_text())
+    data["version"] = 999
+    cache_file.write_text(json.dumps(data))
+    # Clear memory tier so the disk record is consulted.
+    cache._memory_cache.clear()
+    assert cache.get(Path("src/foo.py"), "content") is None
+
+
+def test_get_survives_truncated_json_on_disk(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "cache"
+    cache = ReviewCache(cache_dir=cache_dir)
+    cache.set(Path("src/foo.py"), "content", [{"msg": "issue"}])
+    cache_file = next(cache_dir.rglob("*.json"))
+    # Simulate a concurrent reader seeing a half-written file.
+    cache_file.write_text('{"version": 1, "file_hash": "abc"')
+    cache._memory_cache.clear()
+    assert cache.get(Path("src/foo.py"), "content") is None

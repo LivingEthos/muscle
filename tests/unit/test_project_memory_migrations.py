@@ -17,14 +17,14 @@ from pathlib import Path
 
 import pytest
 
-from tools.muscle.migrations import CURRENT_SCHEMA_VERSION, MigrationRunner, _load_migrations
+from muscle.migrations import CURRENT_SCHEMA_VERSION, MigrationRunner, _load_migrations
 
 EXPECTED_VERSIONS = [version for version, _, _ in _load_migrations()]
 
 
 def _load_migration_module(filename: str):
     """Load a migration module by filename using importlib machinery."""
-    migrations_dir = Path(__file__).parent.parent.parent / "tools" / "muscle" / "migrations"
+    migrations_dir = Path(__file__).parent.parent.parent / "src" / "muscle" / "migrations"
     module_name = filename[:-3]  # Remove .py
     module_path = str(migrations_dir / filename)
     spec = importlib.util.spec_from_file_location(module_name, module_path)
@@ -181,7 +181,7 @@ class TestMigrationRunner:
         project_path,
     ):
         """ProjectMemory self-heals optimization tables for drifted existing databases."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         ProjectMemory(str(project_path))
         db_path = project_path / ".muscle" / "project_memory.db"
@@ -220,7 +220,7 @@ class TestMigrationRunner:
         project_path,
     ):
         """ProjectMemory self-heals llm_calls identity columns for drifted databases."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         ProjectMemory(str(project_path))
         db_path = project_path / ".muscle" / "project_memory.db"
@@ -294,7 +294,7 @@ class TestMigrationRunner:
         project_path,
     ):
         """Existing project rows survive upgrade from an older populated schema."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         db_path = project_path / ".muscle" / "project_memory.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -376,7 +376,7 @@ class TestMigrationRunner:
         project_path,
     ):
         """ProjectMemory self-heals missing cross-project tables for drifted databases."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         ProjectMemory(str(project_path))
         db_path = project_path / ".muscle" / "project_memory.db"
@@ -580,7 +580,7 @@ class TestMigrationRollback:
 
     def test_rollback_v2_removes_v2_indexes(self, conn):
         """Rolling back v2 removes the v2 indexes but keeps v1 tables."""
-        from tools.muscle.migrations._0002_add_indices import rollback as rollback_v2
+        from muscle.migrations._0002_add_indices import rollback as rollback_v2
 
         rollback_v2(conn)
 
@@ -597,7 +597,7 @@ class TestMigrationRollback:
 
     def test_rollback_v2_removes_version_record(self, conn):
         """Rolling back v2 removes the version record."""
-        from tools.muscle.migrations._0002_add_indices import rollback as rollback_v2
+        from muscle.migrations._0002_add_indices import rollback as rollback_v2
 
         rollback_v2(conn)
 
@@ -614,8 +614,8 @@ class TestMigrationRollback:
         migrate_v2(conn)
 
         # Rollback v2 then v1
-        from tools.muscle.migrations._0001_initial_schema import rollback as rollback_v1
-        from tools.muscle.migrations._0002_add_indices import rollback as rollback_v2
+        from muscle.migrations._0001_initial_schema import rollback as rollback_v1
+        from muscle.migrations._0002_add_indices import rollback as rollback_v2
 
         rollback_v2(conn)
         rollback_v1(conn)
@@ -705,7 +705,7 @@ class TestMigrationIntegration:
 
     def test_project_memory_uses_migration_framework(self, temp_project):
         """ProjectMemory initializes database via migration framework."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         pm = ProjectMemory(str(temp_project))
 
@@ -719,7 +719,7 @@ class TestMigrationIntegration:
 
     def test_project_memory_creates_all_tables(self, temp_project):
         """ProjectMemory creates all tables via migrations."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         ProjectMemory(str(temp_project))
 
@@ -753,7 +753,7 @@ class TestMigrationIntegration:
 
     def test_project_memory_insert_and_query(self, temp_project):
         """ProjectMemory can insert and query data after migration."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         pm = ProjectMemory(str(temp_project))
 
@@ -776,7 +776,7 @@ class TestMigrationIntegration:
 
     def test_project_memory_list_tasks(self, temp_project):
         """ProjectMemory can list tasks with filters."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         pm = ProjectMemory(str(temp_project))
 
@@ -803,7 +803,7 @@ class TestMigrationIntegration:
 
     def test_project_memory_insert_review_run_and_finding(self, temp_project):
         """ProjectMemory can insert review runs and findings."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         pm = ProjectMemory(str(temp_project))
 

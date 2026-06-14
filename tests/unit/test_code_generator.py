@@ -7,8 +7,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from tools.muscle.code_generator import CodeGenerator, GenerationResult
-from tools.muscle.m27_client import TokenUsage
+from muscle.code_generator import CodeGenerator, GenerationResult
+from muscle.m27_client import TokenUsage
 
 
 class TestGenerationResult:
@@ -216,7 +216,7 @@ class TestGenerateRetryLogic:
 
     def test_cost_optimizer_cache_hit(self, gen_with_retry, tmp_path):
         """Test generate uses cached result when available."""
-        from tools.muscle.cost_optimizer import CostOptimizer
+        from muscle.cost_optimizer import CostOptimizer
 
         generator, mock_client = gen_with_retry
         cost_opt = Mock(spec=CostOptimizer)
@@ -236,7 +236,7 @@ class TestGenerateRetryLogic:
 
     def test_cost_optimizer_cache_miss(self, gen_with_retry, tmp_path):
         """Test generate calls API when cache misses."""
-        from tools.muscle.cost_optimizer import CostOptimizer
+        from muscle.cost_optimizer import CostOptimizer
 
         generator, mock_client = gen_with_retry
         cost_opt = Mock(spec=CostOptimizer)
@@ -258,7 +258,7 @@ class TestGenerateRetryLogic:
 
     def test_cost_optimizer_cache_ignores_stale_files(self, gen_with_retry, tmp_path):
         """Test generate regenerates when cached files are missing from the output directory."""
-        from tools.muscle.cost_optimizer import CostOptimizer
+        from muscle.cost_optimizer import CostOptimizer
 
         generator, mock_client = gen_with_retry
         cost_opt = Mock(spec=CostOptimizer)
@@ -280,7 +280,7 @@ class TestGenerateRetryLogic:
 
     def test_cost_optimizer_cache_includes_evolved_strategy(self, gen_with_retry, tmp_path):
         """Test generate does not reuse base-task cache when the strategy changes."""
-        from tools.muscle.cost_optimizer import CostOptimizer
+        from muscle.cost_optimizer import CostOptimizer
 
         generator, mock_client = gen_with_retry
         cost_opt = Mock(spec=CostOptimizer)
@@ -304,7 +304,7 @@ class TestGenerateRetryLogic:
 
     def test_generation_prompt_and_cache_key_include_language(self, gen_with_retry, tmp_path):
         """Requested language must reach both prompt text and cache lookup."""
-        from tools.muscle.cost_optimizer import CostOptimizer
+        from muscle.cost_optimizer import CostOptimizer
 
         generator, mock_client = gen_with_retry
         cost_opt = Mock(spec=CostOptimizer)
@@ -500,25 +500,25 @@ class TestSanitizeFunctions:
     """Tests for prompt sanitization helpers."""
 
     def test_sanitize_for_prompt_handles_none(self):
-        from tools.muscle.code_generator import _sanitize_for_prompt
+        from muscle.code_generator import _sanitize_for_prompt
 
         assert _sanitize_for_prompt(None) == ""
 
     def test_sanitize_for_prompt_truncates_long_string(self):
-        from tools.muscle.code_generator import _sanitize_for_prompt
+        from muscle.code_generator import _sanitize_for_prompt
 
         long_text = "a" * 6000
         result = _sanitize_for_prompt(long_text)
         assert len(result) <= 5020
 
     def test_sanitize_for_prompt_removes_null_bytes(self):
-        from tools.muscle.code_generator import _sanitize_for_prompt
+        from muscle.code_generator import _sanitize_for_prompt
 
         result = _sanitize_for_prompt("hello\x00world")
         assert "\x00" not in result
 
     def test_sanitize_for_prompt_removes_crlf(self):
-        from tools.muscle.code_generator import _sanitize_for_prompt
+        from muscle.code_generator import _sanitize_for_prompt
 
         result = _sanitize_for_prompt("line1\r\nline2")
         assert "\r\n" not in result
@@ -587,7 +587,7 @@ class TestCG05PlainCodeUtf8Validation:
         with patch.object(gen, "_extract_plain_code", return_value=response):
             with patch.object(gen, "_extract_alternative", return_value=[]):
                 with patch.object(gen, "_write_output_file", return_value="generated_code.py"):
-                    with caplog.at_level(logging.WARNING, logger="tools.muscle.code_generator"):
+                    with caplog.at_level(logging.WARNING, logger="muscle.code_generator"):
                         gen._parse_and_write(response, tmp_path)
 
         warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]

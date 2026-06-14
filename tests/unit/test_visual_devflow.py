@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from tools.muscle.visual_devflow import (
+from muscle.visual_devflow import (
     VisualDevFlowBridge,
     VisualDevFlowEmitter,
     enable_visual_devflow,
@@ -45,7 +45,7 @@ def test_emit_task_posts_to_visual_devflow(monkeypatch) -> None:
         posts.append({"url": url, "json": json, "timeout": timeout})
         return SimpleNamespace(raise_for_status=lambda: None)
 
-    monkeypatch.setattr("tools.muscle.visual_devflow.requests.post", fake_post)
+    monkeypatch.setattr("muscle.visual_devflow.requests.post", fake_post)
     emitter = VisualDevFlowEmitter(project_path=Path("/project"), url="http://127.0.0.1:3456")
 
     emitted = emitter.emit_task(
@@ -70,7 +70,7 @@ def test_emit_task_fails_open(monkeypatch) -> None:
     def fake_post(url: str, json: dict, timeout: float) -> object:
         raise requests.ConnectionError("offline")
 
-    monkeypatch.setattr("tools.muscle.visual_devflow.requests.post", fake_post)
+    monkeypatch.setattr("muscle.visual_devflow.requests.post", fake_post)
     emitter = VisualDevFlowEmitter(project_path=Path("/project"), url="http://127.0.0.1:3456")
 
     assert (
@@ -91,7 +91,7 @@ def test_bridge_maps_loop_events(monkeypatch) -> None:
         posts.append(json)
         return SimpleNamespace(raise_for_status=lambda: None)
 
-    monkeypatch.setattr("tools.muscle.visual_devflow.requests.post", fake_post)
+    monkeypatch.setattr("muscle.visual_devflow.requests.post", fake_post)
     bridge = VisualDevFlowBridge(
         emitter=VisualDevFlowEmitter(Path("/project"), "http://127.0.0.1:3456"),
         project_path=Path("/project"),
@@ -118,7 +118,7 @@ def test_bridge_maps_review_fix_file(monkeypatch) -> None:
         posts.append(json)
         return SimpleNamespace(raise_for_status=lambda: None)
 
-    monkeypatch.setattr("tools.muscle.visual_devflow.requests.post", fake_post)
+    monkeypatch.setattr("muscle.visual_devflow.requests.post", fake_post)
     bridge = VisualDevFlowBridge(
         emitter=VisualDevFlowEmitter(Path("/project"), "http://127.0.0.1:3456"),
         project_path=Path("/project"),

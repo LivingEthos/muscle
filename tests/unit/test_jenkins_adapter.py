@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from tools.muscle.adapters.jenkins import JenkinsAdapter
+from muscle.adapters.jenkins import JenkinsAdapter
 
 
 class TestJenkinsAdapter:

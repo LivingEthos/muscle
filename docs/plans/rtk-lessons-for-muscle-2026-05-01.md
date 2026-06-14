@@ -64,8 +64,8 @@ For MUSCLE, every analyzer parser should return:
 - `DEGRADED`: regex or partial extraction, with warning text
 - `PASSTHROUGH`: no trusted parse, raw output saved and compacted only
 
-This is a good fit for `tools/muscle/code_review/static_analyzer.py`,
-`tools/muscle/evaluators/base.py`, and the review artifact manifest.
+This is a good fit for `src/muscle/code_review/static_analyzer.py`,
+`src/muscle/evaluators/base.py`, and the review artifact manifest.
 
 ### 3. Save full output whenever MUSCLE truncates
 

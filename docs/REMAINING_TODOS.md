@@ -1,6 +1,6 @@
 # MUSCLE Remaining Plan
 
-Last updated: 2026-06-09
+Last updated: 2026-06-12
 Status: Living backlog
 
 This is the single living document for remaining MUSCLE work.
@@ -30,8 +30,84 @@ still need to be folded back into this file when the design pass ends.
 - No production-readiness blocker is currently tracked in this file.
 - Historical point-in-time plan docs have been retired and their remaining work
   has been folded into this document.
+- New temporary design plan:
+  `docs/plans/fable-5-orchestration-updates-2026-06-12.md`. Current product
+  direction is Claude Code/Fable 5 first as the host workflow, MUSCLE CLI as the
+  orchestration surface, and MiniMax/OpenRouter as current optional MUSCLE-agent
+  execution backends for reducing Claude subscription/API spend.
 
 ## Just completed
+
+### 2026-06-13 — Model-aware optimization profiles (Plans 1–7 + follow-ups)
+
+Status: completed and verified on `release-prep` (not yet merged to `main`).
+
+The 7-plan model-aware-profile roadmap is complete: a typed `ModelProfile`
+registry (`src/muscle/model_profiles.py`) + host/agent detection
+(`host_model_resolver.py`) whose knobs are consumed at every seam. Every profile
+field now has a real consumer (no dead knobs):
+
+- Agent per-stage effort + always-on thinking → `anthropic_client.py`; per-stage
+  effort also wired into the claude-CLI transport (`claude_cli_client.py`) so
+  Opus-via-CLI gets `xhigh` on coding stages (follow-up).
+- Host doc fragments → `claude_publisher.py` / `host_memory_templates.py`;
+  synthesis effort floor → `routing.py` / `host_effort_policy.py`.
+- Security posture (dependency snippet policy, untrusted-envelope emphasis) →
+  `source_context.py` / `code_reviewer.py` / `review_controller.py` (agent-driven);
+  cyber-safeguard friction note → `cli/provider.py`.
+- Eval `grader_aware` → `review_benchmark.py`; learning reinforcement +
+  repeated-violation escalation → `claude_publisher.py` / `verification_loop.py`.
+- Handoffs emit self-contained delegation specs + recovered M3 fields
+  (`handoff_generator.py`).
+
+Follow-ups also landed: real cross-run recurrence counting
+(`learning_pipeline._get_recurrence_count` via `ProjectMemory.count_findings_by_rule`).
+
+Intentional design boundaries (kept as-is): `fetch_sources` dependency context is
+foreground-review-only (the structured-workflow/committee path does not consume
+supplemental context — documented in `review_controller._build_source_context`);
+the codex CLI transport has no `--effort` control so per-stage effort does not
+apply there.
+
+Gates: `uv run mypy src/muscle/`, `ruff check`, `ruff format --check` clean (191
+files); full suite green.
+
+### 2026-06-12 — OpenAI-compatible tool schema compatibility
+
+Status: completed and verified.
+
+Completed:
+
+- added `src/muscle/llm/tool_schema_compat.py` for provider-boundary
+  normalization and validation of OpenAI-compatible function/tool schemas
+- guaranteed provider-facing function `parameters` schemas have root
+  `type: object` and no top-level `oneOf`, `anyOf`, `allOf`, `enum`, `const`,
+  or `not`
+- wrapped generated top-level arrays under `items`, scalar/enum schemas under
+  `value`, and root combinator schemas under `payload`
+- returned a per-function unwrap registry so existing handler behavior can be
+  preserved before dispatch
+- wired normalization into `M27Client.chat()` for OpenAI-compatible endpoints
+  and the async OpenAI-compatible adapters for OpenAI, OpenRouter, Kimi, Z.AI,
+  and the MiniMax chat-completions adapter
+- added regression coverage for array, scalar/enum, combinator, stable object
+  root, `_multicategorysearchitems`, legacy `functions`, local invalid-schema
+  rejection, and no-network provider failure
+
+Current live rerun result:
+
+- baseline focused provider/routing/model identity gate:
+  `68 passed`
+- new focused schema compatibility gate:
+  `11 passed`
+- `uv run mypy src/muscle/`:
+  `Success: no issues found in 189 source files`
+- `uv run ruff check src/muscle/`:
+  `All checks passed!`
+- `uv run ruff format --check src/muscle/`:
+  `189 files already formatted`
+- full suite:
+  `2940 passed, 3 skipped`
 
 ### 2026-06-09 — host context crusher + Fable 5 host-dollar accounting
 
@@ -89,9 +165,9 @@ Completed:
 Current live rerun result:
 - focused foresight/plugin docs subset: `263 passed, 1 skipped`
 - `uv sync --extra dev` exits `0`
-- `uv run mypy tools/muscle/` exits `0`
-- `uv run ruff check tools/muscle/` exits `0`
-- `uv run ruff format --check tools/muscle/` exits `0`
+- `uv run mypy src/muscle/` exits `0`
+- `uv run ruff check src/muscle/` exits `0`
+- `uv run ruff format --check src/muscle/` exits `0`
 - `uv run pytest tests/ -q` exits `0` with `2445 passed, 3 skipped`
 - `uv build --out-dir /tmp/muscle-dist-20260524-5` builds source distribution
   and wheel
@@ -129,16 +205,16 @@ Completed:
   optimization ledgers, or review artifacts
 - added `/muscle:foresight` plugin command docs and manifest parity
 - fixed package-data inclusion so the plugin skill file
-  `tools/muscle/plugin/skills/code-review/SKILL.md` is present in the release
+  `src/muscle/plugin/skills/code-review/SKILL.md` is present in the release
   sdist/wheel without duplicate wheel entries
 
 Current live rerun result:
 - targeted foresight/plugin tests:
   `312 passed, 1 skipped`
 - `uv sync --extra dev` exits `0`
-- `uv run mypy tools/muscle/` exits `0`
-- `uv run ruff check tools/muscle/` exits `0`
-- `uv run ruff format --check tools/muscle/` exits `0`
+- `uv run mypy src/muscle/` exits `0`
+- `uv run ruff check src/muscle/` exits `0`
+- `uv run ruff format --check src/muscle/` exits `0`
 - `uv run pytest tests/ -q` exits `0` with `2445 passed, 3 skipped`
 - `uv build --out-dir /tmp/muscle-dist-20260524-4` builds source distribution
   and wheel
@@ -146,8 +222,8 @@ Current live rerun result:
   duplicate entries, and includes Claude/Codex plugin manifests, hooks, command
   docs including `foresight.md`, agents, shared assets, and the code-review
   skill file
-- `uv run python -m tools.muscle.cli foresight --task "Plan the next safe
-  product slice" --target tools/muscle/cli.py --no-write --json | python3 -m
+- `uv run python -m muscle.cli foresight --task "Plan the next safe
+  product slice" --target src/muscle/cli.py --no-write --json | python3 -m
   json.tool` exits `0`
 - `uv run muscle doctor --json | python3 -m json.tool` exits `0`
 
@@ -174,9 +250,9 @@ Completed:
 
 Current live rerun result:
 - `uv sync --extra dev` exits `0`
-- `uv run mypy tools/muscle/` exits `0`
-- `uv run ruff check tools/muscle/` exits `0`
-- `uv run ruff format --check tools/muscle/` exits `0`
+- `uv run mypy src/muscle/` exits `0`
+- `uv run ruff check src/muscle/` exits `0`
+- `uv run ruff format --check src/muscle/` exits `0`
 - `uv run pytest tests/ -q` exits `0` with `2432 passed, 3 skipped`
 - `git diff --check` exits `0`
 
@@ -208,7 +284,7 @@ Current live rerun result:
   - `tasks`: `218`
   - `working_memory`: `299`
   - `external_benchmark_sessions`: `14`
-- `uv run python -m tools.muscle.cli doctor --json` exits `0`
+- `uv run python -m muscle.cli doctor --json` exits `0`
 - `uv run muscle doctor --json` exits `0` and emits parseable JSON
 
 Decision:
@@ -278,10 +354,10 @@ Decision:
 
 Validation:
 - `uv run pytest tests/unit/test_committee_reviewer.py tests/unit/test_review_benchmark.py -q`
-- `uv run ruff check tools/muscle/code_review/committee_reviewer.py tools/muscle/code_review/review_benchmark.py tests/unit/test_committee_reviewer.py tests/unit/test_review_benchmark.py`
-- `uv run ruff format --check tools/muscle/code_review/committee_reviewer.py tools/muscle/code_review/review_benchmark.py tests/unit/test_committee_reviewer.py tests/unit/test_review_benchmark.py`
-- `uv run mypy tools/muscle/code_review/committee_reviewer.py tools/muscle/code_review/review_benchmark.py`
-- `uv run python -m tools.muscle.cli long-eval benchmark --suite all --enforce-gates`
+- `uv run ruff check src/muscle/code_review/committee_reviewer.py src/muscle/code_review/review_benchmark.py tests/unit/test_committee_reviewer.py tests/unit/test_review_benchmark.py`
+- `uv run ruff format --check src/muscle/code_review/committee_reviewer.py src/muscle/code_review/review_benchmark.py tests/unit/test_committee_reviewer.py tests/unit/test_review_benchmark.py`
+- `uv run mypy src/muscle/code_review/committee_reviewer.py src/muscle/code_review/review_benchmark.py`
+- `uv run python -m muscle.cli long-eval benchmark --suite all --enforce-gates`
 
 ### 2026-04-17 — Credentialed full-suite benchmark rerun and release-evidence capture
 
@@ -289,7 +365,7 @@ Status: completed
 
 Completed:
 - ran the full benchmark and release-gate flow with live MiniMax credentials:
-  - `uv run python -m tools.muscle.cli long-eval benchmark --suite all --enforce-gates`
+  - `uv run python -m muscle.cli long-eval benchmark --suite all --enforce-gates`
 - captured the generated evidence:
   - benchmark JSON:
     `.muscle/reports/benchmarks/benchmark_20260417_231502.json`
@@ -336,12 +412,12 @@ Status: completed
 
 Completed:
 - ran the new benchmark CLI path for the current project:
-  - `uv run python -m tools.muscle.cli long-eval benchmark --suite all --no-history`
+  - `uv run python -m muscle.cli long-eval benchmark --suite all --no-history`
 - verified the current shell has no `MINIMAX_API_KEY` / `ANTHROPIC_API_KEY`, so
   the full credentialed fixture-review benchmark did not produce a report and
   remains blocked on credentials
 - fixed a benchmark-adjacent regression where importing `ClaudePublisher`
-  triggered a circular import through `tools.muscle.code_review.__init__`
+  triggered a circular import through `muscle.code_review.__init__`
 - reran targeted validation on the touched surfaces:
   - `uv run pytest tests/unit/test_claude_publisher.py -v`
   - `uv run pytest tests/unit/test_review_benchmark.py tests/unit/test_routing.py -v`
@@ -428,9 +504,13 @@ Next production-facing choice:
 - open a new product slice before changing behavior; remaining candidates should
   preserve the standing guardrails below and be benchmark-gated before any risky
   promotion
+- the current recommended slice is the Fable/Claude-first orchestration plan,
+  starting with deterministic host-risk preflight, then effort policy and typed
+  verification claims before OpenRouter provider wiring or async-worker work
 
 Remaining non-blocking local state:
-- none currently tracked in this file
+- temporary Fable/Claude-first provider strategy plan is open and should be
+  folded back into this living plan after the design/implementation train lands
 
 Standing guardrails for future work:
 

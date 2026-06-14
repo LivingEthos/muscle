@@ -4,7 +4,7 @@ Unit tests for regex timeout protection and RegexResult reporting.
 
 from __future__ import annotations
 
-from tools.muscle.rules.regex_timeout import (
+from muscle.rules.regex_timeout import (
     RegexMatch,
     RegexResult,
     regex_finditer,

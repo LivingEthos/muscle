@@ -4,7 +4,7 @@
 |---|---|
 | Audience | Users and operators configuring projects |
 | Status | Current configuration map |
-| Source of truth | [`tools/muscle/tui/project_manager.py`](../../tools/muscle/tui/project_manager.py), [`tools/muscle/cli.py`](../../tools/muscle/cli.py), [`README.md`](../../README.md) |
+| Source of truth | [`src/muscle/tui/project_manager.py`](../../src/muscle/tui/project_manager.py), [`src/muscle/cli.py`](../../src/muscle/cli.py), [`README.md`](../../README.md) |
 
 ## Environment Variables
 

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.muscle.optimization.optimizer import WorkflowOptimizer
-from tools.muscle.project_memory import ProjectMemory
+from muscle.optimization.optimizer import WorkflowOptimizer
+from muscle.project_memory import ProjectMemory
 
 
 def test_get_applied_settings_are_project_local(tmp_path: Path) -> None:

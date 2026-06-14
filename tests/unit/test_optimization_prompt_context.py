@@ -4,8 +4,8 @@ Unit tests for the shared optimization-layer prompt context helpers.
 
 from __future__ import annotations
 
-from tools.muscle.lesson_resolver import LessonRenderBudget, ResolvedLesson, ResolvedLessonSet
-from tools.muscle.optimization.prompt_context import (
+from muscle.lesson_resolver import LessonRenderBudget, ResolvedLesson, ResolvedLessonSet
+from muscle.optimization.prompt_context import (
     build_telemetry_context,
     compose_prompt_envelope,
 )

@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
-from tools.muscle.cli import run
-from tools.muscle.types import SessionStatus
+from muscle.cli import run
+from muscle.types import SessionStatus
 
 
 def test_run_does_not_trigger_remote_model_pack_fetch() -> None:
@@ -20,19 +20,19 @@ def test_run_does_not_trigger_remote_model_pack_fetch() -> None:
     mock_live_instance.start = MagicMock()
     mock_live_instance.stop = MagicMock()
 
-    with patch("tools.muscle.cli._create_m27_client") as mock_create_client:
+    with patch("muscle.cli.loop._create_m27_client") as mock_create_client:
         mock_client = MagicMock()
         mock_client.api_key = "test-key"
         mock_client.chat.return_value = ("code", MagicMock(total=100))
         mock_create_client.return_value = mock_client
 
-        with patch("tools.muscle.cli.CodeGenerator"):
-            with patch("tools.muscle.cli.Evolver"):
-                with patch("tools.muscle.cli.BudgetManager"):
-                    with patch("tools.muscle.cli.LoopController") as mock_lc:
-                        with patch("tools.muscle.cli.Live", return_value=mock_live_instance):
+        with patch("muscle.cli.loop.CodeGenerator"):
+            with patch("muscle.cli.loop.Evolver"):
+                with patch("muscle.cli.loop.BudgetManager"):
+                    with patch("muscle.cli.loop.LoopController") as mock_lc:
+                        with patch("muscle.cli.loop.Live", return_value=mock_live_instance):
                             with patch(
-                                "tools.muscle.cli.ModelPackManager",
+                                "muscle.cli._shared.ModelPackManager",
                                 side_effect=AssertionError(
                                     "run should not instantiate remote model-pack flows"
                                 ),

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.muscle.strategy_kb import GlobalKnowledgeBase, Strategy, StrategyKB
+from muscle.strategy_kb import GlobalKnowledgeBase, Strategy, StrategyKB
 
 
 class TestStrategy:

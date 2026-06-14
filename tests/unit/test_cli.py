@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -20,7 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from tools.muscle.cli import (
+from muscle.cli import (
     _create_event_handler,
     _get_status_color,
     _parse_budget,
@@ -32,10 +33,13 @@ from tools.muscle.cli import (
     agents_list,
     backups_group,
     check,
+    cost_delegation_report,
     cost_group,
+    crush,
     diagnosis,
     disable,
     enable,
+    expand,
     foresight,
     history,
     improve_group,
@@ -54,10 +58,10 @@ from tools.muscle.cli import (
     tui,
     visualize,
 )
-from tools.muscle.foresight import SHORT_TERM_FILENAME, SHORT_TERM_MAX_CHARS
-from tools.muscle.loop_controller import LoopContext, LoopEvent
-from tools.muscle.model_identity import SUPPORTED_CANONICAL_MODELS
-from tools.muscle.types import (
+from muscle.foresight import SHORT_TERM_FILENAME, SHORT_TERM_MAX_CHARS
+from muscle.loop_controller import LoopContext, LoopEvent
+from muscle.model_identity import SUPPORTED_CANONICAL_MODELS
+from muscle.types import (
     BudgetInfo,
     BudgetMode,
     CodeArtifact,
@@ -97,7 +101,7 @@ class TestHelperFunctions:
             assert _parse_timeout("-10") == 3600
 
         def test_exceeds_max(self):
-            from tools.muscle.cli import MAX_TIMEOUT_SECONDS
+            from muscle.cli import MAX_TIMEOUT_SECONDS
 
             assert _parse_timeout("100d") == MAX_TIMEOUT_SECONDS
 
@@ -115,6 +119,27 @@ class TestHelperFunctions:
 
         def test_negative_with_unit(self):
             assert _parse_timeout("-5m") == 3600
+
+    def test_release_invariants_report_missing_pytest_interpreter(self, monkeypatch):
+        from muscle.cli import _run_benchmark_release_invariants
+
+        def fake_run(*args, **kwargs):
+            return subprocess.CompletedProcess(
+                args=args[0],
+                returncode=1,
+                stdout="",
+                stderr="/usr/bin/python: No module named pytest\n",
+            )
+
+        monkeypatch.setattr("muscle.cli._shared.subprocess.run", fake_run)
+
+        result = _run_benchmark_release_invariants()
+
+        assert result["checked"] is True
+        assert result["passed"] is False
+        assert "pytest is not installed for interpreter" in result["summary"]
+        assert result["details"]["interpreter"]
+        assert "uv run" in result["details"]["error"]
 
     class TestParseBudget:
         def test_unlimited(self):
@@ -463,9 +488,9 @@ class TestInitCommand:
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.setattr("tools.muscle.cli._requested_model_label", lambda: "opaque-gateway")
+        monkeypatch.setattr("muscle.cli.lifecycle._requested_model_label", lambda: "opaque-gateway")
         monkeypatch.setattr(
-            "tools.muscle.cli._provider_endpoint",
+            "muscle.cli.lifecycle._provider_endpoint",
             lambda: "https://gateway.example/anthropic",
         )
 
@@ -631,7 +656,7 @@ class TestForesightCommand:
 
     def test_run_does_not_trigger_foresight(self, runner):
         with patch(
-            "tools.muscle.foresight.build_foresight_report",
+            "muscle.foresight.build_foresight_report",
             side_effect=AssertionError("run should not call foresight"),
         ) as build_foresight:
             result = runner.invoke(
@@ -712,7 +737,7 @@ class TestResumeCommand:
             "status": SessionStatus.SUCCESS.value,
         }
 
-        with patch("tools.muscle.cli.SessionManager", return_value=mock_manager):
+        with patch("muscle.cli.loop.SessionManager", return_value=mock_manager):
             result = runner.invoke(resume, ["done-123"], catch_exceptions=False)
 
         assert result.exit_code == 1
@@ -726,9 +751,9 @@ class TestResumeCommand:
             "status": SessionStatus.RUNNING.value,
         }
 
-        with patch("tools.muscle.cli.SessionManager", return_value=mock_manager):
-            with patch("tools.muscle.cli._read_session_pid", return_value=4242):
-                with patch("tools.muscle.cli._is_process_alive", return_value=True):
+        with patch("muscle.cli.loop.SessionManager", return_value=mock_manager):
+            with patch("muscle.cli.loop._read_session_pid", return_value=4242):
+                with patch("muscle.cli.loop._is_process_alive", return_value=True):
                     result = runner.invoke(resume, ["running-123"], catch_exceptions=False)
 
         assert result.exit_code == 1
@@ -775,20 +800,20 @@ class TestResumeCommand:
         )
         mock_controller.run.return_value = resumed_ctx
 
-        with patch("tools.muscle.cli.SessionManager", return_value=mock_manager):
-            with patch("tools.muscle.cli._create_m27_client") as mock_create_client:
+        with patch("muscle.cli.loop.SessionManager", return_value=mock_manager):
+            with patch("muscle.cli.loop._create_m27_client") as mock_create_client:
                 mock_create_client.return_value.api_key = "test-key"
-                with patch("tools.muscle.cli.CodeGenerator"):
-                    with patch("tools.muscle.cli.Evolver"):
-                        with patch("tools.muscle.cli.BudgetManager"):
+                with patch("muscle.cli.loop.CodeGenerator"):
+                    with patch("muscle.cli.loop.Evolver"):
+                        with patch("muscle.cli.loop.BudgetManager"):
                             with patch(
-                                "tools.muscle.cli.LoopController", return_value=mock_controller
+                                "muscle.cli.loop.LoopController", return_value=mock_controller
                             ):
-                                with patch("tools.muscle.cli.Progress") as mock_progress:
+                                with patch("muscle.cli.loop.Progress") as mock_progress:
                                     mock_progress.return_value.__enter__.return_value.add_task = (
                                         MagicMock()
                                     )
-                                    with patch("tools.muscle.cli.Live") as mock_live:
+                                    with patch("muscle.cli.loop.Live") as mock_live:
                                         mock_live.return_value.start = MagicMock()
                                         mock_live.return_value.stop = MagicMock()
                                         result = runner.invoke(
@@ -1021,7 +1046,7 @@ class TestLongEvalGroup:
         target = tmp_path / "service.py"
         target.write_text("value = 1\n", encoding="utf-8")
 
-        with patch("tools.muscle.code_review.mutation_runner.MutationRunner") as mock_cls:
+        with patch("muscle.code_review.mutation_runner.MutationRunner") as mock_cls:
             mock_runner = MagicMock()
             mock_runner.run.return_value = {
                 "killed": 1,
@@ -1040,7 +1065,7 @@ class TestLongEvalGroup:
         mock_runner.run.assert_called_once()
 
     def test_long_eval_benchmark(self, runner):
-        with patch("tools.muscle.code_review.review_benchmark.ReviewBenchmarkRunner") as mock_cls:
+        with patch("muscle.code_review.review_benchmark.ReviewBenchmarkRunner") as mock_cls:
             mock_runner = MagicMock()
             mock_runner.run_benchmark.return_value = {
                 "aggregate": {
@@ -1077,7 +1102,7 @@ class TestLongEvalGroup:
             )
 
     def test_long_eval_benchmark_enforce_gates(self, runner):
-        with patch("tools.muscle.code_review.review_benchmark.ReviewBenchmarkRunner") as mock_cls:
+        with patch("muscle.code_review.review_benchmark.ReviewBenchmarkRunner") as mock_cls:
             mock_runner = MagicMock()
             mock_runner.run_benchmark.return_value = {
                 "aggregate": {
@@ -1106,7 +1131,7 @@ class TestLongEvalGroup:
             mock_runner.write_release_evidence.return_value = {"json": "/tmp/release.json"}
             mock_cls.return_value = mock_runner
             with patch(
-                "tools.muscle.cli._run_benchmark_release_invariants",
+                "muscle.cli.cost._run_benchmark_release_invariants",
                 return_value={"checked": True, "passed": True, "summary": "ok", "details": {}},
             ) as mock_invariants:
                 result = runner.invoke(
@@ -1133,6 +1158,7 @@ class TestSettingsGroup:
         result = runner.invoke(settings_group, ["show"], catch_exceptions=False)
         assert result.exit_code == 0
         assert "Review Execution" in result.output
+        assert "Async Review Workers" in result.output
         assert "local" in result.output
         assert "Related Project Mode" in result.output
         assert "Model Pack Mode" in result.output
@@ -1152,6 +1178,20 @@ class TestSettingsGroup:
         config = json.loads((tmp_path / ".muscle" / "config.yaml").read_text(encoding="utf-8"))
         assert config["project"]["review_execution"] == "worktree"
         assert config["project"]["review_gate"] == "block+fix"
+
+    def test_settings_review_updates_async_workers(self, runner, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(init, ["--non-interactive"], catch_exceptions=False)
+
+        result = runner.invoke(
+            settings_group,
+            ["review", "--async-workers", "--async-worker-limit", "2"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        config = json.loads((tmp_path / ".muscle" / "config.yaml").read_text(encoding="utf-8"))
+        assert config["project"]["review"]["async_workers"] is True
+        assert config["project"]["review"]["async_worker_limit"] == 2
 
     def test_settings_api_key_shows_status_in_non_tty(self, runner, monkeypatch):
         """B2: when invoked without args from a non-interactive shell (slash
@@ -1235,7 +1275,7 @@ class TestProbeCommand:
         # .muscle/project_memory.db in the caller's working directory.
         monkeypatch.chdir(tmp_path)
         with patch(
-            "tools.muscle.code_review.shadow_broker.ShadowBroker",
+            "muscle.code_review.shadow_broker.ShadowBroker",
             return_value=mock_broker,
         ):
             result = runner.invoke(probe, [], catch_exceptions=False)
@@ -1244,7 +1284,7 @@ class TestProbeCommand:
     def test_probe_nonexistent_job(self, runner, mock_broker, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         with patch(
-            "tools.muscle.code_review.shadow_broker.ShadowBroker",
+            "muscle.code_review.shadow_broker.ShadowBroker",
             return_value=mock_broker,
         ):
             result = runner.invoke(
@@ -1271,7 +1311,7 @@ class TestDiagnosisCommand:
     def test_diagnosis_no_job_id(self, runner, mock_broker, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         with patch(
-            "tools.muscle.code_review.shadow_broker.ShadowBroker",
+            "muscle.code_review.shadow_broker.ShadowBroker",
             return_value=mock_broker,
         ):
             result = runner.invoke(diagnosis, [], catch_exceptions=False)
@@ -1280,7 +1320,7 @@ class TestDiagnosisCommand:
     def test_diagnosis_nonexistent_job(self, runner, mock_broker, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         with patch(
-            "tools.muscle.code_review.shadow_broker.ShadowBroker",
+            "muscle.code_review.shadow_broker.ShadowBroker",
             return_value=mock_broker,
         ):
             result = runner.invoke(
@@ -1332,16 +1372,16 @@ class TestLifelineCommand:
         env["MINIMAX_API_KEY"] = "test-key"
 
         class _FakeClient:
-            def __init__(self, api_key: str | None = None):
+            def __init__(self, api_key: str | None = None, **kwargs: object):
                 self.api_key = api_key
 
             def chat(self, messages):
                 assert "Git history forensics" in messages[1]["content"]
                 return "ok", MagicMock(total=42)
 
-        with patch("tools.muscle.m27_client.M27Client", _FakeClient):
-            with patch("tools.muscle.cli._resolve_project_context", return_value=(tmp_path, None)):
-                with patch("tools.muscle.git_history_forensics.GitHistoryForensics") as mock_cls:
+        with patch("muscle.cli.cost.create_client", _FakeClient):
+            with patch("muscle.cli.cost._resolve_project_context", return_value=(tmp_path, None)):
+                with patch("muscle.git_history_forensics.GitHistoryForensics") as mock_cls:
                     mock_forensics = MagicMock()
                     mock_forensics.analyze.return_value = {
                         "available": True,
@@ -1425,17 +1465,17 @@ class TestRunCommand:
         mock_live_instance.start = MagicMock()
         mock_live_instance.stop = MagicMock()
 
-        with patch("tools.muscle.cli._create_m27_client") as mock_create_client:
+        with patch("muscle.cli.loop._create_m27_client") as mock_create_client:
             mock_client = MagicMock()
             mock_client.api_key = "test-key"
             mock_client.chat.return_value = ("code", MagicMock(total=100))
             mock_create_client.return_value = mock_client
 
-            with patch("tools.muscle.cli.CodeGenerator"):
-                with patch("tools.muscle.cli.Evolver"):
-                    with patch("tools.muscle.cli.BudgetManager"):
-                        with patch("tools.muscle.cli.LoopController") as mock_lc:
-                            with patch("tools.muscle.cli.Live", return_value=mock_live_instance):
+            with patch("muscle.cli.loop.CodeGenerator"):
+                with patch("muscle.cli.loop.Evolver"):
+                    with patch("muscle.cli.loop.BudgetManager"):
+                        with patch("muscle.cli.loop.LoopController") as mock_lc:
+                            with patch("muscle.cli.loop.Live", return_value=mock_live_instance):
                                 mock_lc.return_value.run.side_effect = KeyboardInterrupt
                                 mock_lc.return_value.get_session_report.return_value = None
                                 mock_lc.return_value.request_abort = MagicMock()
@@ -1449,7 +1489,7 @@ class TestRunCommand:
                                 assert "Aborted by user" in result.output
 
     def test_run_with_json_format(self, runner):
-        from tools.muscle.types import BudgetInfo, SessionReport
+        from muscle.types import BudgetInfo, SessionReport
 
         mock_budget_info = BudgetInfo(mode=BudgetMode.UNLIMITED, limit=0, spent=0)
         mock_session_report = SessionReport(
@@ -1472,17 +1512,17 @@ class TestRunCommand:
         mock_live_instance.start = MagicMock()
         mock_live_instance.stop = MagicMock()
 
-        with patch("tools.muscle.cli._create_m27_client") as mock_create_client:
+        with patch("muscle.cli.loop._create_m27_client") as mock_create_client:
             mock_client = MagicMock()
             mock_client.api_key = "test-key"
             mock_client.chat.return_value = ("code", MagicMock(total=100))
             mock_create_client.return_value = mock_client
 
-            with patch("tools.muscle.cli.CodeGenerator"):
-                with patch("tools.muscle.cli.Evolver"):
-                    with patch("tools.muscle.cli.BudgetManager"):
-                        with patch("tools.muscle.cli.LoopController") as mock_lc:
-                            with patch("tools.muscle.cli.Live", return_value=mock_live_instance):
+            with patch("muscle.cli.loop.CodeGenerator"):
+                with patch("muscle.cli.loop.Evolver"):
+                    with patch("muscle.cli.loop.BudgetManager"):
+                        with patch("muscle.cli.loop.LoopController") as mock_lc:
+                            with patch("muscle.cli.loop.Live", return_value=mock_live_instance):
                                 mock_ctx = MagicMock()
                                 mock_ctx.session_id = "test-session"
                                 mock_ctx.stats.status = SessionStatus.SUCCESS
@@ -1548,17 +1588,15 @@ class TestMemoryGroup:
         # TEST-07: isolate CWD so the command never falls back to the caller's
         # .muscle/project_memory.db.
         monkeypatch.chdir(tmp_path)
-        with patch("tools.muscle.cli.ProjectMemory", return_value=mock_project_memory):
+        with patch("muscle.cli.memory.ProjectMemory", return_value=mock_project_memory):
             result = runner.invoke(memory_status, [], catch_exceptions=False)
         assert result.exit_code == 0
         assert "Memory Status" in result.output
 
-    def test_memory_status_shows_db_path(
-        self, runner, mock_project_memory, tmp_path, monkeypatch
-    ):
+    def test_memory_status_shows_db_path(self, runner, mock_project_memory, tmp_path, monkeypatch):
         """memory status shows database path."""
         monkeypatch.chdir(tmp_path)
-        with patch("tools.muscle.cli.ProjectMemory", return_value=mock_project_memory):
+        with patch("muscle.cli.memory.ProjectMemory", return_value=mock_project_memory):
             result = runner.invoke(memory_status, [], catch_exceptions=False)
         assert result.exit_code == 0
         # Verify the table header and at least the "Database" row label appears
@@ -1568,16 +1606,14 @@ class TestMemoryGroup:
     def test_memory_history_empty(self, runner, mock_project_memory, tmp_path, monkeypatch):
         """memory history should succeed even with no data."""
         monkeypatch.chdir(tmp_path)
-        with patch("tools.muscle.cli.ProjectMemory", return_value=mock_project_memory):
+        with patch("muscle.cli.memory.ProjectMemory", return_value=mock_project_memory):
             result = runner.invoke(memory_history, [], catch_exceptions=False)
         assert result.exit_code == 0
 
-    def test_memory_history_with_limit(
-        self, runner, mock_project_memory, tmp_path, monkeypatch
-    ):
+    def test_memory_history_with_limit(self, runner, mock_project_memory, tmp_path, monkeypatch):
         """memory history accepts --limit flag."""
         monkeypatch.chdir(tmp_path)
-        with patch("tools.muscle.cli.ProjectMemory", return_value=mock_project_memory):
+        with patch("muscle.cli.memory.ProjectMemory", return_value=mock_project_memory):
             result = runner.invoke(memory_history, ["--limit", "5"], catch_exceptions=False)
         assert result.exit_code == 0
 
@@ -1634,10 +1670,7 @@ class TestAgentsGroup:
         with runner.isolated_filesystem():
             result = runner.invoke(agents_list, [], catch_exceptions=False)
             assert result.exit_code == 0
-            assert (
-                "not found" in result.output.lower()
-                or "no agents" in result.output.lower()
-            )
+            assert "not found" in result.output.lower() or "no agents" in result.output.lower()
 
     def test_agents_list_empty_dir(self, runner):
         """agents list handles empty agents directory."""
@@ -1660,3 +1693,186 @@ class TestAgentsGroup:
             assert result.exit_code == 0
             assert "coder" in result.output
             assert "reviewer" in result.output
+
+
+class TestCrushExpandRoundTrip:
+    """CLI-level round-trip: muscle crush -> muscle expand <ccr:handle>."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_crush_then_expand_recovers_original_byte_identical(self, runner):
+        original = "\n".join([f"info line {i % 5}" for i in range(400)])
+        with runner.isolated_filesystem():
+            Path("payload.txt").write_text(original)
+            # --json puts the ccr handle on stdout in a clean envelope.
+            crush_result = runner.invoke(crush, ["payload.txt", "--json"], catch_exceptions=False)
+            assert crush_result.exit_code == 0
+            envelope = json.loads(crush_result.output)
+            assert envelope["crush_applied"] is True
+            handle = envelope["crush_handle"]
+            assert handle and handle.startswith("ccr:")
+
+            expand_result = runner.invoke(expand, [handle], catch_exceptions=False)
+            assert expand_result.exit_code == 0
+            assert expand_result.output == original
+
+    def test_expand_unknown_handle_errors_cleanly(self, runner):
+        with runner.isolated_filesystem():
+            result = runner.invoke(expand, ["ccr:" + "0" * 16])
+            assert result.exit_code != 0
+
+
+class TestCostDelegationReport:
+    """CLI smoke test for `muscle cost delegation-report`."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def _make_project_with_event(self, tmp_path: Path) -> None:
+        """Create a migrated project_memory.db and record one DelegationEvent."""
+        from muscle.delegation_metrics import DelegationEvent, DelegationMetrics
+        from muscle.migrations._0013_delegation_events import MIGRATION_SQL
+        from muscle.migrations._0017_delegation_event_metadata import (
+            migrate as migrate_metadata,
+        )
+
+        muscle_dir = tmp_path / ".muscle"
+        muscle_dir.mkdir(parents=True, exist_ok=True)
+        import sqlite3
+
+        conn = sqlite3.connect(str(muscle_dir / "project_memory.db"))
+        conn.executescript(MIGRATION_SQL)
+        migrate_metadata(conn)
+        conn.close()
+
+        metrics = DelegationMetrics(tmp_path)
+        metrics.record(
+            DelegationEvent(
+                session_id="sess-cli-001",
+                entry_point="review:review",
+                task_tier="bulk_review",
+                m27_tokens_in=12000,
+                m27_tokens_out=3000,
+                m27_usd_cents=7,
+            )
+        )
+
+    def test_delegation_report_text_renders_recorded_tokens(self, runner, tmp_path):
+        self._make_project_with_event(tmp_path)
+        with patch("muscle.cli.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(
+                cost_delegation_report, ["--since", "30d"], catch_exceptions=False
+            )
+        assert result.exit_code == 0
+        assert "Total delegated tasks: 1" in result.output
+        assert "bulk_review" in result.output
+        # 12000 in + 3000 out = 15,000 tokens for the tier line.
+        assert "15,000" in result.output
+
+    def test_delegation_report_json_renders_recorded_tokens(self, runner, tmp_path):
+        self._make_project_with_event(tmp_path)
+        with patch("muscle.cli.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(
+                cost_delegation_report,
+                ["--since", "30d", "--format", "json"],
+                catch_exceptions=False,
+            )
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["total_events"] == 1
+        assert payload["m27_tokens_by_tier"]["bulk_review"] == 15000
+        assert payload["m27_usd_cents"] == 7
+
+
+class TestCompletionCommand:
+    """Tests for the `muscle completion` shell-completion helper."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_zsh_emits_source_snippet(self, runner):
+        from muscle.cli import cli
+
+        result = runner.invoke(cli, ["completion", "zsh"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "_MUSCLE_COMPLETE=zsh_source muscle" in result.output
+
+    def test_bash_emits_source_snippet(self, runner):
+        from muscle.cli import cli
+
+        result = runner.invoke(cli, ["completion", "bash"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "_MUSCLE_COMPLETE=bash_source muscle" in result.output
+
+    def test_fish_emits_source_snippet(self, runner):
+        from muscle.cli import cli
+
+        result = runner.invoke(cli, ["completion", "fish"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "_MUSCLE_COMPLETE=fish_source muscle" in result.output
+
+    def test_invalid_shell_rejected(self, runner):
+        from muscle.cli import cli
+
+        result = runner.invoke(cli, ["completion", "powershell"])
+        assert result.exit_code != 0
+
+
+class TestCreateM27ClientProviderAware:
+    """`_create_m27_client` must only require a MiniMax key for MiniMax providers."""
+
+    def test_claude_subscription_needs_no_minimax_key(self, monkeypatch):
+        from muscle.cli._shared import _create_m27_client
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.setenv("MUSCLE_PROVIDER", "claude-subscription")
+
+        fake_client = MagicMock()
+        with patch("muscle.cli._shared.create_client", return_value=fake_client) as factory:
+            assert _create_m27_client() is fake_client
+        factory.assert_called_once()
+
+    def test_codex_subscription_needs_no_minimax_key(self, monkeypatch):
+        from muscle.cli._shared import _create_m27_client
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.setenv("MUSCLE_PROVIDER", "codex-subscription")
+
+        fake_client = MagicMock()
+        with patch("muscle.cli._shared.create_client", return_value=fake_client) as factory:
+            assert _create_m27_client() is fake_client
+        factory.assert_called_once()
+
+    def test_minimax_without_key_exits_with_message(self, monkeypatch, capsys):
+        from muscle.cli._shared import _create_m27_client
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.setenv("MUSCLE_PROVIDER", "minimax-plan")
+
+        with pytest.raises(SystemExit) as excinfo:
+            _create_m27_client()
+        assert excinfo.value.code == 1
+        assert "MINIMAX_API_KEY not set" in capsys.readouterr().out
+
+    def test_factory_error_exits_with_message(self, monkeypatch, capsys):
+        from muscle.cli._shared import _create_m27_client
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.setenv("MUSCLE_PROVIDER", "claude-subscription")
+
+        with patch(
+            "muscle.cli._shared.create_client",
+            side_effect=ValueError("claude CLI not found"),
+        ):
+            with pytest.raises(SystemExit) as excinfo:
+                _create_m27_client()
+        assert excinfo.value.code == 1
+        assert "claude CLI not found" in capsys.readouterr().out

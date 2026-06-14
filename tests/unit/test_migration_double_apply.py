@@ -1,7 +1,7 @@
 """
 Idempotency tests for every registered project-memory migration (MG-01/MG-02/TEST-04).
 
-For each ``(version, migrate_fn)`` in :func:`tools.muscle.migrations._load_migrations`
+For each ``(version, migrate_fn)`` in :func:`muscle.migrations._load_migrations`
 we:
 
 1. Create a fresh ``:memory:`` sqlite3 DB.
@@ -24,7 +24,7 @@ import sqlite3
 
 import pytest
 
-from tools.muscle.migrations import _load_migrations
+from muscle.migrations import _load_migrations
 
 logger = logging.getLogger(__name__)
 

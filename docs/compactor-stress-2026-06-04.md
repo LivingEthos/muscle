@@ -1,7 +1,7 @@
 # Structured Compactor Stress Test — 2026-06-04
 
 ## Objective
-Validate that `tools/muscle/optimization/structured_compactor.py` (`compact_records` / `expand_records`):
+Validate that `src/muscle/optimization/structured_compactor.py` (`compact_records` / `expand_records`):
 
 1. Saves tokens at higher volume (≥ 40 static-analysis findings).
 2. Remains fully reversible (round-trip preserves values).
@@ -57,7 +57,7 @@ All 11 compactor tests pass.
 
 ## Quality Gate
 
-- `mypy tools/muscle/` — clean
-- `ruff check tools/muscle/` — clean
-- `ruff format --check tools/muscle/` — clean
+- `mypy src/muscle/` — clean
+- `ruff check src/muscle/` — clean
+- `ruff format --check src/muscle/` — clean
 - `pytest tests/` — 2,488 passed, 3 skipped

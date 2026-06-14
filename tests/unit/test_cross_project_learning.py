@@ -10,34 +10,34 @@ from pathlib import Path
 
 import pytest
 
-from tools.muscle.audit_presenter import format_action_log_entry
-from tools.muscle.lesson_resolver import LessonRenderBudget, LessonResolver
-from tools.muscle.model_identity import ModelIdentityResolver
-from tools.muscle.model_pack_standard import (
+from muscle.audit_presenter import format_action_log_entry
+from muscle.lesson_resolver import LessonRenderBudget, LessonResolver
+from muscle.model_identity import ModelIdentityResolver
+from muscle.model_pack_standard import (
     PACK_LESSONS_SCHEMA_VERSION,
     PACK_MANIFEST_SCHEMA_VERSION,
     PACK_REPO_LAYOUT_VERSION,
 )
-from tools.muscle.model_packs import ModelPackManager
-from tools.muscle.project_fingerprint import (
+from muscle.model_packs import ModelPackManager
+from muscle.project_fingerprint import (
     build_project_fingerprint,
     explain_relatedness,
     score_relatedness,
 )
-from tools.muscle.project_memory import ProjectMemory
-from tools.muscle.project_memory_types import ModelPackLesson, ModelPackMetadata
-from tools.muscle.system_db import SystemDatabase
-from tools.muscle.transferable_lesson_scrubber import (
+from muscle.project_memory import ProjectMemory
+from muscle.project_memory_types import ModelPackLesson, ModelPackMetadata
+from muscle.system_db import SystemDatabase
+from muscle.transferable_lesson_scrubber import (
     TransferScrubContext,
     scrub_transferable_lesson,
 )
-from tools.muscle.tui.project_manager import ProjectConfig, ProjectManager
+from muscle.tui.project_manager import ProjectConfig, ProjectManager
 
 
 @pytest.fixture
 def isolated_system_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "home" / ".muscle" / "system.db"
-    monkeypatch.setattr("tools.muscle.system_db.DEFAULT_SYSTEM_DB_PATH", db_path)
+    monkeypatch.setattr("muscle.system_db.DEFAULT_SYSTEM_DB_PATH", db_path)
     return db_path
 
 
@@ -234,6 +234,28 @@ def test_transfer_scrubber_is_deterministic_and_preserves_portable_lessons() -> 
     assert first.accepted is True
     assert first.normalized_text == text
     assert first.reason_codes == ()
+
+
+@pytest.mark.parametrize(
+    "secret_text",
+    [
+        "GitHub classic token ghp_abcdefghijklmnopqrstuvwxyz must not transfer.",
+        "GitHub fine-grained token github_pat_1234567890_abcdefghijklmnopqrstuvwxyz must not transfer.",
+        "AWS access key AKIA1234567890ABCDEF must not transfer.",
+        "Authorization uses bearer abcdefghijklmnopqrstuvwxyz123456.",
+    ],
+)
+def test_transfer_scrubber_rejects_common_secret_token_shapes(secret_text: str) -> None:
+    context = TransferScrubContext(
+        project_path="/tmp/project",
+        project_name="example-project",
+        repo_name="example-project",
+    )
+
+    decision = scrub_transferable_lesson(secret_text, context)
+
+    assert decision.accepted is False
+    assert "secret_like_content" in decision.reason_codes
 
 
 def test_lesson_resolver_keeps_local_precedence_and_records_usage(
@@ -505,7 +527,7 @@ def test_model_pack_export_and_install_scrubs_project_specific_content(
     )
 
     manager = ModelPackManager(str(project))
-    with caplog.at_level("INFO", logger="tools.muscle.model_packs"):
+    with caplog.at_level("INFO", logger="muscle.model_packs"):
         result = manager.export_candidate_bundle(
             canonical_model_key="minimax/m2.7@1",
             output_dir=str(tmp_path / "exports"),
@@ -911,7 +933,7 @@ def test_transferred_lessons_only_publish_after_promotion_into_local_rules(
     tmp_path: Path,
     isolated_system_db: Path,
 ) -> None:
-    from tools.muscle.claude_publisher import ClaudePublisher
+    from muscle.claude_publisher import ClaudePublisher
 
     current = tmp_path / "current"
     source = tmp_path / "source"
@@ -971,6 +993,81 @@ def test_transferred_lessons_only_publish_after_promotion_into_local_rules(
         limit=10,
     )
     assert action_logs
+
+
+def test_transferred_lesson_outcome_is_scoped_to_single_source_project(
+    tmp_path: Path,
+    isolated_system_db: Path,
+) -> None:
+    """Two sources can contribute an identical lesson_key; outcomes must not cross-update.
+
+    The transferred_lessons UNIQUE constraint is (project_path, lesson_key,
+    source_project_path), so the same lesson_key (sha1 of trigger + text) can appear
+    twice in one target project when two different source projects contribute the same
+    content. Recording an outcome for one source must touch only that source's row and
+    must record an audit decision referencing that source, never the other.
+    """
+    current = tmp_path / "current"
+    current.mkdir()
+    ProjectManager(current).init_project(
+        ProjectConfig(name="current", path=current, languages=["Python"])
+    )
+
+    source_a = tmp_path / "source_a"
+    source_b = tmp_path / "source_b"
+    current_pm = ProjectMemory(str(current))
+
+    # Identical trigger + text from two different sources -> same lesson_key, two rows.
+    for source in (source_a, source_b):
+        current_pm.upsert_transferred_lesson(
+            project_path=str(current),
+            source_project_path=str(source),
+            lesson_text="Reuse schema-first retries",
+            trigger_pattern="json parse",
+            link_mode="snapshot",
+            validation_status="provisional",
+        )
+
+    rows = current_pm.list_transferred_lessons(project_path=str(current))
+    by_source = {str(row["source_project_path"]): row for row in rows}
+    assert set(by_source) == {str(source_a), str(source_b)}
+    lesson_key = str(rows[0]["lesson_key"])
+    assert by_source[str(source_a)]["lesson_key"] == by_source[str(source_b)]["lesson_key"]
+
+    # Two successful outcomes for source_a push it to "validated" (threshold == 2).
+    assert current_pm.record_transferred_lesson_outcome(
+        lesson_key, success=True, source_project_path=str(source_a)
+    )
+    assert current_pm.record_transferred_lesson_outcome(
+        lesson_key, success=True, source_project_path=str(source_a)
+    )
+
+    updated = {
+        str(row["source_project_path"]): row
+        for row in current_pm.list_transferred_lessons(project_path=str(current))
+    }
+    row_a = updated[str(source_a)]
+    row_b = updated[str(source_b)]
+
+    assert int(row_a["validation_count"] or 0) == 2
+    assert int(row_a["success_count"] or 0) == 2
+    assert row_a["validation_status"] == "validated"
+
+    # The other source's row must be completely untouched.
+    assert int(row_b["validation_count"] or 0) == 0
+    assert int(row_b["success_count"] or 0) == 0
+    assert row_b["validation_status"] == "provisional"
+
+    # The validation audit decision must reference source_a's row, not source_b's.
+    decisions = current_pm.list_decisions(
+        project_path=str(current),
+        decision_type="validate_transferred_lesson",
+        limit=10,
+    )
+    assert len(decisions) == 1
+    assert int(decisions[0]["source_id"]) == int(row_a["id"])
+    evidence = json.loads(decisions[0]["evidence_json"])
+    assert evidence["source_project_path"] == str(source_a)
 
 
 def test_archived_transferred_lessons_are_removed_from_related_prompt_context(
@@ -1140,7 +1237,7 @@ def test_model_pack_submit_records_draft_pr(
         str(project),
         github_adapter_cls=StubGitHubAdapter,  # type: ignore[arg-type]
     )
-    with caplog.at_level("INFO", logger="tools.muscle.model_packs"):
+    with caplog.at_level("INFO", logger="muscle.model_packs"):
         result = submit_manager.submit_draft_pr(export_result.bundle_dir)
     assert result["status"] == "draft_opened"
     assert sorted(committed_paths) == [
@@ -1407,8 +1504,8 @@ def test_remote_model_pack_install_populates_local_cache_and_storage(
         github_adapter_cls=StubGitHubAdapter,  # type: ignore[arg-type]
     )
     with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr("tools.muscle.model_packs.REMOTE_CACHE_DIR", cache_root)
-        with caplog.at_level("INFO", logger="tools.muscle.model_packs"):
+        monkeypatch.setattr("muscle.model_packs.REMOTE_CACHE_DIR", cache_root)
+        with caplog.at_level("INFO", logger="muscle.model_packs"):
             metadata = manager.install_remote_bundle(
                 "minimax/m2.7@1",
                 repo="LivingEthos/muscle-model-packs",
@@ -1504,14 +1601,14 @@ def test_remote_model_pack_update_is_idempotent_when_version_matches(
         github_adapter_cls=StubGitHubAdapter,  # type: ignore[arg-type]
     )
     with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr("tools.muscle.model_packs.REMOTE_CACHE_DIR", cache_root)
+        monkeypatch.setattr("muscle.model_packs.REMOTE_CACHE_DIR", cache_root)
         first = manager.install_remote_bundle(
             "minimax/m2.7@1",
             repo="LivingEthos/muscle-model-packs",
             ref="main",
             expected_canonical_model_key="minimax/m2.7@1",
         )
-        with caplog.at_level("INFO", logger="tools.muscle.model_packs"):
+        with caplog.at_level("INFO", logger="muscle.model_packs"):
             second = manager.update_bundle("minimax/m2.7@1")
 
     assert first.version == second.version == "1.2.3"
@@ -1569,7 +1666,7 @@ def test_lesson_resolver_uses_remote_installed_pack_without_fetch(
             raise AssertionError("Remote fetch should not be reachable from prompt resolution")
 
     with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr("tools.muscle.model_packs.GitHubAdapter", FailingGitHubAdapter)
+        monkeypatch.setattr("muscle.model_packs.GitHubAdapter", FailingGitHubAdapter)
         resolver = LessonResolver(
             project_path=str(project),
             project_memory=pm,

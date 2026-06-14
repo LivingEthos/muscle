@@ -9,9 +9,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tools.muscle.code_review.fix_tracker import FixTracker
-from tools.muscle.code_review.review_kb import GlobalReviewKB, ReviewKB
-from tools.muscle.strategy_kb import GlobalKnowledgeBase
+from muscle.code_review.fix_tracker import FixTracker
+from muscle.code_review.review_kb import GlobalReviewKB, ReviewKB
+from muscle.strategy_kb import GlobalKnowledgeBase
 
 
 class TestReviewKBIntegration:
@@ -293,8 +293,8 @@ class TestStrategyKBIntegration:
 
 from datetime import datetime  # noqa: E402
 
-from tools.muscle.legacy_importer import LegacyImporter  # noqa: E402
-from tools.muscle.project_memory import ProjectMemory  # noqa: E402
+from muscle.legacy_importer import LegacyImporter  # noqa: E402
+from muscle.project_memory import ProjectMemory  # noqa: E402
 
 
 class TestLegacyImporterReviewKB:
@@ -302,7 +302,7 @@ class TestLegacyImporterReviewKB:
 
     def test_import_review_kb_basic(self, tmp_path: Path):
         """ReviewKB data is imported into review_runs + review_findings."""
-        from tools.muscle.code_review.review_kb import ReviewKB
+        from muscle.code_review.review_kb import ReviewKB
 
         # Setup legacy review_kb
         legacy_kb = ReviewKB(str(tmp_path / "legacy_review_kb"))
@@ -346,7 +346,7 @@ class TestLegacyImporterReviewKB:
 
     def test_import_review_kb_idempotent(self, tmp_path: Path):
         """Running the import twice produces the same result (no duplicates)."""
-        from tools.muscle.code_review.review_kb import ReviewKB
+        from muscle.code_review.review_kb import ReviewKB
 
         # Setup legacy review_kb with a unique issue
         muscle_dir = tmp_path / ".muscle"
@@ -410,7 +410,7 @@ class TestLegacyImporterStrategies:
 
     def test_import_strategies_basic(self, tmp_path: Path):
         """Strategies are imported into learned_rules table."""
-        from tools.muscle.strategy_kb import StrategyKB
+        from muscle.strategy_kb import StrategyKB
 
         # Setup legacy strategies.db
         muscle_dir = tmp_path / ".muscle"
@@ -500,7 +500,7 @@ class TestLegacyImporterFixTracker:
 
     def test_import_fix_tracker_basic(self, tmp_path: Path):
         """Fix attempts are imported from legacy store."""
-        from tools.muscle.code_review.fix_tracker import FixTracker
+        from muscle.code_review.fix_tracker import FixTracker
 
         muscle_dir = tmp_path / ".muscle"
         muscle_dir.mkdir()

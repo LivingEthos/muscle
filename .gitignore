@@ -62,3 +62,4 @@ muscle-main/
 # Claude Code / assistant working artifacts (per-session, not project state)
 .claude/
 docs/superpowers/
+api-keys.md

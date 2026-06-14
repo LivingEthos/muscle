@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.muscle.tui.project_manager import ProjectConfig, ProjectManager
+from muscle.tui.project_manager import ProjectConfig, ProjectManager
 
 
 class TestProjectConfig:
@@ -23,6 +23,8 @@ class TestProjectConfig:
         assert config.automation_level == "auto-fix"
         assert config.github_enabled is False
         assert config.review_execution == "local"
+        assert config.review_async_workers is False
+        assert config.review_async_worker_limit == 3
         assert config.related_project_mode == "suggest"
         assert config.model_pack_mode == "suggest"
 
@@ -53,6 +55,8 @@ class TestProjectManager:
         loaded = manager.load_config(tmp_path)
         assert loaded is not None
         assert loaded.review_execution == "local"
+        assert loaded.review_async_workers is False
+        assert loaded.review_async_worker_limit == 3
         assert loaded.related_project_mode == "suggest"
         assert loaded.model_pack_mode == "suggest"
 

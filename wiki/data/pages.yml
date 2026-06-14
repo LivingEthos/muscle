@@ -43,7 +43,7 @@ sections:
         summary: DB-first memory, learning pipeline, related projects, and bounded markdown.
       - path: concepts/model-routing-and-packs.md
         title: Model Routing And Packs
-        summary: Task routing, canonical model identity, model packs, and lesson overlays.
+        summary: Task routing, provider roles, OpenAI-compatible tool schemas, canonical model identity, model packs, and lesson overlays.
       - path: concepts/evidence-savings-filters.md
         title: Evidence, Savings, And Filters
         summary: Command evidence, parser tiers, savings, discovery, and trust-gated filters.

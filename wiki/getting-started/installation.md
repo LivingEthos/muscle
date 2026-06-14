@@ -69,9 +69,9 @@ For a local checkout:
 
 ```bash
 uv sync --extra dev
-uv run mypy tools/muscle/
-uv run ruff check tools/muscle/
-uv run ruff format --check tools/muscle/
+uv run mypy src/muscle/
+uv run ruff check src/muscle/
+uv run ruff format --check src/muscle/
 uv run pytest tests/ -v
 ```
 

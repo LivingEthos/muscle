@@ -7,9 +7,9 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.muscle.loop_controller import LoopContext
-from tools.muscle.session_manager import SessionManager
-from tools.muscle.types import BudgetMode, IterationResult, LoopStats, RunConfig, SessionStatus
+from muscle.loop_controller import LoopContext
+from muscle.session_manager import SessionManager
+from muscle.types import BudgetMode, IterationResult, LoopStats, RunConfig, SessionStatus
 
 
 class TestSessionManager:
@@ -40,7 +40,7 @@ class TestSessionManager:
                 return FixedNow()
 
         config = RunConfig(task="Same task")
-        with patch("tools.muscle.session_manager.datetime", FixedDateTime):
+        with patch("muscle.session_manager.datetime", FixedDateTime):
             first_session_id = manager.create_session(config)
             second_session_id = manager.create_session(config)
 

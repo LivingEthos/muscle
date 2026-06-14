@@ -2,7 +2,7 @@
 Unit tests for code_review types.
 """
 
-from tools.muscle.code_review.types import (
+from muscle.code_review.types import (
     HandoffIssue,
     HandoffPlan,
     IssueCategory,
@@ -371,7 +371,7 @@ def test_issue_category_name_is_upper_str_for_logs():
 
 def test_review_mode_value_is_lowercase_str():
     """[TY-CR] ReviewMode.value is a lowercase str — used for persistence/JSON."""
-    from tools.muscle.code_review.types import ReviewMode
+    from muscle.code_review.types import ReviewMode
 
     for member in ReviewMode:
         assert isinstance(member.value, str), f"ReviewMode.{member.name}.value should be str"

@@ -10,6 +10,23 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_provider_resolution(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Generator[None, None, None]:
+    """Keep provider resolution hermetic for the whole suite.
+
+    Without this, product flows exercised by tests could read the developer's
+    real ~/.muscle/config.json (global scope) or MUSCLE_PROVIDER env var via
+    muscle.providers.resolve_provider and route to an unexpected backend.
+    """
+    monkeypatch.delenv("MUSCLE_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        "muscle.providers.GLOBAL_CONFIG_PATH", tmp_path / "nonexistent-global-config.json"
+    )
+    yield
+
+
 @pytest.fixture
 def mock_subprocess() -> Generator[MagicMock, None, None]:
     with patch("subprocess.run") as mock_run:

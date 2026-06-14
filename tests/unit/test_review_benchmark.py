@@ -8,8 +8,11 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.muscle.code_review import review_benchmark as benchmark_module
-from tools.muscle.code_review.types import IssueCategory, ReviewIssue, Severity
+import pytest
+
+from muscle.code_review import review_benchmark as benchmark_module
+from muscle.code_review.types import IssueCategory, ReviewIssue, Severity
+from muscle.structured_io import parse_benchmark_result_envelope, render_benchmark_result_envelope
 
 
 def _issue(file_path: str, severity: Severity, title: str, description: str) -> ReviewIssue:
@@ -95,7 +98,7 @@ def _scenario_result(
     baseline: dict[str, object],
     candidate: dict[str, object],
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "scenario": name,
         "suite": suite,
         "description": f"{suite} scenario",
@@ -104,6 +107,19 @@ def _scenario_result(
         "baseline": baseline,
         "candidate": candidate,
     }
+    payload["result_envelope"] = render_benchmark_result_envelope(
+        result=payload,
+        evidence_ids=[],
+        methodology={
+            "judge_model": benchmark_module.BENCHMARK_JUDGE_MODEL,
+            "prompt_version": benchmark_module.BENCHMARK_PROMPT_VERSION,
+            "rubric_version": benchmark_module.BENCHMARK_RUBRIC_VERSION,
+            "grader_run_count": 2,
+            "pairwise_ordering": {"baseline": "legacy", "candidate": "review-smart"},
+        },
+    )
+    payload["integrity"] = {"passed": True, "issue_count": 0, "issues": []}
+    return payload
 
 
 class TestReviewBenchmarkRunner:
@@ -130,6 +146,44 @@ class TestReviewBenchmarkRunner:
 
         assert scenarios
         assert all(scenario.suite == "related-project" for scenario in scenarios)
+
+    def test_get_client_uses_fresh_factory_client_per_call(self, tmp_path: Path):
+        created = []
+
+        def factory(**kwargs):
+            client = object()
+            created.append((client, kwargs))
+            return client
+
+        runner = benchmark_module.ReviewBenchmarkRunner(
+            str(tmp_path),
+            client_factory=factory,  # type: ignore[arg-type]
+        )
+
+        first = runner._get_client()
+        second = runner._get_client()
+
+        assert first is not second
+        assert [item[1]["project_path"] for item in created] == [
+            runner.project_path,
+            runner.project_path,
+        ]
+
+    def test_zero_scenario_manifest_fails_hard(self, tmp_path: Path):
+        fixture_root = tmp_path / "fixtures"
+        fixture_root.mkdir()
+        (fixture_root / "manifest.json").write_text(
+            json.dumps({"manifest_version": 2, "scenarios": []}),
+            encoding="utf-8",
+        )
+        runner = benchmark_module.ReviewBenchmarkRunner(
+            str(tmp_path),
+            m27_client=object(),  # type: ignore[arg-type]
+            fixture_root=fixture_root,
+        )
+
+        with pytest.raises(ValueError, match="No benchmark scenarios"):
+            runner._load_scenarios(suite="all")
 
     def test_build_scenario_workspace_bootstraps_related_and_model_pack_state(
         self,
@@ -233,6 +287,46 @@ class TestReviewBenchmarkRunner:
             issue, scenario.expected_findings[0], scenario.target_path
         )
 
+    def test_compare_runs_emits_parseable_result_envelope(self, tmp_path: Path):
+        runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
+        scenario = benchmark_module.BenchmarkScenario(
+            name="sample",
+            suite="core-review",
+            target_path=str(tmp_path / "sample.py"),
+            false_positive_severity="medium",
+            expected_findings=[
+                benchmark_module.BenchmarkExpectedFinding(
+                    file_path="sample.py",
+                    minimum_severity="high",
+                    matchers=["sql injection"],
+                )
+            ],
+        )
+        issue = _issue(
+            str(tmp_path / "sample.py"),
+            Severity.HIGH,
+            "SQL injection vulnerability",
+            "Unsanitized query reaches the database.",
+        )
+        raw_run = {
+            "workflow_name": "review-smart",
+            "issues": [issue],
+            "duration_seconds": 1.0,
+            "tokens_used": 100,
+            "finding_count": 1,
+            "verified_fix_count": 0,
+            "one_shot_verified_fix_count": 0,
+            "net_tokens_saved": 0,
+            "lesson_usage_summary": benchmark_module.ReviewBenchmarkRunner._empty_lesson_usage_summary(),
+        }
+
+        compared = runner._compare_runs(scenario, raw_run, raw_run)
+        envelope = parse_benchmark_result_envelope(str(compared["result_envelope"]))
+
+        assert envelope.result["scenario"] == "sample"
+        assert envelope.methodology["judge_model"] == benchmark_module.BENCHMARK_JUDGE_MODEL
+        assert compared["integrity"]["passed"] is True
+
     def test_evaluate_run_counts_recall_and_false_positives(self, tmp_path: Path):
         runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
         scenario = benchmark_module.BenchmarkScenario(
@@ -275,6 +369,80 @@ class TestReviewBenchmarkRunner:
         assert metrics["recall"] == 1.0
         assert metrics["high_critical_recall"] == 1.0
         assert metrics["false_positive_count"] == 1
+
+    def test_token_gate_insufficient_data_when_candidate_zero_tokens(self):
+        """A candidate that made zero LLM calls must not pass the 30%-down gate
+        vacuously — it reports insufficient_data instead."""
+        aggregate = {
+            "baseline": {
+                "high_critical_recall": 0.0,
+                "false_positive_rate": 1.0,
+                "tokens_used": 22107,
+            },
+            "candidate": {
+                "high_critical_recall": 0.0,
+                "false_positive_rate": 0.0,
+                "tokens_used": 0,
+                "llm_call_count": 0,
+            },
+        }
+        thresholds = benchmark_module.ReviewBenchmarkRunner._evaluate_thresholds(aggregate)
+        assert thresholds["token_cost_down_30pct"] == "insufficient_data"
+        assert thresholds["candidate_token_basis_measurable"] is False
+        assert thresholds["token_cost_reduction"] is None
+
+    def test_token_gate_measures_real_reduction(self):
+        aggregate = {
+            "baseline": {
+                "high_critical_recall": 0.5,
+                "false_positive_rate": 0.2,
+                "tokens_used": 1000,
+            },
+            "candidate": {
+                "high_critical_recall": 0.8,
+                "false_positive_rate": 0.1,
+                "tokens_used": 500,
+                "llm_call_count": 3,
+            },
+        }
+        thresholds = benchmark_module.ReviewBenchmarkRunner._evaluate_thresholds(aggregate)
+        assert thresholds["candidate_token_basis_measurable"] is True
+        assert thresholds["token_cost_down_30pct"] is True
+        assert thresholds["token_cost_reduction"] == 0.5
+
+    def test_prompt_overhead_ratio_not_measurable_with_zero_candidate(self):
+        # Zero candidate basis -> ratio None (not a vacuous within-budget pass).
+        assert benchmark_module.ReviewBenchmarkRunner._token_overhead_ratio(1000, 0) is None
+        assert benchmark_module.ReviewBenchmarkRunner._token_overhead_ratio(0, 500) is None
+        assert benchmark_module.ReviewBenchmarkRunner._token_overhead_ratio(1000, 500) == 0.5
+
+    def test_matcher_handles_legacy_shaped_finding(self, tmp_path: Path):
+        """Legacy (M3) findings are ReviewIssue objects with title-cased severity
+        names and a relative basename path; the matcher resolves both correctly."""
+        runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
+        scenario = benchmark_module.BenchmarkScenario(
+            name="sample",
+            suite="core-review",
+            target_path=str(tmp_path / "python" / "bad_code.py"),
+            false_positive_severity="medium",
+            expected_findings=[
+                benchmark_module.BenchmarkExpectedFinding(
+                    file_path="bad_code.py",
+                    minimum_severity="critical",
+                    matchers=["eval", "unsafe"],
+                )
+            ],
+        )
+        # Legacy-shaped finding: model echoed only the basename as file_path.
+        legacy_issue = _issue(
+            "bad_code.py",
+            Severity.CRITICAL,
+            "Unsafe eval of user input",
+            "Calling eval on attacker-controlled input.",
+        )
+        assert runner._issue_matches_expected(
+            legacy_issue, scenario.expected_findings[0], scenario.target_path
+        )
 
     def test_run_benchmark_writes_reports(self, tmp_path: Path):
         runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
@@ -800,3 +968,144 @@ class TestReviewBenchmarkRunner:
         markdown = Path(paths["markdown"]).read_text(encoding="utf-8")
         assert "project_only_no_regression" in markdown
         assert "normal_paths_offline_safe" in markdown
+
+
+def _write_manifest(fixture_root: Path, manifest: dict) -> None:
+    fixture_root.mkdir(parents=True, exist_ok=True)
+    (fixture_root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
+class TestBenchmarkSecurity:
+    def test_path_traversal_target_is_rejected(self, tmp_path: Path):
+        fixture_root = tmp_path / "fixtures"
+        _write_manifest(
+            fixture_root,
+            {
+                "manifest_version": 2,
+                "scenarios": [
+                    {"name": "evil", "target_path": "../../etc/passwd"},
+                ],
+            },
+        )
+        runner = benchmark_module.ReviewBenchmarkRunner(
+            str(tmp_path / "proj"),
+            m27_client=object(),
+            fixture_root=fixture_root,  # type: ignore[arg-type]
+        )
+        import pytest
+
+        with pytest.raises(ValueError, match="escapes fixture root"):
+            runner._load_scenarios()
+
+    def test_zero_scenarios_hard_fails_for_all(self, tmp_path: Path):
+        fixture_root = tmp_path / "fixtures"
+        _write_manifest(fixture_root, {"manifest_version": 2, "scenarios": []})
+        runner = benchmark_module.ReviewBenchmarkRunner(
+            str(tmp_path / "proj"),
+            m27_client=object(),
+            fixture_root=fixture_root,  # type: ignore[arg-type]
+        )
+        import pytest
+
+        with pytest.raises(ValueError, match="No benchmark scenarios"):
+            runner._load_scenarios(suite="all")
+
+    def test_manifest_missing_required_field_rejected(self, tmp_path: Path):
+        fixture_root = tmp_path / "fixtures"
+        _write_manifest(
+            fixture_root,
+            {"manifest_version": 2, "scenarios": [{"name": "no-target"}]},
+        )
+        runner = benchmark_module.ReviewBenchmarkRunner(
+            str(tmp_path / "proj"),
+            m27_client=object(),
+            fixture_root=fixture_root,  # type: ignore[arg-type]
+        )
+        import pytest
+
+        with pytest.raises(ValueError, match="missing string 'target_path'"):
+            runner._load_scenarios()
+
+    def test_manifest_not_object_rejected(self, tmp_path: Path):
+        fixture_root = tmp_path / "fixtures"
+        fixture_root.mkdir(parents=True, exist_ok=True)
+        (fixture_root / "manifest.json").write_text("[]", encoding="utf-8")
+        runner = benchmark_module.ReviewBenchmarkRunner(
+            str(tmp_path / "proj"),
+            m27_client=object(),
+            fixture_root=fixture_root,  # type: ignore[arg-type]
+        )
+        import pytest
+
+        with pytest.raises(ValueError, match="must be a JSON object"):
+            runner._load_scenarios()
+
+    def test_symlink_in_fixture_source_rejected(self, tmp_path: Path):
+        fixture_root = tmp_path / "fixtures"
+        proj = fixture_root / "proj"
+        proj.mkdir(parents=True, exist_ok=True)
+        (proj / "real.py").write_text("x = 1\n")
+        outside = tmp_path / "secret.txt"
+        outside.write_text("secret")
+        (proj / "link.txt").symlink_to(outside)
+        runner = benchmark_module.ReviewBenchmarkRunner(
+            str(tmp_path / "out"),
+            m27_client=object(),
+            fixture_root=fixture_root,  # type: ignore[arg-type]
+        )
+        import pytest
+
+        with pytest.raises(ValueError, match="symlink"):
+            runner._assert_no_symlinks(proj)
+
+
+def test_oracle_forbid_tokens_reject_match(tmp_path):
+    runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
+    expected = benchmark_module.BenchmarkExpectedFinding(
+        file_path="sample.py",
+        minimum_severity="high",
+        matchers=["sql injection"],
+        forbid_tokens=["false positive"],
+    )
+    target = str(tmp_path / "sample.py")
+    matching = _issue(target, Severity.HIGH, "SQL injection vulnerability", "Unsanitized query.")
+    forbidden = _issue(
+        target, Severity.HIGH, "SQL injection vulnerability", "This is a false positive note."
+    )
+    assert runner._issue_matches_expected(matching, expected, target) is True
+    assert runner._issue_matches_expected(forbidden, expected, target) is False
+
+
+def test_oracle_forbid_tokens_default_empty_is_no_op(tmp_path):
+    runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
+    expected = benchmark_module.BenchmarkExpectedFinding(
+        file_path="sample.py", minimum_severity="high", matchers=["sql injection"]
+    )
+    target = str(tmp_path / "sample.py")
+    issue = _issue(target, Severity.HIGH, "SQL injection vulnerability", "Unsanitized query.")
+    assert expected.forbid_tokens == ()
+    assert runner._issue_matches_expected(issue, expected, target) is True
+
+
+def test_oracle_grader_aware_requires_word_boundary(tmp_path):
+    runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
+    runner._grader_aware = True  # exercise the strict branch directly
+    expected = benchmark_module.BenchmarkExpectedFinding(
+        file_path="sample.py", minimum_severity="high", matchers=["query"]
+    )
+    target = str(tmp_path / "sample.py")
+    whole_word = _issue(target, Severity.HIGH, "Unsafe query", "Raw query string.")
+    substring_only = _issue(target, Severity.HIGH, "queryString builder", "Builds queryString.")
+    assert runner._issue_matches_expected(whole_word, expected, target) is True
+    assert runner._issue_matches_expected(substring_only, expected, target) is False
+
+
+def test_oracle_non_strict_keeps_substring(tmp_path):
+    runner = benchmark_module.ReviewBenchmarkRunner(str(tmp_path), m27_client=object())  # type: ignore[arg-type]
+    assert runner._grader_aware is False  # default agent (unknown/M3) is not grader_aware
+    expected = benchmark_module.BenchmarkExpectedFinding(
+        file_path="sample.py", minimum_severity="high", matchers=["query"]
+    )
+    target = str(tmp_path / "sample.py")
+    substring_only = _issue(target, Severity.HIGH, "queryString builder", "Builds queryString.")
+    assert runner._issue_matches_expected(substring_only, expected, target) is True

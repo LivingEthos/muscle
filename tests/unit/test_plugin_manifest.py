@@ -2,10 +2,9 @@
 Unit tests for the MUSCLE Claude Code plugin manifest (PL-03).
 
 These tests enforce "filesystem is truth": the set of /muscle:<name>
-commands advertised in plugin.json's ``description`` field must match
-the set of ``*.md`` files under ``plugin/commands/`` exactly, with one
-tolerated exception for ``optimize-host-docs`` which may be added by a
-parallel Phase A change.
+commands advertised in plugin.json's ``description`` field must match the set
+of active ``*.md`` files under ``plugin/commands/``. Deprecated redirect files
+may remain on disk without being advertised.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ import pytest
 
 logger = logging.getLogger(__name__)
 
-PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "tools" / "muscle" / "plugin"
+PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "muscle" / "plugin"
 ROOT_MARKETPLACE_PATH = Path(__file__).resolve().parents[2] / ".claude-plugin" / "marketplace.json"
 MANIFEST_PATH = PLUGIN_ROOT / ".claude-plugin" / "plugin.json"
 MARKETPLACE_PATH = PLUGIN_ROOT / ".claude-plugin" / "marketplace.json"
@@ -34,6 +33,7 @@ COMMANDS_DIR = PLUGIN_ROOT / "commands"
 # Commands that may be introduced by a parallel (Phase A) change. If the
 # filesystem does not yet have them, we emit a warning rather than fail.
 TOLERATED_MISSING_COMMANDS: frozenset[str] = frozenset({"optimize-host-docs"})
+DEPRECATED_UNADVERTISED_COMMANDS: frozenset[str] = frozenset({"nightly-status"})
 
 _COMMAND_PATTERN = re.compile(r"/muscle:([a-z0-9][a-z0-9\-]*)")
 
@@ -124,7 +124,7 @@ class TestPluginManifest:
         assert plugin.get("source") == {
             "source": "git-subdir",
             "url": "https://github.com/LivingEthos/muscle.git",
-            "path": "tools/muscle/plugin",
+            "path": "src/muscle/plugin",
         }
         assert "savings" in plugin.get("description", "")
         assert "discovery" in plugin.get("description", "")
@@ -208,15 +208,23 @@ class TestPluginManifest:
         )
 
     def test_every_file_is_advertised_in_manifest(self) -> None:
-        """Every ``*.md`` under ``plugin/commands/`` must appear in the manifest."""
+        """Every active command file under ``plugin/commands/`` appears in the manifest."""
         fs_commands = _filesystem_commands()
         manifest_commands = _manifest_commands()
 
-        unadvertised = fs_commands - manifest_commands
+        unadvertised = fs_commands - manifest_commands - DEPRECATED_UNADVERTISED_COMMANDS
         assert not unadvertised, (
             f"Command file(s) exist but are not advertised in the manifest "
             f"description: {sorted(unadvertised)}"
         )
+
+    def test_deprecated_redirect_commands_are_not_advertised(self) -> None:
+        fs_commands = _filesystem_commands()
+        manifest_commands = _manifest_commands()
+
+        for command in DEPRECATED_UNADVERTISED_COMMANDS:
+            assert command in fs_commands
+            assert command not in manifest_commands
 
     def test_no_stale_init_enable_disable_references(self) -> None:
         """init/enable/disable were removed; make sure they do not reappear."""
@@ -226,9 +234,11 @@ class TestPluginManifest:
         assert "disable" not in manifest_commands
 
 
-@pytest.mark.parametrize("command_stem", sorted(_filesystem_commands()))
+@pytest.mark.parametrize(
+    "command_stem", sorted(_filesystem_commands() - DEPRECATED_UNADVERTISED_COMMANDS)
+)
 def test_filesystem_command_is_advertised(command_stem: str) -> None:
-    """Parametrized: each filesystem command appears in the manifest description."""
+    """Parametrized: each active filesystem command appears in the manifest description."""
     manifest_commands = _manifest_commands()
     assert command_stem in manifest_commands, (
         f"/muscle:{command_stem} exists as {command_stem}.md but is not "

@@ -12,9 +12,9 @@ Run the full release gate before claiming the plugin bundle is ready.
 
 ```bash
 uv sync --extra dev
-uv run mypy tools/muscle/
-uv run ruff check tools/muscle/
-uv run ruff format --check tools/muscle/
+uv run mypy src/muscle/
+uv run ruff check src/muscle/
+uv run ruff format --check src/muscle/
 uv run pytest tests/ -v
 ```
 
@@ -43,16 +43,16 @@ Confirm that the wheel contains:
 If Claude Code is installed:
 
 ```bash
-claude plugin validate tools/muscle/plugin/.claude-plugin/plugin.json
-claude plugin validate tools/muscle/plugin/.claude-plugin/marketplace.json
+claude plugin validate src/muscle/plugin/.claude-plugin/plugin.json
+claude plugin validate src/muscle/plugin/.claude-plugin/marketplace.json
 claude plugin validate .claude-plugin/marketplace.json
 ```
 
 If the local Codex build exposes plugin validation, run it against:
 
 ```text
-tools/muscle/plugin/.codex-plugin/plugin.json
-tools/muscle/plugin/hooks.json
+src/muscle/plugin/.codex-plugin/plugin.json
+src/muscle/plugin/hooks.json
 ```
 
 If Codex has no validator, record Codex validation as skipped and use

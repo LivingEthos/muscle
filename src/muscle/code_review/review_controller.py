@@ -1,0 +1,2139 @@
+"""
+Review Controller - Orchestrates the code review loop.
+
+Main orchestrator that combines:
+1. Static analysis (Ruff, ESLint, etc.)
+2. M2.7 semantic review
+3. Automatic fix generation and verification
+4. Handoff plan generation for complex issues
+5. Learning from reviews via ReviewKB
+
+Architecture Decision Record (ADR):
+- Follows LoopController patterns for consistency
+- Modes: review-only, auto-fix, plan-only, hybrid
+- Configurable severity thresholds
+- Self-learning via ReviewKB
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import uuid
+import weakref
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from threading import Lock
+from time import perf_counter
+from typing import TYPE_CHECKING, cast
+
+from ..delegation_metrics import (
+    DelegationEvent,
+    DelegationMetrics,
+    estimate_m27_cents,
+    provider_metadata,
+    resolve_m27_token_split,
+)
+from ..escalation import EscalationPolicy, EscalationRecord, EscalationRecorder
+from ..host_effort_policy import host_effort_metadata
+from ..host_risk_preflight import host_risk_metadata
+from ..io_safety import advisory_file_lock
+from ..m27_client import M27Client
+from ..project_memory import ProjectMemory
+from ..routing import Recommendation, TaskRouter, offline_route
+from ..verification_claims import (
+    VerificationClaim,
+    VerificationClaimType,
+    audit_verification_claims,
+    claim_from_command_evidence,
+)
+from .async_worker_policy import (
+    AsyncWorkerJobMetadata,
+    AsyncWorkerPolicyDecision,
+    AsyncWorkerPolicyInput,
+    build_worker_evidence_id,
+    decide_async_worker_policy,
+)
+from .code_reviewer import CodeReviewer, _read_file_cached
+from .committee_reviewer import AGENT_PRESSURE, CommitteeReviewer, _split_from_summary
+from .fix_generator import FixGenerator
+from .handoff_generator import HandoffGenerator
+from .review_artifacts import ReviewArtifactStore, resolve_trace_policy, review_issue_to_dict
+from .review_kb import GlobalReviewKB, ReviewKB
+from .review_scope import ReviewScopeClassifier, ScopeInputs
+from .review_workflows import ReviewWorkflowEngine, ReviewWorkflowLoader, ReviewWorkflowNode
+from .static_analyzer import StaticAnalyzer
+from .types import (
+    HandoffPlan,
+    PressureFocus,
+    ReviewConfig,
+    ReviewEvent,
+    ReviewIssue,
+    ReviewMode,
+    ReviewResult,
+    ReviewScope,
+    ReviewStats,
+    Severity,
+    StaticAnalysisResult,
+)
+from .verification_loop import VerificationLoop
+from .worktree_manager import GitWorktreeManager, WorktreeSession
+
+if TYPE_CHECKING:
+    from ..optimization.context_budgeter import ContextBudgeter
+
+
+# --- Workflow condition DSL --------------------------------------------------
+# Fix: RC-04. A tiny, explicit vocabulary for ``ReviewWorkflowNode.when``.
+# Adding a new predicate type means adding a constant + branch here and
+# documenting it alongside ``review_workflows.py``.
+WORKFLOW_CONDITION_AGENT_ENABLED = "agent_enabled:"
+WORKFLOW_CONDITION_MODE = "mode:"
+_WORKFLOW_CONDITION_PREFIXES: tuple[str, ...] = (
+    WORKFLOW_CONDITION_AGENT_ENABLED,
+    WORKFLOW_CONDITION_MODE,
+)
+
+
+def _workflow_condition_allows(
+    *,
+    condition: str | None,
+    scope_agents: set[str] | list[str] | tuple[str, ...],
+    active_mode: str,
+) -> bool:
+    """Evaluate a workflow ``when`` clause against the current review scope."""
+    if condition is None or condition == "":
+        return True
+    if condition.startswith(WORKFLOW_CONDITION_AGENT_ENABLED):
+        agent_name = condition.split(":", 1)[1]
+        return agent_name in scope_agents
+    if condition.startswith(WORKFLOW_CONDITION_MODE):
+        return active_mode == condition.split(":", 1)[1]
+    logger.warning(
+        "Unknown workflow condition %r; expected one of %s",
+        condition,
+        _WORKFLOW_CONDITION_PREFIXES,
+    )
+    return True
+
+
+logger = logging.getLogger(__name__)
+
+MAX_PARALLEL_FILE_REVIEWS = 5
+MAX_PARALLEL_FIXES = 3
+ASYNC_WORKER_SOURCE_EXTENSIONS = frozenset(
+    {
+        ".c",
+        ".cc",
+        ".cpp",
+        ".go",
+        ".h",
+        ".hpp",
+        ".java",
+        ".js",
+        ".jsx",
+        ".kt",
+        ".kts",
+        ".m",
+        ".mm",
+        ".py",
+        ".rs",
+        ".swift",
+        ".ts",
+        ".tsx",
+    }
+)
+
+
+@dataclass
+class ReviewContext:
+    session_id: str
+    config: ReviewConfig
+    stats: ReviewStats
+    issues: list[ReviewIssue] = field(default_factory=list)
+    handoff_plan: HandoffPlan | None = None
+    raw_issues: list[ReviewIssue] = field(default_factory=list)
+    fixed_issues: list[ReviewIssue] = field(default_factory=list)
+    unfixed_issues: list[ReviewIssue] = field(default_factory=list)
+    artifact_dir: str | None = None
+    artifact_store: ReviewArtifactStore | None = None
+    scope_summary: dict | None = None
+    agent_findings: dict[str, list[ReviewIssue]] = field(default_factory=dict)
+    worktree_path: str | None = None
+    base_branch: str | None = None
+    sync_summary: dict | None = None
+    applied_back_files: list[str] = field(default_factory=list)
+    cleanup_status: str | None = None
+
+
+class ReviewController:
+    def __init__(
+        self,
+        config: ReviewConfig,
+        m27_client: M27Client,
+        event_callback: Callable[[ReviewEvent, dict], None] | None = None,
+        use_kb: bool = True,
+        kb_path: str | None = None,
+        verification_loop: VerificationLoop | None = None,
+        correction_signal_callback: Callable[..., None] | None = None,
+        project_path: str | None = None,
+        context_budgeter: ContextBudgeter | None = None,
+        lesson_resolver: object | None = None,
+        benchmark_run: bool = False,
+    ):
+        self.config = config
+        self.m27_client = m27_client
+        self.event_callback = event_callback
+        self.correction_signal_callback = correction_signal_callback
+        self.project_path = project_path or self._resolve_project_path(config.target_path)
+        self.context_budgeter = context_budgeter
+        self.lesson_resolver = lesson_resolver
+        self.benchmark_run = benchmark_run
+        self.project_memory: ProjectMemory | None = None
+        try:
+            self.project_memory = ProjectMemory(self.project_path)
+        except Exception as exc:
+            logger.warning("Could not initialize project memory for %s: %s", self.project_path, exc)
+
+        self.static_analyzer = StaticAnalyzer(
+            target_path=config.target_path,
+            language=config.language,
+            include_patterns=config.include_patterns,
+            exclude_patterns=config.exclude_patterns,
+        )
+        self.code_reviewer = CodeReviewer(
+            m27_client,
+            max_issues_per_batch=config.max_issues_per_batch,
+            context_budgeter=context_budgeter,
+            project_path=self.project_path,
+            lesson_resolver=lesson_resolver,
+            include_patterns=config.include_patterns,
+            exclude_patterns=config.exclude_patterns,
+        )
+        self.committee_reviewer = CommitteeReviewer(self.code_reviewer)
+        self.fix_generator = FixGenerator(
+            m27_client,
+            context_budgeter=context_budgeter,
+            project_path=self.project_path,
+            lesson_resolver=lesson_resolver,
+            enable_fallback_fix_generation=True,
+        )
+        self.handoff_generator = HandoffGenerator(
+            m27_client,
+            context_budgeter=context_budgeter,
+            project_path=self.project_path,
+            lesson_resolver=lesson_resolver,
+        )
+        self.review_kb = ReviewKB(kb_path) if use_kb else None
+        self.global_review_kb = GlobalReviewKB() if use_kb else None
+        self.verification_loop = verification_loop or VerificationLoop(m27_client)
+        self.scope_classifier = ReviewScopeClassifier()
+        self.workflow_loader = ReviewWorkflowLoader()
+        self.workflow_engine = ReviewWorkflowEngine()
+        # In-process per-file fix locks. WeakValueDictionary so an entry is
+        # reclaimed once no fix holds the lock, preventing unbounded growth.
+        # Scope is this controller instance / process only — not cross-process.
+        self._fix_locks: weakref.WeakValueDictionary[str, Lock] = weakref.WeakValueDictionary()
+        self._fix_locks_guard = Lock()
+
+        self._review_context: ReviewContext | None = None
+        self._worktree_cleanup_failures: int = 0
+
+    def _record_external_lesson_outcome(
+        self,
+        session_id: str,
+        *,
+        stages: list[str],
+        success: bool,
+        outcome: str,
+    ) -> None:
+        if self.project_memory is None:
+            return
+        try:
+            self.project_memory.apply_transferred_lesson_outcomes(
+                project_path=self.project_path,
+                session_id=session_id,
+                stages=stages,
+                outcome=outcome,
+                success=success,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to record external lesson outcome for review session %s: %s",
+                session_id,
+                exc,
+            )
+
+    def _emit(self, event: ReviewEvent, data: dict) -> None:
+        if self.event_callback:
+            # Event emission is fire-and-forget observability: a throwing observer
+            # must not abort the in-flight review (FAILOPEN#6).
+            try:
+                self.event_callback(event, data)
+            except Exception:
+                logger.warning(
+                    "event_callback raised for review event %s — continuing review",
+                    event.value,
+                    exc_info=True,
+                )
+        logger.debug(f"Review Event: {event.value} - {data}")
+
+    def _ensure_artifact_store(self, ctx: ReviewContext) -> ReviewArtifactStore:
+        if ctx.artifact_store is None:
+            ctx.artifact_store = ReviewArtifactStore(self.project_path, ctx.session_id)
+            ctx.artifact_dir = ctx.artifact_store.artifact_dir
+        return ctx.artifact_store
+
+    def _base_trace_reasons(self) -> list[str]:
+        return ["benchmark_run"] if self.benchmark_run else []
+
+    def _record_delegation_event(self, ctx: ReviewContext) -> None:
+        """Record a delegation event for observability (Phase B.6)."""
+        try:
+            structured_metrics = (
+                self.m27_client.consume_structured_cache_metrics()
+                if hasattr(self.m27_client, "consume_structured_cache_metrics")
+                else {"cache_hits": 0, "cache_tokens_saved": 0}
+            )
+            route_summary = (
+                ctx.scope_summary.get("delegation_route", {})
+                if isinstance(ctx.scope_summary, dict)
+                else {}
+            )
+            host_risk_summary = (
+                route_summary.get("host_risk", {}) if isinstance(route_summary, dict) else {}
+            )
+            host_effort_summary = (
+                route_summary.get("host_effort", {}) if isinstance(route_summary, dict) else {}
+            )
+            async_worker_summary = (
+                ctx.scope_summary.get("async_workers", {})
+                if isinstance(ctx.scope_summary, dict)
+                else {}
+            )
+            route_cache_hit = int(bool(route_summary.get("from_cache")))
+            metrics = DelegationMetrics(self.project_path)
+            # ctx.stats now carries the real per-call input/output split threaded
+            # through every review token source. resolve_m27_token_split returns
+            # those values verbatim and only falls back to the combined
+            # tokens_used total for resumed legacy sessions whose split fields are
+            # still 0 (COST#1/#2).
+            model = getattr(self.m27_client, "model", None)
+            tokens_in, tokens_out = resolve_m27_token_split(
+                ctx.stats.input_tokens,
+                ctx.stats.output_tokens,
+                ctx.stats.tokens_used,
+            )
+            cached_in = min(max(0, ctx.stats.cached_input_tokens), tokens_in)
+            metrics.record(
+                DelegationEvent(
+                    session_id=ctx.session_id,
+                    entry_point=f"review:{self.config.mode.value}",
+                    task_tier=route_summary.get("tier"),
+                    m27_tokens_in=tokens_in,
+                    m27_tokens_out=tokens_out,
+                    m27_usd_cents=estimate_m27_cents(
+                        model, tokens_in, tokens_out, cached_input_tokens=cached_in
+                    ),
+                    verifications_run=ctx.stats.auto_fixed + ctx.stats.failed_fixes,
+                    verifications_failed=ctx.stats.failed_fixes,
+                    escalations_emitted=int(
+                        bool(
+                            isinstance(ctx.scope_summary, dict)
+                            and ctx.scope_summary.get("host_escalation")
+                        )
+                    ),
+                    cache_hits=structured_metrics["cache_hits"] + route_cache_hit,
+                    cache_tokens_saved=(
+                        structured_metrics["cache_tokens_saved"] + (256 if route_cache_hit else 0)
+                    ),
+                    pack_id=getattr(self.m27_client, "_cache_pack_id", None),
+                    pack_reused=bool(
+                        getattr(self.m27_client, "_cache_pack_id", None)
+                        and structured_metrics["cache_hits"] > 0
+                    ),
+                    metadata={
+                        "m27_cached_tokens_in": cached_in,
+                        "route_recommended": route_summary.get("recommended"),
+                        "route_confidence": route_summary.get("confidence"),
+                        "routing_profile": route_summary.get("routing_profile", "current"),
+                        "requested_host_model": host_risk_summary.get("requested_host_model"),
+                        "recommended_host_model": host_risk_summary.get("recommended_host"),
+                        "host_risk_safe_for_fable": host_risk_summary.get("safe_for_fable"),
+                        "host_risk_likely_fallback": host_risk_summary.get("likely_fallback"),
+                        "host_risk_reason_codes": host_risk_summary.get("reason_codes", []),
+                        "host_risk_needs_user_confirmation": host_risk_summary.get(
+                            "needs_user_confirmation"
+                        ),
+                        "fallback_policy": host_risk_summary.get("fallback_policy"),
+                        "host_effort_level": host_effort_summary.get("effort"),
+                        "host_effort_max_output_tokens": host_effort_summary.get(
+                            "max_output_tokens"
+                        ),
+                        "host_effort_retry_ladder": host_effort_summary.get("retry_ladder", []),
+                        "host_effort_stop_condition": host_effort_summary.get("stop_condition"),
+                        "host_effort_must_not_downgrade": host_effort_summary.get(
+                            "must_not_downgrade"
+                        ),
+                        "host_effort_avoided_escalation": host_effort_summary.get(
+                            "avoided_escalation"
+                        ),
+                        "verification_status": self._delegation_verification_status(ctx),
+                        "verified_fix_count": ctx.stats.auto_fixed,
+                        "failed_fix_count": ctx.stats.failed_fixes,
+                        "remaining_issues": len(ctx.unfixed_issues or ctx.issues),
+                        "async_workers_enabled": async_worker_summary.get("enabled"),
+                        "async_workers_triggered": async_worker_summary.get("should_run"),
+                        "async_worker_trigger_reasons": async_worker_summary.get(
+                            "trigger_reasons",
+                            [],
+                        ),
+                        "async_worker_job_count": len(
+                            async_worker_summary.get("worker_jobs", [])
+                            if isinstance(async_worker_summary.get("worker_jobs"), list)
+                            else []
+                        ),
+                        "token_savings_signal": (
+                            structured_metrics["cache_tokens_saved"]
+                            + (256 if route_cache_hit else 0)
+                        ),
+                        "benchmark_run": self.benchmark_run,
+                        # Provider stamping: keys omitted when the client carries
+                        # no provider_profile so the report defaults to minimax-plan.
+                        **provider_metadata(self.m27_client),
+                    },
+                )
+            )
+        except Exception as exc:
+            logger.debug("Failed to record delegation event: %s", exc)
+
+    @staticmethod
+    def _delegation_verification_status(ctx: ReviewContext) -> str:
+        if ctx.stats.auto_fixed and not ctx.stats.failed_fixes:
+            return "verified"
+        if ctx.stats.failed_fixes:
+            return "verification_failed"
+        if ctx.fixed_issues:
+            return "fixed_without_validation_summary"
+        return "not_applicable"
+
+    def _get_fix_lock(self, file_path: str) -> Lock:
+        with self._fix_locks_guard:
+            return self._fix_locks.setdefault(str(Path(file_path).resolve()), Lock())
+
+    def _fix_file_lock_sentinel(self, file_path: str) -> Path:
+        """Sentinel path for the cross-process advisory lock on a fix target.
+
+        Lock files live under `.muscle/locks/`, keyed by a hash of the resolved
+        target path, so two muscle processes auto-fixing the same source file
+        serialize WITHOUT dropping a `<file>.lock` next to the user's sources.
+        """
+        resolved = str(Path(file_path).resolve())
+        digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:16]
+        locks_dir = Path(self.project_path) / ".muscle" / "locks"
+        return locks_dir / f"fix-{digest}.lock-sentinel"
+
+    def run(self) -> ReviewContext:
+        # Fix: RC-01. Validate target containment up front so downstream fix
+        # writes, worktree maps, and file reads cannot escape the project root.
+        self._assert_path_within_project(self.config.target_path)
+
+        if self._should_use_isolated_worktree():
+            return self._run_in_isolated_worktree()
+
+        started_at = perf_counter()
+        ctx = ReviewContext(
+            session_id=str(uuid.uuid4())[:8],
+            config=self.config,
+            stats=ReviewStats(),
+        )
+        self._review_context = ctx
+
+        self._emit(ReviewEvent.REVIEW_START, {"session": ctx.session_id})
+
+        workflow_name = self._resolve_workflow_name()
+        skip_routing = self.config.mode in {ReviewMode.AUTO_FIX, ReviewMode.PRESSURE}
+        if workflow_name and not skip_routing:
+            try:
+                result = self._run_structured_workflow(ctx, workflow_name)
+                result.stats.duration_seconds = perf_counter() - started_at
+                self._record_delegation_event(result)
+                return result
+            except Exception as e:
+                if self._structured_workflow_mutated(ctx):
+                    logger.error(
+                        "Structured review workflow failed after applying changes; "
+                        "not falling back to legacy review mode.",
+                        exc_info=True,
+                    )
+                    raise
+                logger.warning(f"Structured review workflow failed, falling back: {e}")
+
+        if self.config.mode == ReviewMode.REVIEW:
+            result = self._run_review_mode(ctx)
+            result.stats.duration_seconds = perf_counter() - started_at
+            self._record_delegation_event(result)
+            return result
+
+        if self.config.mode == ReviewMode.AUTO_FIX:
+            result = self._run_auto_fix_mode(ctx)
+            result.stats.duration_seconds = perf_counter() - started_at
+            self._record_delegation_event(result)
+            return result
+
+        if self.config.mode == ReviewMode.PLAN:
+            result = self._run_plan_mode(ctx)
+            result.stats.duration_seconds = perf_counter() - started_at
+            self._record_delegation_event(result)
+            return result
+
+        if self.config.mode == ReviewMode.PRESSURE:
+            result = self._run_pressure_mode(ctx)
+            result.stats.duration_seconds = perf_counter() - started_at
+            self._record_delegation_event(result)
+            return result
+
+        if self.config.mode == ReviewMode.HYBRID:
+            result = self._run_hybrid_mode(ctx)
+            result.stats.duration_seconds = perf_counter() - started_at
+            self._record_delegation_event(result)
+            return result
+
+        # An unrecognized mode must fail loudly rather than silently running as
+        # hybrid (FAILOPEN#7).
+        raise ValueError(f"Unknown review mode: {self.config.mode}")
+
+    @staticmethod
+    def _structured_workflow_mutated(ctx: ReviewContext) -> bool:
+        """Return True once a structured workflow has changed the worktree."""
+        return bool(
+            ctx.fixed_issues
+            or ctx.stats.auto_fixed
+            or ctx.stats.failed_fixes
+            or getattr(ctx, "applied_back_files", None)
+        )
+
+    @staticmethod
+    def _resolve_project_path(target_path: str) -> str:
+        target = Path(target_path).resolve()
+        return str(target.parent if target.is_file() else target)
+
+    def _assert_path_within_project(self, target_path: str) -> Path:
+        """Ensure ``target_path`` resolves within the project root.
+
+        Fix: RC-01. Reject symlink traversal, ``..``-escapes, and absolute
+        paths that point outside the project root so adversarial prompts or
+        config cannot drive review/fix operations against arbitrary locations.
+        """
+        resolved = Path(target_path).resolve()
+        project_root = Path(self.project_path).resolve()
+        try:
+            resolved.relative_to(project_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"Target path {resolved} is outside project root {project_root}"
+            ) from exc
+        return resolved
+
+    def _should_use_isolated_worktree(self) -> bool:
+        return self.config.execution_mode == "worktree" and self.config.mode in {
+            ReviewMode.AUTO_FIX,
+            ReviewMode.HYBRID,
+        }
+
+    def _run_in_isolated_worktree(self) -> ReviewContext:
+        manager = GitWorktreeManager(self.project_path)
+        if not manager.is_available():
+            msg = "Worktree execution requires the target to be inside a git repository."
+            raise RuntimeError(msg)
+
+        session_id = str(uuid.uuid4())[:8]
+        session = manager.create(session_id)
+        if session is None:
+            msg = "Failed to create isolated git worktree for review execution."
+            raise RuntimeError(msg)
+
+        cleanup_status = "pending"
+        try:
+            sync_result = manager.sync_local_changes(session, self.config.target_path)
+            mapped_target = manager.map_target(session, self.config.target_path)
+            baseline_snapshot = manager.capture_snapshot(session, self.config.target_path)
+
+            def remap_event(event: ReviewEvent, data: dict) -> None:
+                self._emit(event, self._remap_event_data_from_worktree(session, data))
+
+            child_config = replace(
+                self.config,
+                target_path=mapped_target,
+                execution_mode="local",
+                worktree_enabled=False,
+            )
+            child_controller = ReviewController(
+                config=child_config,
+                m27_client=self.m27_client,
+                event_callback=remap_event,
+                use_kb=self.review_kb is not None,
+                verification_loop=self.verification_loop,
+                correction_signal_callback=self.correction_signal_callback,
+                project_path=session.worktree_path,
+                context_budgeter=self.context_budgeter,
+            )
+            child_ctx = child_controller.run()
+
+            delta = manager.collect_delta(session, self.config.target_path, baseline_snapshot)
+            applied_back_files = manager.apply_delta(session, delta)
+            mapped_ctx = self._remap_context_from_worktree(session, child_ctx)
+            mapped_ctx.config = self.config
+            mapped_ctx.worktree_path = session.worktree_path
+            mapped_ctx.base_branch = session.base_branch
+            mapped_ctx.sync_summary = sync_result.to_dict()
+            mapped_ctx.applied_back_files = applied_back_files
+            self._review_context = mapped_ctx
+            cleanup_status = "success"
+            return mapped_ctx
+        except Exception:
+            cleanup_status = "failed"
+            raise
+        finally:
+            if self._review_context is not None:
+                self._review_context.cleanup_status = cleanup_status
+            try:
+                manager.cleanup(session)
+            except Exception:
+                self._worktree_cleanup_failures += 1
+                logger.warning("Failed to clean up review worktree", exc_info=True)
+
+    def _remap_context_from_worktree(
+        self,
+        session: WorktreeSession,
+        ctx: ReviewContext,
+    ) -> ReviewContext:
+        ctx.issues = [self._remap_issue_from_worktree(session, issue) for issue in ctx.issues]
+        ctx.raw_issues = [
+            self._remap_issue_from_worktree(session, issue) for issue in ctx.raw_issues
+        ]
+        ctx.fixed_issues = [
+            self._remap_issue_from_worktree(session, issue) for issue in ctx.fixed_issues
+        ]
+        ctx.unfixed_issues = [
+            self._remap_issue_from_worktree(session, issue) for issue in ctx.unfixed_issues
+        ]
+        ctx.agent_findings = {
+            agent_name: [self._remap_issue_from_worktree(session, issue) for issue in issues]
+            for agent_name, issues in ctx.agent_findings.items()
+        }
+        ctx.scope_summary = self._remap_scope_summary_from_worktree(session, ctx.scope_summary)
+        return ctx
+
+    def _remap_issue_from_worktree(
+        self,
+        session: WorktreeSession,
+        issue: ReviewIssue,
+    ) -> ReviewIssue:
+        return replace(issue, file_path=self._remap_path_from_worktree(session, issue.file_path))
+
+    def _remap_scope_summary_from_worktree(
+        self,
+        session: WorktreeSession,
+        scope_summary: dict | None,
+    ) -> dict | None:
+        if scope_summary is None:
+            return None
+
+        remapped = dict(scope_summary)
+        for key in ("changed_files", "source_files", "doc_files", "test_files"):
+            values = remapped.get(key)
+            if isinstance(values, list):
+                remapped[key] = [self._remap_path_from_worktree(session, value) for value in values]
+        return remapped
+
+    def _remap_event_data_from_worktree(
+        self,
+        session: WorktreeSession,
+        data: dict,
+    ) -> dict:
+        remapped: dict = {}
+        for key, value in data.items():
+            if key == "file" and isinstance(value, str):
+                remapped[key] = self._remap_path_from_worktree(session, value)
+            else:
+                remapped[key] = value
+        return remapped
+
+    @staticmethod
+    def _remap_path_from_worktree(session: WorktreeSession, path: str) -> str:
+        worktree_root = Path(session.worktree_path).resolve()
+        candidate = Path(path).resolve()
+        try:
+            relative = candidate.relative_to(worktree_root)
+        except ValueError:
+            return path
+        return str(Path(session.repo_root) / relative)
+
+    def _resolve_workflow_name(self) -> str | None:
+        if self.config.workflow_name:
+            if self.config.workflow_name == "legacy":
+                return None
+            return self.config.workflow_name
+        if self.config.mode == ReviewMode.PRESSURE:
+            return "pressure-review"
+        if self.config.mode in {ReviewMode.AUTO_FIX, ReviewMode.HYBRID}:
+            return "review-fix-verify"
+        if self.config.review_profile == "comprehensive":
+            return "review-comprehensive"
+        if self.config.mode in {ReviewMode.REVIEW, ReviewMode.PLAN}:
+            return "review-smart"
+        return None
+
+    def _runtime_target_type(self) -> str:
+        if self.context_budgeter is not None:
+            return self.context_budgeter.infer_target_type(self.config.target_path)
+        target = Path(self.config.target_path)
+        if target.is_file():
+            return "file"
+        if target.is_dir():
+            return "directory"
+        return "unknown"
+
+    def _runtime_complexity(self, ctx: ReviewContext | None = None) -> str:
+        if ctx and ctx.scope_summary and ctx.scope_summary.get("complexity"):
+            return str(ctx.scope_summary["complexity"])
+        return "unknown"
+
+    def _configure_verification_runtime(self, ctx: ReviewContext) -> None:
+        self.verification_loop.configure_runtime(
+            project_path=self.project_path,
+            session_id=ctx.session_id,
+            workflow_name=self._resolve_workflow_name(),
+            review_mode=self.config.mode.value,
+            language=self.config.language,
+            complexity=self._runtime_complexity(ctx),
+            target_type=self._runtime_target_type(),
+            artifact_store=ctx.artifact_store,
+            trace_reasons=self._base_trace_reasons(),
+        )
+
+    def _build_route_description(self, static_issue_count: int, workflow_name: str | None) -> str:
+        target = Path(self.config.target_path)
+        target_kind = "file" if target.is_file() else "directory"
+        return (
+            f"mode={self.config.mode.value}; workflow={workflow_name or 'legacy'}; "
+            f"target={target_kind}:{target}; intensity={self.config.intensity.value}; "
+            f"static_issue_count={static_issue_count}; language={self.config.language or 'auto'}; "
+            f"fetch_sources={self.config.fetch_sources}"
+        )
+
+    @staticmethod
+    def _static_issue_categories(static_issues: list[dict[str, object]]) -> list[str]:
+        """Return a stable, compact static-issue category list for routing metadata."""
+        return sorted(
+            {
+                str(issue["category"])
+                for issue in static_issues
+                if isinstance(issue.get("category"), str) and issue["category"]
+            }
+        )
+
+    @staticmethod
+    def _high_critical_static_issue_count(static_issues: list[dict[str, object]]) -> int:
+        """Count high/critical static issues for host-effort routing."""
+        return sum(
+            1
+            for issue in static_issues
+            if str(issue.get("severity", "")).lower() in {"high", "critical"}
+        )
+
+    def _route_review_request(
+        self,
+        ctx: ReviewContext,
+        *,
+        static_issue_count: int,
+        workflow_name: str | None,
+        static_issue_categories: list[str] | None = None,
+        high_critical_issue_count: int = 0,
+    ) -> bool:
+        artifact_store = self._ensure_artifact_store(ctx)
+        route_description = self._build_route_description(static_issue_count, workflow_name)
+        if static_issue_categories:
+            route_description += "; static_issue_categories=" + ",".join(
+                sorted(static_issue_categories)
+            )
+        if high_critical_issue_count:
+            route_description += f"; high_critical_issue_count={high_critical_issue_count}"
+        if self.benchmark_run:
+            decision = offline_route(route_description)
+        else:
+            try:
+                decision = TaskRouter(self.m27_client).route(
+                    route_description,
+                    scope=Path(self.config.target_path),
+                )
+            except Exception as exc:
+                logger.warning("Task routing failed for review session %s: %s", ctx.session_id, exc)
+                return False
+
+        if ctx.scope_summary is None:
+            ctx.scope_summary = {}
+        route_payload = decision.to_dict()
+        if static_issue_categories:
+            route_payload["static_issue_categories"] = list(static_issue_categories)
+        if high_critical_issue_count:
+            route_payload["high_critical_issue_count"] = high_critical_issue_count
+        ctx.scope_summary["delegation_route"] = route_payload
+        if decision.host_risk is not None:
+            artifact_store.write_diagnostic(
+                "host-risk-preflight",
+                {
+                    "session_id": ctx.session_id,
+                    "route": route_payload,
+                    "metadata": host_risk_metadata(decision.host_risk),
+                },
+            )
+        if decision.host_effort is not None:
+            artifact_store.write_diagnostic(
+                "host-effort-policy",
+                {
+                    "session_id": ctx.session_id,
+                    "route": route_payload,
+                    "metadata": host_effort_metadata(decision.host_effort),
+                },
+            )
+
+        if decision.recommended != Recommendation.ESCALATE_TO_HOST:
+            return False
+
+        recorder = EscalationRecorder(self.project_path, EscalationPolicy())
+        reason = (
+            "low_confidence_route"
+            if recorder.should_escalate(
+                "low_confidence_route",
+                1,
+                route_confidence=decision.confidence,
+            )
+            else "architectural_route"
+        )
+        artifact_path = recorder.emit(
+            EscalationRecord(
+                session_id=ctx.session_id,
+                reason=reason,
+                source_module="review_controller",
+                issue_summary=(
+                    f"Route decision escalated review to host: tier={decision.tier.value}, "
+                    f"confidence={decision.confidence:.2f}, rationale={decision.rationale}"
+                ),
+                attempt_count=1,
+            )
+        )
+        escalation_diagnostic = artifact_store.write_diagnostic(
+            "host-escalation",
+            {
+                "session_id": ctx.session_id,
+                "reason": reason,
+                "route": dict(ctx.scope_summary["delegation_route"]),
+                "artifact_path": str(artifact_path),
+                "trace_policy": resolve_trace_policy("host_escalation")[0],
+            },
+        )
+        ctx.scope_summary["host_escalation"] = {
+            "reason": reason,
+            "artifact_path": str(artifact_path),
+            "diagnostic_path": str(escalation_diagnostic),
+        }
+        self._emit(
+            ReviewEvent.REVIEW_COMPLETE,
+            {
+                "session": ctx.session_id,
+                "issues": 0,
+                "escalated": True,
+                "route": ctx.scope_summary["delegation_route"],
+                "artifact_path": str(artifact_path),
+            },
+        )
+        return True
+
+    def _finalize_async_worker_policy(
+        self,
+        ctx: ReviewContext,
+        validation_payload: dict[str, object] | None = None,
+    ) -> AsyncWorkerPolicyDecision:
+        """Evaluate, record, and optionally queue hard-tail async review workers."""
+        start = perf_counter()
+        artifact_store = self._ensure_artifact_store(ctx)
+        if ctx.scope_summary is None:
+            ctx.scope_summary = {}
+
+        decision = decide_async_worker_policy(
+            AsyncWorkerPolicyInput(
+                enabled=self.config.async_workers,
+                target_file_count=self._target_file_count(ctx),
+                module_count=self._module_count(ctx),
+                verification_failure_count=self._verification_failure_count(
+                    ctx,
+                    validation_payload or {},
+                ),
+                subsystem_count=self._subsystem_count(ctx),
+                route_confidence=self._route_confidence(ctx),
+                route_tier=self._route_tier(ctx),
+                historical_pass_rate=self._historical_pass_rate(ctx),
+                worker_limit=self.config.async_worker_limit,
+            )
+        )
+        if decision.should_run and not self.benchmark_run:
+            self._queue_async_worker_jobs(ctx, decision)
+        decision.critical_path_time_ms += max(0, int((perf_counter() - start) * 1000))
+
+        payload = decision.to_dict()
+        ctx.scope_summary["async_workers"] = payload
+        artifact_store.write_diagnostic("async-worker-policy", payload)
+        return decision
+
+    def _queue_async_worker_jobs(
+        self,
+        ctx: ReviewContext,
+        decision: AsyncWorkerPolicyDecision,
+    ) -> None:
+        """Queue detached review-only worker jobs for hard-tail evidence collection."""
+        try:
+            from .shadow_worker import WorkerManager
+
+            manager = WorkerManager(project_path=self.project_path)
+            for target_path in self._select_async_worker_targets(ctx, decision.worker_limit):
+                job_id = manager.submit_shadow_job(
+                    target_path=target_path,
+                    mode=ReviewMode.REVIEW,
+                    intensity=self.config.intensity,
+                    execution_mode="local",
+                    timeout_seconds=min(self.config.timeout_seconds, 900),
+                    changed_files=self._source_files_for_worker(ctx),
+                    workflow_name="review-comprehensive",
+                    detached=True,
+                )
+                evidence_id = build_worker_evidence_id(
+                    session_id=ctx.session_id,
+                    job_id=job_id,
+                    trigger_reasons=decision.trigger_reasons,
+                )
+                decision.add_worker_job(
+                    AsyncWorkerJobMetadata(
+                        job_id=job_id,
+                        status="queued",
+                        target_path=target_path,
+                        trigger_reasons=list(decision.trigger_reasons),
+                        evidence_id=evidence_id,
+                    )
+                )
+        except Exception as exc:
+            logger.warning("Failed to queue async review workers: %s", exc)
+            decision.worker_errors.append(str(exc))
+
+    def _select_async_worker_targets(
+        self,
+        ctx: ReviewContext,
+        worker_limit: int,
+    ) -> list[str]:
+        """Return bounded, deterministic worker targets."""
+        targets: list[str] = []
+        for raw_path in self._source_files_for_worker(ctx):
+            resolved = self._resolve_review_path(raw_path)
+            if resolved is None or not resolved.exists() or not resolved.is_file():
+                continue
+            targets.append(str(resolved))
+            if len(targets) >= max(1, worker_limit):
+                break
+
+        if targets:
+            return targets
+        return [str(Path(self.config.target_path).resolve())]
+
+    def _source_files_for_worker(self, ctx: ReviewContext) -> list[str]:
+        scope = ctx.scope_summary or {}
+        source_files = scope.get("source_files") or scope.get("changed_files") or []
+        values: list[str] = [str(value) for value in source_files if isinstance(value, str)]
+        if not values:
+            values = sorted({issue.file_path for issue in [*ctx.issues, *ctx.raw_issues]})
+        return values
+
+    def _target_file_count(self, ctx: ReviewContext) -> int:
+        source_files = self._source_files_for_worker(ctx)
+        if source_files:
+            return len({str(self._resolve_review_path(path) or path) for path in source_files})
+
+        target = Path(self.config.target_path).resolve()
+        if target.is_file():
+            return 1
+        if not target.is_dir():
+            return 0
+        count = 0
+        for path in target.rglob("*"):
+            if path.is_file() and path.suffix.lower() in ASYNC_WORKER_SOURCE_EXTENSIONS:
+                count += 1
+                if count >= 10_000:
+                    break
+        return count
+
+    def _module_count(self, ctx: ReviewContext) -> int:
+        modules = {
+            self._subsystem_key(str(self._resolve_review_path(path) or path))
+            for path in self._source_files_for_worker(ctx)
+        }
+        modules = {module for module in modules if module}
+        if modules:
+            return len(modules)
+
+        target = Path(self.config.target_path).resolve()
+        if target.is_file():
+            return 1
+        if target.is_dir():
+            return len(
+                {
+                    self._subsystem_key(str(path))
+                    for path in target.rglob("*")
+                    if path.is_file() and path.suffix.lower() in ASYNC_WORKER_SOURCE_EXTENSIONS
+                }
+            )
+        return 0
+
+    def _subsystem_count(self, ctx: ReviewContext) -> int:
+        subsystems = {
+            self._subsystem_key(issue.file_path)
+            for issue in [*ctx.issues, *ctx.raw_issues]
+            if issue.file_path
+        }
+        subsystems = {subsystem for subsystem in subsystems if subsystem}
+        return len(subsystems)
+
+    def _subsystem_key(self, file_path: str) -> str:
+        resolved = self._resolve_review_path(file_path) or Path(file_path)
+        try:
+            relative = resolved.resolve().relative_to(Path(self.project_path).resolve())
+        except (OSError, ValueError):
+            relative = Path(file_path)
+        parts = [part for part in relative.parts if part not in {".", ""}]
+        if not parts:
+            return ""
+        if parts[0] in {"app", "lib", "packages", "services", "src"} and len(parts) > 1:
+            return Path(parts[1]).stem
+        return Path(parts[0]).stem
+
+    def _resolve_review_path(self, file_path: str) -> Path | None:
+        path = Path(file_path)
+        if path.is_absolute():
+            return path
+        candidates = [
+            Path(self.project_path) / path,
+            Path(self.config.target_path).resolve().parent / path,
+        ]
+        for candidate in candidates:
+            try:
+                if candidate.exists():
+                    return candidate.resolve()
+            except OSError:
+                continue
+        try:
+            return candidates[0].resolve()
+        except OSError:
+            return None
+
+    @staticmethod
+    def _route_confidence(ctx: ReviewContext) -> float | None:
+        route = (ctx.scope_summary or {}).get("delegation_route", {})
+        if not isinstance(route, dict):
+            return None
+        value = route.get("confidence")
+        if isinstance(value, int | float):
+            return float(value)
+        return None
+
+    @staticmethod
+    def _route_tier(ctx: ReviewContext) -> str | None:
+        route = (ctx.scope_summary or {}).get("delegation_route", {})
+        if not isinstance(route, dict):
+            return None
+        value = route.get("tier")
+        return str(value) if value is not None else None
+
+    def _verification_failure_count(
+        self,
+        ctx: ReviewContext,
+        validation_payload: dict[str, object],
+    ) -> int:
+        count = int(ctx.stats.failed_fixes or 0)
+        status = str(validation_payload.get("status") or "")
+        if status and status not in {"not-run", "passed", "pressure-only", "review-only"}:
+            count += 1
+        return count
+
+    def _historical_pass_rate(self, ctx: ReviewContext) -> float | None:
+        if self.project_memory is None:
+            return None
+        try:
+            rows = self.project_memory.list_workflow_rollups(
+                self.project_path,
+                stage="review_total",
+                limit=50,
+            )
+        except Exception:
+            return None
+
+        workflow_name = self._resolve_workflow_name() or (ctx.scope_summary or {}).get("workflow")
+        target_type = self._runtime_target_type()
+        language = self.config.language or "unknown"
+        matching = [
+            row
+            for row in rows
+            if str(row.get("workflow_name") or "") == str(workflow_name)
+            and str(row.get("target_type") or "unknown") == target_type
+            and str(row.get("language") or "unknown") in {language, "unknown"}
+        ]
+        run_count = sum(int(row.get("run_count") or 0) for row in matching)
+        if run_count < 3:
+            return None
+        success_count = sum(
+            int(row.get("validation_successes") or row.get("success_count") or 0)
+            for row in matching
+        )
+        return success_count / max(1, run_count)
+
+    def _run_structured_workflow(self, ctx: ReviewContext, workflow_name: str) -> ReviewContext:
+        workflow = self.workflow_loader.load(workflow_name)
+        artifact_store = self._ensure_artifact_store(ctx)
+
+        static_results = self.static_analyzer.analyze()
+        all_static_issues = self._flatten_static_issues(static_results)
+        self._emit(ReviewEvent.STATIC_ANALYSIS_COMPLETE, {"tools": len(static_results)})
+
+        scope = self.scope_classifier.classify(
+            ScopeInputs(
+                target_path=self.config.target_path,
+                workflow_name=workflow_name,
+                mode=self.config.mode,
+            )
+        )
+        ctx.scope_summary = scope.to_dict()
+        artifact_store.write_scope(scope)
+        self._configure_verification_runtime(ctx)
+        if self._route_review_request(
+            ctx,
+            static_issue_count=len(all_static_issues),
+            workflow_name=workflow_name,
+            static_issue_categories=self._static_issue_categories(all_static_issues),
+            high_critical_issue_count=self._high_critical_static_issue_count(all_static_issues),
+        ):
+            artifact_store.write_summary(
+                "# MUSCLE Review Summary\n\n- Escalated to host planner before semantic review.\n"
+            )
+            return ctx
+
+        def should_run(node: ReviewWorkflowNode, outputs: dict[str, object]) -> bool:
+            # Fix: RC-04. Workflow gate DSL parsed via named constants so the
+            # supported vocabulary is explicit in one place.
+            return _workflow_condition_allows(
+                condition=node.when,
+                scope_agents=scope.review_agents,
+                active_mode=self.config.mode.value,
+            )
+
+        fix_payload: dict = {
+            "applied": [],
+            "failed": [],
+            "verified": 0,
+            "remaining_issues": len(all_static_issues),
+        }
+        validation_payload: dict = {
+            "performed": False,
+            "remaining_issues": len(all_static_issues),
+            "status": "not-run",
+        }
+        artifact_store.write_fixes(fix_payload)
+        artifact_store.write_validation(validation_payload)
+        self._write_validation_claims(ctx, validation_payload, [])
+
+        def handle_classify(
+            _node: ReviewWorkflowNode,
+            _outputs: dict[str, object],
+        ) -> dict[str, object]:
+            return scope.to_dict()
+
+        def handle_review_agent(
+            node: ReviewWorkflowNode,
+            _outputs: dict[str, object],
+        ) -> list[ReviewIssue]:
+            issues = self.committee_reviewer.run_agent(
+                node.agent or "",
+                self.config.target_path,
+                all_static_issues,
+                scope,
+                self.config.pressure_focus,
+                self.config.pressure_challenge,
+                ctx.session_id,
+                workflow_name,
+                self.config.mode.value,
+                self.config.language,
+                self._runtime_complexity(ctx),
+                self._runtime_target_type(),
+                artifact_store=artifact_store,
+                trace_reasons=self._base_trace_reasons(),
+            )
+            ctx.agent_findings[node.agent or node.id] = issues
+            tin, tout, tcached = self.committee_reviewer.consume_agent_tokens(node.agent or node.id)
+            ctx.stats.input_tokens += tin
+            ctx.stats.output_tokens += tout
+            ctx.stats.cached_input_tokens += tcached
+            ctx.stats.tokens_used += tin + tout
+            return issues
+
+        def handle_synthesize(
+            _node: ReviewWorkflowNode,
+            outputs: dict[str, object],
+        ) -> list[ReviewIssue]:
+            agent_findings: dict[str, list[ReviewIssue]] = {}
+            for node in workflow.nodes:
+                if node.node_type != "review_agent" or node.id not in outputs:
+                    continue
+                output_value = outputs[node.id]
+                if not isinstance(output_value, list):
+                    continue
+                agent_findings[node.agent or node.id] = cast(list[ReviewIssue], output_value)
+            synthesized = self.committee_reviewer.synthesize(agent_findings)
+            ctx.raw_issues = [issue for issues in agent_findings.values() for issue in issues]
+            ctx.issues = self._filter_by_severity(synthesized)
+            ctx.stats.total_issues = len(synthesized)
+            ctx.stats.valid_issues = len(ctx.issues)
+            artifact_store.write_agent_findings(ctx.agent_findings)
+            artifact_store.write_synthesis(
+                ctx.issues,
+                self.committee_reviewer.summarize(ctx.issues),
+            )
+            self._emit(ReviewEvent.SEMANTIC_REVIEW_COMPLETE, {"issues": len(ctx.issues)})
+            return ctx.issues
+
+        def handle_fix(
+            _node: ReviewWorkflowNode,
+            outputs: dict[str, object],
+        ) -> dict[str, object]:
+            synthesized_output = outputs.get("synthesize", [])
+            synthesized_issues = synthesized_output if isinstance(synthesized_output, list) else []
+            fix_result = self._apply_workflow_fixes(ctx, synthesized_issues, scope)
+            fix_payload.update(fix_result)
+            artifact_store.write_fixes(fix_payload)
+            return fix_payload
+
+        def handle_validate(
+            _node: ReviewWorkflowNode,
+            _outputs: dict[str, object],
+        ) -> dict[str, object]:
+            nonlocal validation_payload
+            validation_payload = self._validate_post_fix_state(ctx)
+            artifact_store.write_validation(validation_payload)
+            if validation_payload["performed"]:
+                self._emit(
+                    ReviewEvent.FIX_VERIFIED,
+                    {"remaining_issues": validation_payload["remaining_issues"]},
+                )
+            return validation_payload
+
+        def handle_gate(
+            _node: ReviewWorkflowNode,
+            outputs: dict[str, object],
+        ) -> str:
+            validation_output = outputs.get("validate", validation_payload)
+            validation_result = (
+                validation_output if isinstance(validation_output, dict) else validation_payload
+            )
+            self._finalize_async_worker_policy(ctx, validation_result)
+            summary_markdown = self._build_summary_markdown(
+                workflow_name=workflow_name,
+                scope=ctx.scope_summary or scope.to_dict(),
+                synthesized_issues=ctx.issues,
+                fix_payload=fix_payload,
+                validation_payload=validation_result,
+            )
+            artifact_store.write_summary(summary_markdown)
+            return summary_markdown
+
+        handlers = {
+            "classify": handle_classify,
+            "review_agent": handle_review_agent,
+            "synthesize": handle_synthesize,
+            "fix": handle_fix,
+            "validate": handle_validate,
+            "gate": handle_gate,
+        }
+        self.workflow_engine.execute(workflow, handlers, should_run)
+
+        if self.config.mode == ReviewMode.PLAN and ctx.issues:
+            ctx.handoff_plan = self.handoff_generator.generate_handoffs(
+                ctx.issues,
+                ctx.session_id,
+                self.config.target_path,
+                workflow_name=workflow_name,
+                review_mode=self.config.mode.value,
+            )
+            ctx.stats.handoffs_generated = len(ctx.handoff_plan.issues)
+            self._emit(ReviewEvent.HANDOFF_GENERATED, {"count": ctx.stats.handoffs_generated})
+        elif not self.benchmark_run and self.config.mode in {
+            ReviewMode.HYBRID,
+            ReviewMode.REVIEW,
+            ReviewMode.PRESSURE,
+        }:
+            self._generate_handoffs(ctx)
+
+        self._emit(
+            ReviewEvent.REVIEW_COMPLETE,
+            {
+                "session": ctx.session_id,
+                "issues": len(ctx.issues),
+                "stats": self.committee_reviewer.summarize(ctx.issues),
+                "artifact_dir": ctx.artifact_dir,
+                "workflow": workflow_name,
+            },
+        )
+        return ctx
+
+    @staticmethod
+    def _flatten_static_issues(static_results: list) -> list[dict]:
+        all_static_issues = []
+        for result in static_results:
+            for issue in result.issues:
+                all_static_issues.append(
+                    {
+                        "file_path": issue.file_path,
+                        "line_number": issue.line_number,
+                        "severity": issue.severity,
+                        "message": issue.message,
+                        "category": issue.category,
+                        "rule_id": issue.rule_id,
+                    }
+                )
+        return all_static_issues
+
+    def _apply_fix_with_verification(
+        self,
+        ctx: ReviewContext,
+        issue: ReviewIssue,
+    ) -> tuple[bool, str | None]:
+        lock = self._get_fix_lock(issue.file_path)
+        # In-process lock serializes threads cheaply; the advisory file lock
+        # (taken INSIDE it, exactly once — advisory_file_lock is not reentrant)
+        # serializes separate muscle processes auto-fixing the same target.
+        with lock, advisory_file_lock(self._fix_file_lock_sentinel(issue.file_path)):
+            runtime_issue = issue
+            generated_fix = self.fix_generator.generate_fix(
+                issue,
+                session_id=ctx.session_id,
+                workflow_name=self._resolve_workflow_name(),
+                review_mode=self.config.mode.value,
+                language=self.config.language,
+                complexity=self._runtime_complexity(ctx),
+                target_type=self._runtime_target_type(),
+            )
+            if generated_fix.ok:
+                runtime_issue = replace(issue, file_path=generated_fix.file_path or issue.file_path)
+                fix_result = self.fix_generator.apply_fix(runtime_issue, generated_fix.code)
+            else:
+                fix_result = self.fix_generator.apply_fix_from_suggestion(issue)
+
+            if not fix_result.success:
+                return False, fix_result.error or generated_fix.error or "apply-failed"
+
+            verification_result = self.verification_loop.verify_fix(
+                issue=runtime_issue,
+                fixed_content=fix_result.fixed_content,
+            )
+            if self._review_context is not None:
+                self._review_context.stats.tokens_used += verification_result.tokens_spent
+                self._review_context.stats.input_tokens += verification_result.input_tokens_spent
+                self._review_context.stats.output_tokens += verification_result.output_tokens_spent
+
+            if verification_result.fix_verified:
+                self._record_external_lesson_outcome(
+                    ctx.session_id,
+                    stages=["semantic_review", "fix_generation"],
+                    success=True,
+                    outcome="positive_fix_verification",
+                )
+                return True, verification_result.verification_details
+
+            rollback_reason = (
+                verification_result.failure_analysis or verification_result.verification_details
+            )
+            self._record_external_lesson_outcome(
+                ctx.session_id,
+                stages=["semantic_review", "fix_generation"],
+                success=False,
+                outcome="negative_fix_verification",
+            )
+            rollback_ok = self.fix_generator.rollback_fix(fix_result)
+            self._emit(
+                ReviewEvent.FIX_ROLLBACK,
+                {
+                    "file": runtime_issue.file_path,
+                    "line": runtime_issue.line_number,
+                    "rolled_back": rollback_ok,
+                },
+            )
+            return False, rollback_reason
+
+    def _record_fix_failure(self, issue: ReviewIssue, reason: str | None) -> None:
+        if self.correction_signal_callback:
+            self.correction_signal_callback(
+                correction_type="fix_failed",
+                severity=issue.severity.name,
+                file_path=issue.file_path,
+                line_number=issue.line_number,
+                rule_id=issue.cwe_id or issue.title,
+                description=issue.description,
+            )
+
+    def _apply_workflow_fixes(
+        self,
+        ctx: ReviewContext,
+        issues: list[ReviewIssue],
+        scope: ReviewScope,
+    ) -> dict[str, object]:
+        if self.config.mode not in {ReviewMode.AUTO_FIX, ReviewMode.HYBRID}:
+            return {
+                "applied": [],
+                "failed": [],
+                "verified": 0,
+                "remaining_issues": len(issues),
+            }
+
+        fixable_issues = [issue for issue in issues if issue.auto_fixable and issue.suggested_fix]
+        if self.config.mode == ReviewMode.HYBRID:
+            fixable_issues = [
+                issue for issue in fixable_issues if issue.severity.value <= Severity.MEDIUM.value
+            ]
+
+        issues_to_fix = fixable_issues[: min(self.config.max_fixes_per_round, scope.auto_fix_cap)]
+        fixed_payload: list[dict] = []
+        failed_payload: list[dict] = []
+
+        fix_lock = Lock()
+        fixed_count = 0
+
+        def apply_single_fix(issue: ReviewIssue) -> tuple[bool, ReviewIssue, str | None]:
+            success, reason = self._apply_fix_with_verification(ctx, issue)
+            return success, issue, reason
+
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FIXES) as executor:
+            futures = {executor.submit(apply_single_fix, issue): issue for issue in issues_to_fix}
+            for future in as_completed(futures):
+                issue = futures[future]
+                try:
+                    success, issue, reason = future.result()
+                    if not success:
+                        ctx.unfixed_issues.append(issue)
+                        ctx.stats.failed_fixes += 1
+                        failed_payload.append(
+                            {
+                                "issue": review_issue_to_dict(issue),
+                                "reason": reason or "apply-failed",
+                            }
+                        )
+                        self._record_fix_failure(issue, reason)
+                        continue
+
+                    with fix_lock:
+                        fixed_count += 1
+                    ctx.fixed_issues.append(issue)
+                    fixed_payload.append(
+                        {
+                            "issue": review_issue_to_dict(issue),
+                            "verification": reason or "verified",
+                        }
+                    )
+                    self._emit(
+                        ReviewEvent.FIX_APPLIED,
+                        {"file": issue.file_path, "line": issue.line_number},
+                    )
+                except Exception as e:
+                    logger.warning(f"Fix application failed: {e}")
+                    ctx.stats.failed_fixes += 1
+                    failed_payload.append({"issue": review_issue_to_dict(issue), "reason": str(e)})
+                    self._record_fix_failure(issue, str(e))
+
+        ctx.stats.fixed_issues = fixed_count
+        ctx.stats.auto_fixed = fixed_count
+        unresolved = [issue for issue in issues if issue not in ctx.fixed_issues]
+        ctx.unfixed_issues = unresolved
+        return {
+            "applied": fixed_payload,
+            "failed": failed_payload,
+            "verified": fixed_count,
+            "remaining_issues": len(unresolved),
+        }
+
+    def _validate_post_fix_state(self, ctx: ReviewContext) -> dict:
+        if self.config.mode not in {ReviewMode.AUTO_FIX, ReviewMode.HYBRID}:
+            payload = {
+                "performed": False,
+                "remaining_issues": len(ctx.issues),
+                "status": "not-run",
+            }
+            self._write_validation_claims(ctx, payload, [])
+            return payload
+        re_review = self.static_analyzer.analyze()
+        remaining = sum(len(result.issues) for result in re_review)
+        payload = {
+            "performed": True,
+            "remaining_issues": remaining,
+            "status": "passed" if remaining == 0 else "issues-remaining",
+        }
+        self._write_validation_claims(ctx, payload, re_review)
+        return payload
+
+    def _write_validation_claims(
+        self,
+        ctx: ReviewContext,
+        validation_payload: dict,
+        static_results: list[StaticAnalysisResult],
+    ) -> None:
+        artifact_store = self._ensure_artifact_store(ctx)
+        claims = self._build_validation_claims(validation_payload, static_results)
+        artifact_store.write_claims(audit_verification_claims(claims))
+
+    def _build_validation_claims(
+        self,
+        validation_payload: dict,
+        static_results: list[StaticAnalysisResult],
+    ) -> list[VerificationClaim]:
+        if not validation_payload.get("performed"):
+            return [
+                VerificationClaim(
+                    claim_text="Post-fix validation was not run.",
+                    claim_type=VerificationClaimType.NOT_RUN,
+                    limitations=[str(validation_payload.get("status") or "not-run")],
+                )
+            ]
+
+        claims: list[VerificationClaim] = []
+        for result in static_results:
+            if result.evidence is None:
+                claims.append(
+                    VerificationClaim(
+                        claim_text=f"{result.tool_name} inspected without command evidence.",
+                        claim_type=VerificationClaimType.MANUAL_INSPECTION,
+                        limitations=["static analyzer produced no command evidence"],
+                    )
+                )
+                continue
+            claim_type = self._claim_type_for_static_tool(result.tool_name)
+            status = "passed" if result.evidence.exit_code == 0 else "failed"
+            claims.append(
+                claim_from_command_evidence(
+                    result.evidence,
+                    claim_type=claim_type,
+                    claim_text=f"{result.tool_name} validation {status}.",
+                )
+            )
+        if not claims:
+            claims.append(
+                VerificationClaim(
+                    claim_text="Post-fix validation produced no command evidence.",
+                    claim_type=VerificationClaimType.BLOCKED,
+                    limitations=["no static analyzer evidence was available"],
+                )
+            )
+        return claims
+
+    @staticmethod
+    def _claim_type_for_static_tool(tool_name: str) -> VerificationClaimType:
+        normalized = tool_name.lower()
+        if normalized in {"pyright", "tsc", "svelte-check"}:
+            return VerificationClaimType.TYPECHECKED
+        return VerificationClaimType.LINTED
+
+    @staticmethod
+    def _build_summary_markdown(
+        workflow_name: str,
+        scope: dict,
+        synthesized_issues: list[ReviewIssue],
+        fix_payload: dict,
+        validation_payload: dict,
+    ) -> str:
+        summary = {
+            "critical": sum(
+                1 for issue in synthesized_issues if issue.severity == Severity.CRITICAL
+            ),
+            "high": sum(1 for issue in synthesized_issues if issue.severity == Severity.HIGH),
+            "medium": sum(1 for issue in synthesized_issues if issue.severity == Severity.MEDIUM),
+            "low": sum(1 for issue in synthesized_issues if issue.severity == Severity.LOW),
+            "info": sum(1 for issue in synthesized_issues if issue.severity == Severity.INFO),
+        }
+        lines = [
+            "# MUSCLE Review Summary",
+            "",
+            f"- Workflow: `{workflow_name}`",
+            f"- Complexity: `{scope.get('complexity', 'unknown')}`",
+            f"- Agents: {', '.join(scope.get('review_agents', [])) or 'none'}",
+            f"- Findings: {json.dumps(summary, sort_keys=True)}",
+            f"- Fixes verified: {fix_payload.get('verified', 0)}",
+            f"- Validation status: `{validation_payload.get('status', 'not-run')}`",
+            "",
+            "## Synthesized Findings",
+        ]
+        if synthesized_issues:
+            for issue in synthesized_issues[:20]:
+                lines.append(
+                    f"- [{issue.severity.name}] `{issue.file_path}:{issue.line_number}` {issue.title}"
+                )
+        else:
+            lines.append("- No findings")
+        if not validation_payload.get("performed"):
+            lines.extend(
+                [
+                    "",
+                    "## Not Run",
+                    f"- Validation checks: `{validation_payload.get('status', 'not-run')}`",
+                ]
+            )
+        async_workers = scope.get("async_workers")
+        if isinstance(async_workers, dict):
+            worker_jobs = async_workers.get("worker_jobs")
+            worker_job_count = len(worker_jobs) if isinstance(worker_jobs, list) else 0
+            lines.extend(
+                [
+                    "",
+                    "## Async Workers",
+                    f"- Enabled: `{async_workers.get('enabled', False)}`",
+                    f"- Triggered: `{async_workers.get('should_run', False)}`",
+                    f"- Skipped reason: `{async_workers.get('skipped_reason') or 'none'}`",
+                    f"- Queued jobs: `{worker_job_count}`",
+                    f"- Arbitration: `{async_workers.get('arbitration_scope', 'compact_disagreements')}`",
+                ]
+            )
+        return "\n".join(lines)
+
+    def _run_review_mode(self, ctx: ReviewContext) -> ReviewContext:
+        artifact_store = self._ensure_artifact_store(ctx)
+        self._configure_verification_runtime(ctx)
+        static_results = self.static_analyzer.analyze()
+        self._emit(ReviewEvent.STATIC_ANALYSIS_COMPLETE, {"tools": len(static_results)})
+
+        all_static_issues = self._flatten_static_issues(static_results)
+        ctx.scope_summary = {
+            "mode": self.config.mode.value,
+            "workflow": self._resolve_workflow_name() or "legacy",
+            "target_path": self.config.target_path,
+            "target_type": self._runtime_target_type(),
+            "complexity": self._runtime_complexity(ctx),
+            "static_issue_count": len(all_static_issues),
+            "static_issue_categories": self._static_issue_categories(all_static_issues),
+            "high_critical_issue_count": self._high_critical_static_issue_count(all_static_issues),
+        }
+        artifact_store.write_scope(ctx.scope_summary)
+        if self._route_review_request(
+            ctx,
+            static_issue_count=len(all_static_issues),
+            workflow_name=self._resolve_workflow_name(),
+            static_issue_categories=self._static_issue_categories(all_static_issues),
+            high_critical_issue_count=self._high_critical_static_issue_count(all_static_issues),
+        ):
+            artifact_store.write_summary(
+                "# MUSCLE Review Summary\n\n- Escalated to host planner before semantic review.\n"
+            )
+            return ctx
+
+        supplemental_context = ""
+        if self.config.fetch_sources:
+            supplemental_context = self._build_source_context()
+
+        semantic_issues, summary = self.code_reviewer.review(
+            self.config.target_path,
+            all_static_issues,
+            telemetry_session_id=ctx.session_id,
+            workflow_name=self._resolve_workflow_name(),
+            review_mode=self.config.mode.value,
+            language=self.config.language,
+            complexity=self._runtime_complexity(ctx),
+            target_type=self._runtime_target_type(),
+            supplemental_context=supplemental_context,
+            artifact_store=artifact_store,
+            trace_reasons=self._base_trace_reasons(),
+        )
+        ctx.issues = self._filter_by_severity(semantic_issues)
+        ctx.raw_issues = list(semantic_issues)
+        ctx.stats.valid_issues = len(ctx.issues)
+        if isinstance(summary, dict):
+            tin, tout, tcached = _split_from_summary(summary)
+            ctx.stats.input_tokens += tin
+            ctx.stats.output_tokens += tout
+            ctx.stats.cached_input_tokens += tcached
+            ctx.stats.tokens_used += tin + tout
+        artifact_store.write_synthesis(ctx.issues, summary if isinstance(summary, dict) else {})
+        if self.config.mode == ReviewMode.REVIEW:
+            self._finalize_async_worker_policy(
+                ctx,
+                {"status": "review-only", "performed": False},
+            )
+        artifact_store.write_summary(
+            self._build_summary_markdown(
+                workflow_name=self._resolve_workflow_name() or "legacy",
+                scope=ctx.scope_summary or {},
+                synthesized_issues=ctx.issues,
+                fix_payload={
+                    "verified": ctx.stats.auto_fixed,
+                    "remaining_issues": len(ctx.unfixed_issues or ctx.issues),
+                },
+                validation_payload={"status": "review-only", "performed": False},
+            )
+        )
+        self._write_validation_claims(
+            ctx,
+            {"status": "review-only", "performed": False},
+            [],
+        )
+
+        self._emit(ReviewEvent.SEMANTIC_REVIEW_COMPLETE, {"issues": len(ctx.issues)})
+
+        if ctx.issues and not self.benchmark_run:
+            self._generate_handoffs(ctx)
+
+        self._emit(
+            ReviewEvent.REVIEW_COMPLETE,
+            {
+                "session": ctx.session_id,
+                "issues": len(ctx.issues),
+                "stats": {
+                    "critical": sum(1 for i in ctx.issues if i.severity == Severity.CRITICAL),
+                    "high": sum(1 for i in ctx.issues if i.severity == Severity.HIGH),
+                    "medium": sum(1 for i in ctx.issues if i.severity == Severity.MEDIUM),
+                },
+            },
+        )
+
+        return ctx
+
+    def _build_source_context(self) -> str:
+        """Build supplemental JS/TS dependency context via opensrc. Never raises.
+
+        Foreground-only: this is wired exclusively through ``_run_review_mode``
+        (which passes the result as ``supplemental_context`` to
+        ``code_reviewer.review``). The structured-workflow / committee path
+        (``_run_structured_workflow`` → ``CommitteeReviewer.run_agent``) does not
+        consume supplemental context, so ``fetch_sources`` is intentionally a
+        foreground-review feature. The agent-profile-driven snippet policy +
+        envelope emphasis (Plan 4) therefore apply on the foreground path only.
+        """
+        try:
+            from ..model_profiles import resolve_agent_security_posture
+            from .source_context import SourceContextBuilder
+
+            sec = resolve_agent_security_posture(self.project_path)
+            result = SourceContextBuilder(self.config.target_path).build(
+                fetch_source_packages=self.config.fetch_source_packages,
+                snippet_policy=sec.dependency_snippet_policy,
+                envelope_emphasis=sec.untrusted_envelope_emphasis,
+            )
+            if result.skip_reason:
+                logger.info("Source context skipped: %s", result.skip_reason)
+            return result.context
+        except Exception as exc:
+            logger.warning("Source context build failed (continuing without it): %s", exc)
+            return ""
+
+    def _run_auto_fix_mode(self, ctx: ReviewContext) -> ReviewContext:
+        ctx = self._run_review_mode(ctx)
+
+        fixable_issues = [i for i in ctx.issues if i.auto_fixable and i.suggested_fix]
+        ctx.stats.total_issues = len(fixable_issues)
+        issues_to_fix = fixable_issues[: self.config.max_fixes_per_round]
+
+        fix_lock = Lock()
+        fixed_count = 0
+        failed_fixes = 0
+
+        def apply_single_fix(issue: ReviewIssue) -> tuple[bool, ReviewIssue, str | None]:
+            success, reason = self._apply_fix_with_verification(ctx, issue)
+            return success, issue, reason
+
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FIXES) as executor:
+            futures = {executor.submit(apply_single_fix, issue): issue for issue in issues_to_fix}
+
+            for future in as_completed(futures):
+                try:
+                    success, issue, reason = future.result()
+                    if success:
+                        with fix_lock:
+                            fixed_count += 1
+                        ctx.fixed_issues.append(issue)
+                        self._emit(
+                            ReviewEvent.FIX_APPLIED,
+                            {"file": issue.file_path, "line": issue.line_number},
+                        )
+                        if self.review_kb:
+                            self.review_kb.record_fix_attempt(issue.title, True, 0)
+                    else:
+                        with fix_lock:
+                            failed_fixes += 1
+                        ctx.stats.failed_fixes += 1
+                        ctx.unfixed_issues.append(issue)
+                        self._record_fix_failure(issue, reason)
+                except Exception as e:
+                    failed_issue = futures[future]
+                    logger.warning(f"Fix application failed: {e}")
+                    with fix_lock:
+                        failed_fixes += 1
+                    ctx.stats.failed_fixes += 1
+                    ctx.unfixed_issues.append(failed_issue)
+                    self._record_fix_failure(failed_issue, str(e))
+
+        ctx.stats.fixed_issues = fixed_count
+        # Mirror the structured-workflow path (_apply_workflow_fixes): auto_fixed is
+        # the authoritative count for delegation verification status and the public
+        # ReviewResult.auto_fixed_count. Leaving it 0 here mislabels verified
+        # auto-fixes as "fixed_without_validation_summary".
+        ctx.stats.auto_fixed = fixed_count
+
+        if ctx.stats.fixed_issues > 0:
+            re_review = self.static_analyzer.analyze()
+            self._emit(ReviewEvent.FIX_VERIFIED, {"remaining_issues": len(re_review)})
+        artifact_store = self._ensure_artifact_store(ctx)
+        validation_payload = self._validate_post_fix_state(ctx)
+        self._finalize_async_worker_policy(ctx, validation_payload)
+        artifact_store.write_fixes(
+            {
+                "applied": [review_issue_to_dict(issue) for issue in ctx.fixed_issues],
+                "failed": [review_issue_to_dict(issue) for issue in ctx.unfixed_issues],
+                "verified": ctx.stats.fixed_issues,
+                "remaining_issues": validation_payload["remaining_issues"],
+            }
+        )
+        artifact_store.write_validation(validation_payload)
+        artifact_store.write_summary(
+            self._build_summary_markdown(
+                workflow_name=self._resolve_workflow_name() or "review-fix-verify",
+                scope=ctx.scope_summary or {},
+                synthesized_issues=ctx.issues,
+                fix_payload={
+                    "verified": ctx.stats.fixed_issues,
+                    "remaining_issues": validation_payload["remaining_issues"],
+                },
+                validation_payload=validation_payload,
+            )
+        )
+
+        return ctx
+
+    def _run_plan_mode(self, ctx: ReviewContext) -> ReviewContext:
+        ctx = self._run_review_mode(ctx)
+
+        if ctx.issues:
+            ctx.handoff_plan = self.handoff_generator.generate_handoffs(
+                ctx.issues,
+                ctx.session_id,
+                self.config.target_path,
+                workflow_name=self._resolve_workflow_name(),
+                review_mode=self.config.mode.value,
+            )
+            ctx.stats.handoffs_generated = len(ctx.handoff_plan.issues)
+            self._emit(ReviewEvent.HANDOFF_GENERATED, {"count": ctx.stats.handoffs_generated})
+
+        self._finalize_async_worker_policy(
+            ctx,
+            {"status": "plan-only", "performed": False},
+        )
+        self._ensure_artifact_store(ctx).write_summary(
+            self._build_summary_markdown(
+                workflow_name=self._resolve_workflow_name() or "review-smart",
+                scope=ctx.scope_summary or {},
+                synthesized_issues=ctx.issues,
+                fix_payload={
+                    "verified": 0,
+                    "remaining_issues": len(ctx.issues),
+                },
+                validation_payload={"status": "plan-only", "performed": False},
+            )
+        )
+        return ctx
+
+    def _run_hybrid_mode(self, ctx: ReviewContext) -> ReviewContext:
+        ctx = self._run_review_mode(ctx)
+
+        critical_high = [i for i in ctx.issues if i.severity.value >= Severity.HIGH.value]
+        if critical_high:
+            plan = self.handoff_generator.generate_handoffs(
+                critical_high,
+                ctx.session_id,
+                self.config.target_path,
+                workflow_name=self._resolve_workflow_name(),
+                review_mode=self.config.mode.value,
+            )
+            ctx.handoff_plan = plan
+            ctx.stats.handoffs_generated = len(plan.issues)
+
+        fixable = [
+            i for i in ctx.issues if i.auto_fixable and i.severity.value <= Severity.MEDIUM.value
+        ]
+        issues_to_fix = fixable[: self.config.max_fixes_per_round]
+
+        fix_lock = Lock()
+        fixed_count = 0
+
+        def apply_single_fix(issue: ReviewIssue) -> tuple[bool, ReviewIssue, str | None]:
+            success, reason = self._apply_fix_with_verification(ctx, issue)
+            return success, issue, reason
+
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FIXES) as executor:
+            futures = {executor.submit(apply_single_fix, issue): issue for issue in issues_to_fix}
+
+            for future in as_completed(futures):
+                try:
+                    success, issue, reason = future.result()
+                    if success:
+                        with fix_lock:
+                            fixed_count += 1
+                        ctx.fixed_issues.append(issue)
+                    else:
+                        ctx.unfixed_issues.append(issue)
+                        ctx.stats.failed_fixes += 1
+                        self._record_fix_failure(issue, reason)
+                except Exception as e:
+                    failed_issue = futures[future]
+                    logger.warning(f"Fix application failed: {e}")
+                    ctx.stats.failed_fixes += 1
+                    ctx.unfixed_issues.append(failed_issue)
+                    self._record_fix_failure(failed_issue, str(e))
+
+        ctx.stats.fixed_issues = fixed_count
+        # See _run_auto_fix_mode: auto_fixed feeds delegation verification status
+        # and the public ReviewResult.auto_fixed_count.
+        ctx.stats.auto_fixed = fixed_count
+        artifact_store = self._ensure_artifact_store(ctx)
+        validation_payload = self._validate_post_fix_state(ctx)
+        self._finalize_async_worker_policy(ctx, validation_payload)
+        artifact_store.write_fixes(
+            {
+                "applied": [review_issue_to_dict(issue) for issue in ctx.fixed_issues],
+                "failed": [review_issue_to_dict(issue) for issue in ctx.unfixed_issues],
+                "verified": ctx.stats.fixed_issues,
+                "remaining_issues": validation_payload["remaining_issues"],
+            }
+        )
+        artifact_store.write_validation(validation_payload)
+        artifact_store.write_summary(
+            self._build_summary_markdown(
+                workflow_name=self._resolve_workflow_name() or "review-fix-verify",
+                scope=ctx.scope_summary or {},
+                synthesized_issues=ctx.issues,
+                fix_payload={
+                    "verified": ctx.stats.fixed_issues,
+                    "remaining_issues": validation_payload["remaining_issues"],
+                },
+                validation_payload=validation_payload,
+            )
+        )
+
+        return ctx
+
+    def _run_pressure_mode(self, ctx: ReviewContext) -> ReviewContext:
+        artifact_store = self._ensure_artifact_store(ctx)
+        static_results = self.static_analyzer.analyze()
+        self._emit(ReviewEvent.STATIC_ANALYSIS_COMPLETE, {"tools": len(static_results)})
+
+        pressure_focus = self.config.pressure_focus or PressureFocus(
+            design_tradeoffs=True,
+            failure_modes=True,
+            race_conditions=True,
+            auth_security=True,
+            data_loss=True,
+        )
+
+        target = Path(self.config.target_path)
+        if target.is_file():
+            files_to_review = [target]
+        else:
+            lang = self.config.language or "python"
+            ext_map = {
+                "python": ".py",
+                "javascript": ".js",
+                "typescript": ".ts",
+                "go": ".go",
+                "rust": ".rs",
+            }
+            ext = ext_map.get(lang, ".py")
+            files_to_review = list(target.rglob(f"*{ext}"))
+        ctx.scope_summary = {
+            "mode": self.config.mode.value,
+            "workflow": self._resolve_workflow_name() or "pressure-review",
+            "target_path": self.config.target_path,
+            "target_type": self._runtime_target_type(),
+            "complexity": self._runtime_complexity(ctx),
+            "source_files": [str(path) for path in files_to_review],
+            "static_tool_count": len(static_results),
+        }
+        artifact_store.write_scope(ctx.scope_summary)
+
+        issues_lock = Lock()
+        found_issues: list[ReviewIssue] = []
+
+        def review_single_file(
+            file_path: Path,
+        ) -> tuple[list[ReviewIssue], int, int, int]:
+            issues: list[ReviewIssue] = []
+            tokens_in = 0
+            tokens_out = 0
+            tokens_cached = 0
+            try:
+                cached_content = _read_file_cached(str(file_path))
+                if cached_content is not None:
+                    pressure_scope = ReviewScope(
+                        complexity=self._runtime_complexity(ctx),
+                        source_files=[str(file_path)],
+                        touched_languages=[self.config.language or file_path.suffix.lstrip(".")],
+                        review_agents=[AGENT_PRESSURE],
+                        review_intensity=self.config.intensity.value,
+                        line_count=len(cached_content.splitlines()),
+                    )
+                    pressure_issues = self.committee_reviewer.run_agent(
+                        AGENT_PRESSURE,
+                        str(file_path),
+                        [],
+                        pressure_scope,
+                        pressure_focus,
+                        self.config.pressure_challenge,
+                        ctx.session_id,
+                        self._resolve_workflow_name(),
+                        self.config.mode.value,
+                        self.config.language,
+                        self._runtime_complexity(ctx),
+                        self._runtime_target_type(),
+                        artifact_store,
+                        self._base_trace_reasons(),
+                    )
+                    tokens_in, tokens_out, tokens_cached = (
+                        self.committee_reviewer.consume_agent_tokens(AGENT_PRESSURE)
+                    )
+                    issues.extend(
+                        issue
+                        for issue in pressure_issues
+                        if issue.severity.value >= self.config.severity_threshold.value
+                    )
+            except Exception as e:
+                logger.warning(f"Pressure review failed for {file_path}: {e}")
+            return issues, tokens_in, tokens_out, tokens_cached
+
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FILE_REVIEWS) as executor:
+            futures = {executor.submit(review_single_file, fp): fp for fp in files_to_review}
+
+            for future in as_completed(futures):
+                try:
+                    issues, tokens_in, tokens_out, tokens_cached = future.result()
+                    with issues_lock:
+                        found_issues.extend(issues)
+                        ctx.stats.input_tokens += tokens_in
+                        ctx.stats.output_tokens += tokens_out
+                        ctx.stats.cached_input_tokens += tokens_cached
+                        ctx.stats.tokens_used += tokens_in + tokens_out
+                except Exception as e:
+                    logger.warning(f"Pressure review failed: {e}")
+
+        ctx.issues = found_issues
+        ctx.raw_issues = list(found_issues)
+        ctx.agent_findings = {
+            f"pressure:{self.config.pressure_challenge or 'default'}": list(found_issues)
+        }
+        ctx.stats.valid_issues = len(ctx.issues)
+        artifact_store.write_agent_findings(ctx.agent_findings)
+        artifact_store.write_synthesis(
+            ctx.issues,
+            {
+                "challenge_mode": self.config.pressure_challenge or "default",
+                "total": len(ctx.issues),
+            },
+        )
+        self._finalize_async_worker_policy(
+            ctx,
+            {"status": "pressure-only", "performed": False},
+        )
+        artifact_store.write_summary(
+            self._build_summary_markdown(
+                workflow_name=self._resolve_workflow_name() or "pressure-review",
+                scope=ctx.scope_summary or {},
+                synthesized_issues=ctx.issues,
+                fix_payload={"verified": 0, "remaining_issues": len(ctx.issues)},
+                validation_payload={"status": "pressure-only", "performed": False},
+            )
+        )
+        self._emit(ReviewEvent.SEMANTIC_REVIEW_COMPLETE, {"issues": len(ctx.issues)})
+
+        if ctx.issues:
+            self._generate_handoffs(ctx)
+
+        self._emit(
+            ReviewEvent.REVIEW_COMPLETE,
+            {
+                "session": ctx.session_id,
+                "issues": len(ctx.issues),
+                "stats": {
+                    "critical": sum(1 for i in ctx.issues if i.severity == Severity.CRITICAL),
+                    "high": sum(1 for i in ctx.issues if i.severity == Severity.HIGH),
+                    "medium": sum(1 for i in ctx.issues if i.severity == Severity.MEDIUM),
+                },
+            },
+        )
+
+        return ctx
+
+    @staticmethod
+    def _parse_pressure_severity(s: str) -> Severity:
+        s = s.upper()
+        mapping = {
+            "CRITICAL": Severity.CRITICAL,
+            "HIGH": Severity.HIGH,
+            "MEDIUM": Severity.MEDIUM,
+            "LOW": Severity.LOW,
+        }
+        return mapping.get(s, Severity.MEDIUM)
+
+    def _filter_by_severity(self, issues: list[ReviewIssue]) -> list[ReviewIssue]:
+        return [i for i in issues if i.severity.value >= self.config.severity_threshold.value]
+
+    def _generate_handoffs(self, ctx: ReviewContext) -> None:
+        if not ctx.issues:
+            return
+
+        high_severity = [i for i in ctx.issues if i.severity.value >= Severity.HIGH.value]
+        if high_severity:
+            ctx.handoff_plan = self.handoff_generator.generate_handoffs(
+                high_severity,
+                ctx.session_id,
+                self.config.target_path,
+                workflow_name=self._resolve_workflow_name(),
+                review_mode=self.config.mode.value,
+            )
+            ctx.stats.handoffs_generated = len(ctx.handoff_plan.issues)
+
+    def get_review_result(self) -> ReviewResult | None:
+        if not self._review_context:
+            return None
+
+        ctx = self._review_context
+        return ReviewResult(
+            session_id=ctx.session_id,
+            target_path=self.config.target_path,
+            issues=ctx.issues,
+            files_reviewed=len((ctx.scope_summary or {}).get("source_files", [])),
+            lines_reviewed=int((ctx.scope_summary or {}).get("line_count", 0)),
+            critical_count=sum(1 for i in ctx.issues if i.severity == Severity.CRITICAL),
+            high_count=sum(1 for i in ctx.issues if i.severity == Severity.HIGH),
+            medium_count=sum(1 for i in ctx.issues if i.severity == Severity.MEDIUM),
+            low_count=sum(1 for i in ctx.issues if i.severity == Severity.LOW),
+            info_count=sum(1 for i in ctx.issues if i.severity == Severity.INFO),
+            auto_fixed_count=ctx.stats.auto_fixed,
+            fixed_issues=ctx.fixed_issues,
+            unfixed_issues=ctx.unfixed_issues or ctx.issues,
+            workflow_name=self._resolve_workflow_name(),
+            execution_mode=self.config.execution_mode,
+            worktree_path=ctx.worktree_path,
+            base_branch=ctx.base_branch,
+            sync_summary=ctx.sync_summary,
+            applied_back_files=ctx.applied_back_files,
+            artifact_dir=ctx.artifact_dir,
+            scope_summary=ctx.scope_summary,
+            raw_issues=ctx.raw_issues,
+        )

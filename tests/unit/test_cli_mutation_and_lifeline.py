@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
-from tools.muscle.cli import lifeline, long_eval_group
+from muscle.cli import lifeline, long_eval_group
 
 
 def test_long_eval_mutate_runs_mutation_runner(tmp_path: Path) -> None:
@@ -18,7 +18,7 @@ def test_long_eval_mutate_runs_mutation_runner(tmp_path: Path) -> None:
     target = tmp_path / "service.py"
     target.write_text("value = 1\n", encoding="utf-8")
 
-    with patch("tools.muscle.code_review.mutation_runner.MutationRunner") as mock_cls:
+    with patch("muscle.code_review.mutation_runner.MutationRunner") as mock_cls:
         mock_runner = MagicMock()
         mock_runner.run.return_value = {
             "killed": 1,
@@ -45,16 +45,16 @@ def test_lifeline_attaches_history_forensics(tmp_path: Path) -> None:
     env["MINIMAX_API_KEY"] = "test-key"
 
     class _FakeClient:
-        def __init__(self, api_key: str | None = None):
+        def __init__(self, api_key: str | None = None, **kwargs: object):
             self.api_key = api_key
 
         def chat(self, messages):
             assert "Git history forensics" in messages[1]["content"]
             return "ok", MagicMock(total=42)
 
-    with patch("tools.muscle.m27_client.M27Client", _FakeClient):
-        with patch("tools.muscle.cli._resolve_project_context", return_value=(tmp_path, None)):
-            with patch("tools.muscle.git_history_forensics.GitHistoryForensics") as mock_cls:
+    with patch("muscle.cli.cost.create_client", _FakeClient):
+        with patch("muscle.cli.cost._resolve_project_context", return_value=(tmp_path, None)):
+            with patch("muscle.git_history_forensics.GitHistoryForensics") as mock_cls:
                 mock_forensics = MagicMock()
                 mock_forensics.analyze.return_value = {
                     "available": True,
@@ -76,3 +76,54 @@ def test_lifeline_attaches_history_forensics(tmp_path: Path) -> None:
                 )
 
     assert result.exit_code == 0
+
+
+def test_lifeline_claude_subscription_needs_no_minimax_key(tmp_path: Path) -> None:
+    """Non-MiniMax providers must reach the client factory without a MiniMax key."""
+    runner = CliRunner()
+    target = tmp_path / "test.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    env = os.environ.copy()
+    env.pop("ANTHROPIC_API_KEY", None)
+    env.pop("MINIMAX_API_KEY", None)
+    env["MUSCLE_PROVIDER"] = "claude-subscription"
+
+    class _FakeClient:
+        def __init__(self, api_key: str | None = None, **kwargs: object):
+            self.api_key = api_key
+
+        def chat(self, messages):
+            return "ok", MagicMock(total=7)
+
+    with patch("muscle.cli.cost.create_client", _FakeClient):
+        result = runner.invoke(
+            lifeline,
+            ["--target", str(target), "--prompt", "investigate this"],
+            env=env,
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert "MINIMAX_API_KEY not set" not in result.output
+
+
+def test_lifeline_minimax_without_key_still_exits(tmp_path: Path) -> None:
+    """The MiniMax-backed default provider still requires a key with the same message."""
+    runner = CliRunner()
+    target = tmp_path / "test.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    env = os.environ.copy()
+    env.pop("ANTHROPIC_API_KEY", None)
+    env.pop("MINIMAX_API_KEY", None)
+    env.pop("MUSCLE_PROVIDER", None)
+
+    # Isolate cwd so the developer's own project config cannot pick a provider.
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        result = runner.invoke(
+            lifeline,
+            ["--target", str(target), "--prompt", "investigate this"],
+            env=env,
+        )
+
+    assert result.exit_code == 1
+    assert "MINIMAX_API_KEY not set" in result.output

@@ -4,7 +4,7 @@ Unit tests for interactive.py
 
 from unittest.mock import patch
 
-from tools.muscle.interactive import InteractiveChoice, InteractiveHandler
+from muscle.interactive import InteractiveChoice, InteractiveHandler
 
 
 class TestInteractiveHandler:

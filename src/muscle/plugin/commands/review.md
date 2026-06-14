@@ -1,0 +1,26 @@
+---
+description: Run MUSCLE self-learning code review on the current project or specified files
+argument-hint: "[target] [mode] [severity] [execution]"
+---
+
+> **Plan-then-hand-off:** Use MUSCLE for bulk execution; you retain planning and synthesis. Pass a focused scope — don't ask MUSCLE to plan the work.
+> **When to call:** the task fans out across many files, or needs a test/lint/security sweep — delegate here rather than reviewing inline.
+
+> **Effort:** Run fix-application flows at `xhigh` effort. In auto mode, skip the confirmation prompt.
+
+Run a MUSCLE code review. Execute the following command, adding any user-specified options:
+
+```bash
+muscle review --target . --mode review --severity low
+```
+
+If the user specified target, mode, severity, execution, or additional options like
+`--language`, `--format json`, `--shadow`, `--intensity`, `--max-fixes`, `--output`,
+`--failsafe`, `--workflow`, `--focus`, `--async-workers`, `--async-worker-limit`,
+or `--no-db`, append those flags to the command.
+
+Use `--execution worktree` when the user wants isolated auto-fix or hybrid edits. Leave execution unset to use the project default.
+Use `--async-workers` only for hard-tail reviews where extra detached worker evidence is useful; easy tasks record a skipped-worker reason in artifacts.
+Use `--no-db` only when the user asks for a memory-free review run; it skips project-memory, learning, and optimization writes.
+
+Present the results organized by severity (Critical > High > Medium > Low). For each issue show file, line, title, and suggested fix.

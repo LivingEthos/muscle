@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-from tools.muscle.escalation import (
+from muscle.escalation import (
     EscalationPolicy,
     EscalationRecord,
     EscalationRecorder,

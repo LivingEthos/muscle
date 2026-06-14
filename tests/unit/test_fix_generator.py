@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.muscle.code_review.fix_generator import FixGenerator, FixResult, GeneratedFix
-from tools.muscle.code_review.types import IssueCategory, ReviewIssue, Severity
+from muscle.code_review.fix_generator import FixGenerator, FixResult, GeneratedFix
+from muscle.code_review.types import IssueCategory, ReviewIssue, Severity
 
 
 class MockM27Client:
@@ -621,7 +621,7 @@ class TestFG02BakCleanup:
             raise OSError("Simulated write failure mid-apply")
 
         with patch(
-            "tools.muscle.code_review.fix_generator.os.replace", side_effect=raise_after_backup
+            "muscle.code_review.fix_generator.os.replace", side_effect=raise_after_backup
         ):
             result = generator.apply_fix(issue, "new content\n")
 

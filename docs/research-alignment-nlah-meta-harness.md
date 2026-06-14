@@ -2,7 +2,7 @@
 
 Date: 2026-04-15
 
-Scope: read-only assessment of the active `tools/muscle/` implementation against two March 2026 papers:
+Scope: read-only assessment of the active `src/muscle/` implementation against two March 2026 papers:
 
 - `Natural-Language Agent Harnesses` (arXiv:2603.25723, submitted March 26, 2026)
 - `Meta-Harness: End-to-End Optimization of Model Harnesses` (arXiv:2603.28052v1, submitted March 30, 2026)
@@ -40,19 +40,19 @@ Primary MUSCLE repo anchors:
 - `MUSCLE_PLAN.md`
 - `docs/architecture.md`
 - `CLAUDE.md`
-- `tools/muscle/loop_controller.py`
-- `tools/muscle/session_manager.py`
-- `tools/muscle/code_generator.py`
-- `tools/muscle/evolver.py`
-- `tools/muscle/code_review/review_controller.py`
-- `tools/muscle/code_review/review_artifacts.py`
-- `tools/muscle/code_review/review_workflows.py`
-- `tools/muscle/code_review/review_benchmark.py`
-- `tools/muscle/code_review/long_eval_runner.py`
-- `tools/muscle/workflows/review-smart.yaml`
-- `tools/muscle/project_memory.py`
-- `tools/muscle/optimization/importers.py`
-- `tools/muscle/m27_client.py`
+- `src/muscle/loop_controller.py`
+- `src/muscle/session_manager.py`
+- `src/muscle/code_generator.py`
+- `src/muscle/evolver.py`
+- `src/muscle/code_review/review_controller.py`
+- `src/muscle/code_review/review_artifacts.py`
+- `src/muscle/code_review/review_workflows.py`
+- `src/muscle/code_review/review_benchmark.py`
+- `src/muscle/code_review/long_eval_runner.py`
+- `src/muscle/workflows/review-smart.yaml`
+- `src/muscle/project_memory.py`
+- `src/muscle/optimization/importers.py`
+- `src/muscle/m27_client.py`
 
 ## Paper 1: Natural-Language Agent Harnesses
 
@@ -73,11 +73,11 @@ In other words, the paper is not just about using markdown instructions. It is a
 |---|---|---|---|
 | First-class harness representation | Harness logic should be an explicit object instead of remaining buried in controller code | MUSCLE externalizes some behavior into workflow YAML and markdown skills, but the primary control logic still lives in Python controllers such as `ReviewController` and `LoopController` | Partial |
 | Shared runtime vs harness logic separation | Runtime policy should be cleanly separated from task-family harness logic | MUSCLE deliberately separates orchestration from model calls, generation from evaluation, and review findings from persistence in `docs/architecture.md:420-426`, but it does not define an explicit runtime charter / harness skill split | Partial |
-| Explicit contracts, roles, stages, gates | Contracts, roles, stage structure, and gates should be explicit and executable | MUSCLE has stage-like review workflows in `tools/muscle/workflows/review-smart.yaml:1-34` and review modes in `tools/muscle/code_review/review_controller.py:142-187`, but it does not expose a unified contract schema for required outputs, permissions, budgets, and completion conditions | Partial |
+| Explicit contracts, roles, stages, gates | Contracts, roles, stage structure, and gates should be explicit and executable | MUSCLE has stage-like review workflows in `src/muscle/workflows/review-smart.yaml:1-34` and review modes in `src/muscle/code_review/review_controller.py:142-187`, but it does not expose a unified contract schema for required outputs, permissions, budgets, and completion conditions | Partial |
 | Explicit failure taxonomy | Failure modes should be named and drive recovery behavior | MUSCLE has stop conditions, evaluation failures, and mode-specific flows, but no first-class harness-wide failure taxonomy surface comparable to the paper's formulation | Missing |
 | File-backed state semantics | State should be externalized, path-addressable, and stable across steps | MUSCLE is strong here: sessions, reports, review artifacts, and project-local DB state are all durable and path-addressable | Aligned |
 | Adapters and deterministic hooks | Harnesses should expose adapters and scripts for deterministic operations | MUSCLE has evaluators, static analyzers, verifiers, git/MCP/GitHub adapters, and workflow nodes such as `validate` and `gate` | Partial |
-| Controlled module ablation | Harness patterns should be benchmarked and ablated under shared assumptions | MUSCLE has a genuine benchmark runner for review workflow comparisons in `tools/muscle/code_review/review_benchmark.py:53-115`, but it is narrower than the paper's harness-wide controlled ablation story | Partial |
+| Controlled module ablation | Harness patterns should be benchmarked and ablated under shared assumptions | MUSCLE has a genuine benchmark runner for review workflow comparisons in `src/muscle/code_review/review_benchmark.py:53-115`, but it is narrower than the paper's harness-wide controlled ablation story | Partial |
 | Code-to-text migration of harness logic | Native harness logic should be reconstructable into a portable textual form | MUSCLE does not currently appear to support systematic code-to-text harness migration | Missing |
 
 ## Repo Evidence Behind the NLAH Judgment
@@ -86,14 +86,14 @@ In other words, the paper is not just about using markdown instructions. It is a
 
 The strongest NLAH-like move in MUSCLE is not the generation loop; it is the review workflow layer.
 
-`tools/muscle/workflows/review-smart.yaml:1-34` defines an explicit DAG-like sequence:
+`src/muscle/workflows/review-smart.yaml:1-34` defines an explicit DAG-like sequence:
 
 - `classify`
 - one or more `review_agent` nodes
 - `synthesize`
 - `gate`
 
-That is already much closer to a harness artifact than a purely hard-coded controller. Similarly, `tools/muscle/code_review/review_workflows.py:17-121` limits the node vocabulary and validates dependencies, which gives the workflow a portable and inspectable shape.
+That is already much closer to a harness artifact than a purely hard-coded controller. Similarly, `src/muscle/code_review/review_workflows.py:17-121` limits the node vocabulary and validates dependencies, which gives the workflow a portable and inspectable shape.
 
 This matters because it shows MUSCLE is not fully controller-buried. It already has the beginnings of an external harness layer.
 
@@ -101,9 +101,9 @@ This matters because it shows MUSCLE is not fully controller-buried. It already 
 
 The problem is that MUSCLE's real control policy is still spread across several layers:
 
-- Python controllers (`tools/muscle/code_review/review_controller.py:86-187`, `tools/muscle/loop_controller.py`)
-- workflow YAML (`tools/muscle/workflows/*.yaml`)
-- markdown skills (`skills/code-loop/SKILL.md:1-93`, `tools/muscle/plugin/skills/code-review/SKILL.md`)
+- Python controllers (`src/muscle/code_review/review_controller.py:86-187`, `src/muscle/loop_controller.py`)
+- workflow YAML (`src/muscle/workflows/*.yaml`)
+- markdown skills (`skills/code-loop/SKILL.md:1-93`, `src/muscle/plugin/skills/code-review/SKILL.md`)
 - architecture docs and memory surfaces (`README.md:120-145`, `docs/architecture.md:25-69`)
 
 That is useful engineering, but it is not yet one explicit executable harness object of the kind the NLAH paper is arguing for.
@@ -112,10 +112,10 @@ That is useful engineering, but it is not yet one explicit executable harness ob
 
 MUSCLE does a lot right on persistence:
 
-- `tools/muscle/session_manager.py:59-110` creates per-session directories
-- `tools/muscle/session_manager.py:112-156` appends iteration summaries and copies artifacts
-- `tools/muscle/code_review/review_artifacts.py:37-90` persists scope, findings, synthesis, fixes, validation, and summaries
-- `tools/muscle/project_memory.py` provides a DB-backed memory spine
+- `src/muscle/session_manager.py:59-110` creates per-session directories
+- `src/muscle/session_manager.py:112-156` appends iteration summaries and copies artifacts
+- `src/muscle/code_review/review_artifacts.py:37-90` persists scope, findings, synthesis, fixes, validation, and summaries
+- `src/muscle/project_memory.py` provides a DB-backed memory spine
 - `docs/architecture.md:346-377` and `CLAUDE.md:99-117` describe the project-local storage model
 
 This strongly aligns with the paper's emphasis on durable, path-addressable artifacts.
@@ -196,7 +196,7 @@ The practical implications are:
 
 This is where MUSCLE already looks unusually strong.
 
-`tools/muscle/code_review/review_benchmark.py:53-115` defines a fixture-based benchmark runner that:
+`src/muscle/code_review/review_benchmark.py:53-115` defines a fixture-based benchmark runner that:
 
 - loads named scenarios from a manifest
 - runs a baseline and candidate workflow
@@ -217,13 +217,13 @@ MUSCLE's native persistence is meaningful:
 
 But the stored contents are much lighter than the Meta-Harness paper's model of prior experience.
 
-`tools/muscle/session_manager.py:128-137` stores iteration number, success, errors, warnings, token cost, duration, and evolved strategy.
+`src/muscle/session_manager.py:128-137` stores iteration number, success, errors, warnings, token cost, duration, and evolved strategy.
 
-`tools/muscle/session_manager.py:181-186` stores a compact final context with task, evolved strategy, and iteration count.
+`src/muscle/session_manager.py:181-186` stores a compact final context with task, evolved strategy, and iteration count.
 
-`tools/muscle/code_review/review_artifacts.py:49-81` stores scope, agent findings, synthesis, fixes, validation, and markdown summary.
+`src/muscle/code_review/review_artifacts.py:49-81` stores scope, agent findings, synthesis, fixes, validation, and markdown summary.
 
-`tools/muscle/project_memory.py:1502-1668` stores LLM-call telemetry such as token counts, duration, success, context size, and metadata.
+`src/muscle/project_memory.py:1502-1668` stores LLM-call telemetry such as token counts, duration, success, context size, and metadata.
 
 That is all valuable. But it is not the same as storing, for each native candidate/run:
 
@@ -239,8 +239,8 @@ That difference is the biggest reason MUSCLE is only partially aligned with Meta
 
 Look at the native `generate` and `evolve` paths:
 
-- `tools/muscle/code_generator.py:208-242` builds a prompt and sends it to the model
-- `tools/muscle/evolver.py:171-206` builds another prompt from task, errors, previous strategy, and similar strategies
+- `src/muscle/code_generator.py:208-242` builds a prompt and sends it to the model
+- `src/muscle/evolver.py:171-206` builds another prompt from task, errors, previous strategy, and similar strategies
 
 Those prompts are used at runtime, and telemetry is recorded, but the repo evidence does not show a native mechanism that archives the full prompt/response pair for every loop step and then exposes that archive back to a future agentic proposer.
 
@@ -256,7 +256,7 @@ That is exactly the kind of compression the Meta-Harness paper argues is insuffi
 
 ### 4. The external benchmark importers are a promising bridge
 
-One of MUSCLE's most interesting building blocks is `tools/muscle/optimization/importers.py:31-235`.
+One of MUSCLE's most interesting building blocks is `src/muscle/optimization/importers.py:31-235`.
 
 That subsystem can import Codex and Claude session data into project-local benchmark tables. This is highly relevant to the Meta-Harness lesson because it acknowledges that prior agent traces matter and should be queryable separately from live project memory.
 
@@ -274,7 +274,7 @@ That is useful for analytics and benchmarking, but it is still not equivalent to
 
 ### 5. MUSCLE has telemetry, not yet causal trace archives
 
-`tools/muscle/m27_client.py:206-242` records telemetry through `LLMCallEvent`, and `tools/muscle/project_memory.py:1502-1668` persists it.
+`src/muscle/m27_client.py:206-242` records telemetry through `LLMCallEvent`, and `src/muscle/project_memory.py:1502-1668` persists it.
 
 This is good instrumentation. It helps answer:
 
@@ -330,7 +330,7 @@ That externalized structure is an important step toward first-class harnesses.
 
 ### 3. Evidence-driven learning pipeline
 
-`tools/muscle/code_review/learning_pipeline.py:71-230` gives MUSCLE a real post-review learning cycle:
+`src/muscle/code_review/learning_pipeline.py:71-230` gives MUSCLE a real post-review learning cycle:
 
 - ingest findings into DB
 - score decisions
@@ -343,7 +343,7 @@ That is much closer to a research-style compounding loop than a typical one-shot
 
 ### 4. Benchmarking as a first-class subsystem
 
-The presence of `tools/muscle/code_review/review_benchmark.py` is important. It shows MUSCLE is already capable of evaluating workflow variants on stable fixtures rather than relying only on anecdotal wins.
+The presence of `src/muscle/code_review/review_benchmark.py` is important. It shows MUSCLE is already capable of evaluating workflow variants on stable fixtures rather than relying only on anecdotal wins.
 
 ### 5. Honest internal maturity notes
 

@@ -1,0 +1,1108 @@
+"""
+ClaudePublisher - Publishes DB-backed content to root CLAUDE.md using marker-based editing.
+
+DB-FIRST ARCHITECTURE:
+- project_memory.db is the SOURCE OF TRUTH for all published content
+- Root CLAUDE.md publishing is driven from DB-backed decisions
+- Internal markdown (.muscle/CLAUDE.md) is NOT consulted for publishing
+
+Safe update guarantees:
+1. Always creating a backup before writing
+2. Preserving user content outside MUSCLE_PUBLISHED markers
+3. Enforcing size caps per section (max 50 lines)
+4. Deduplicating entries before publishing
+5. Supporting both marker insertion and marker updates
+6. Automatic consolidation via M2.7 when caps exceeded
+7. Audit trail of demotions and consolidations
+
+Architecture Decision Record (ADR):
+- Marker-based editing prevents corruption of user content
+- Backup before write ensures safe rollback
+- Size caps per section prevent CLAUDE.md bloat
+- Deduplication keeps content fresh and concise
+- M2.7-powered consolidation when caps exceeded
+- Consolidation audit trail in project_memory.db
+- DB-backed decisions: LearningPipeline passes DB-scored rules to publish()
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import re
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from .backup_manager import BackupManager
+from .code_review.host_memory_templates import (
+    SECTION_DELEGATION,
+    SECTION_EFFORT,
+    SECTION_METHODOLOGY,
+    render_pinned_block,
+    resolve_host_fragment_keys,
+)
+from .io_safety import advisory_file_lock, atomic_write_text
+from .optimization.prompt_compactor import compact_prompt_text
+
+logger = logging.getLogger(__name__)
+
+# Marker constants for root CLAUDE.md
+PUBLISHED_START = "<!-- MUSCLE_PUBLISHED_START -->"
+PUBLISHED_END = "<!-- MUSCLE_PUBLISHED_END -->"
+
+# Section headers within published region
+SECTION_CRITICAL_RULES = "### Critical Rules"
+SECTION_MISTAKE_CORRECTIONS = "### Frequent Mistakes"
+SECTION_AGENT_CALLS = "### Active Agent Calls"
+SECTION_SKILL_CALLS = "### Active Skill Calls"
+SECTION_TOOLING_NOTES = "### Tooling Notes"
+
+# Pinned section headers (imported from host_memory_templates for single
+# source of truth). Pinned sections are exempt from MAX_SECTION_LINES and
+# from M2.7 consolidation.
+PINNED_SECTIONS: frozenset[str] = frozenset(
+    {SECTION_METHODOLOGY, SECTION_DELEGATION, SECTION_EFFORT}
+)
+
+# Size cap per section
+MAX_SECTION_LINES = 50
+
+# Number of highest-value Critical Rules to emphasize when the host profile sets
+# point_of_action_reinforcement (re-surface the top rules where the host reads them).
+REINFORCED_RULE_COUNT = 3
+
+
+def host_doc_lock_sentinel(project_path: Path, target_path: Path) -> Path:
+    """Cross-process lock sentinel for a host-doc read-modify-write.
+
+    Every writer of the authoritative marker region (``ClaudePublisher`` and
+    ``HostMemoryOptimizer``) serializes its read -> rewrite-region -> atomic-swap
+    span on this sentinel so two concurrent publishes cannot silently lose one
+    writer's update (the swap itself is atomic, but the read-modify-write is
+    not). The sentinel lives under ``.muscle/locks/`` keyed by a hash of the
+    resolved target path, so no lock file pollutes the user's repo root.
+    """
+    digest = hashlib.sha256(str(target_path.resolve()).encode("utf-8")).hexdigest()[:16]
+    locks_dir = project_path / ".muscle" / "locks"
+    locks_dir.mkdir(parents=True, exist_ok=True)
+    return locks_dir / f"host-doc-{digest}"
+
+
+def reconcile_pending_published_revisions(pm: Any, project_path: str) -> None:
+    """Resolve revisions stuck in 'pending' from an earlier interrupted publish.
+
+    Shared by every writer of the authoritative host-doc marker region
+    (``ClaudePublisher`` and ``HostMemoryOptimizer``) so the two-phase publish
+    invariant holds no matter which writer ran last. For each pending revision
+    we compare the on-disk file's sha256 to the staged content's sha256:
+
+    - match  -> the swap happened but the commit-mark was lost; mark committed.
+    - differ -> the swap never happened (or has since been superseded); mark
+      aborted so the next publish proceeds cleanly.
+
+    Missing/unreadable files are treated as 'swap did not happen' -> aborted.
+
+    All pending revisions for ``project_path`` are reconciled regardless of which
+    target file or which writer staged them (same table, keyed by on-disk hash),
+    so a ``HostMemoryOptimizer``-staged revision is reconciled by a later
+    ``ClaudePublisher`` init and vice versa.
+    """
+    try:
+        pending = pm.list_pending_published_revisions(project_path)
+    except Exception as exc:  # pragma: no cover - defensive, DB unavailable
+        logger.debug(f"Could not list pending published revisions: {exc}")
+        return
+
+    for revision in pending:
+        revision_id = revision.get("id")
+        target_path = Path(revision.get("target_path", ""))
+        staged_sha = revision.get("content_sha256", "")
+        on_disk_sha: str | None = None
+        try:
+            if target_path.exists():
+                on_disk_sha = pm.published_content_sha256(target_path.read_text())
+        except Exception as exc:
+            logger.warning(f"Failed to read {target_path} during reconcile: {exc}")
+            on_disk_sha = None
+
+        if on_disk_sha is not None and on_disk_sha == staged_sha:
+            pm.commit_published_revision(revision_id)
+            logger.warning(
+                f"Reconciled pending publish revision {revision_id} for "
+                f"{target_path}: on-disk content matched staged content; "
+                "marked committed (commit-mark was lost after a successful swap)."
+            )
+        else:
+            pm.abort_published_revision(revision_id)
+            logger.warning(
+                f"Reconciled pending publish revision {revision_id} for "
+                f"{target_path}: on-disk content did not match staged content; "
+                "marked aborted (swap never completed; superseded by next publish)."
+            )
+
+    # Retention: each revision stores the full rendered content, so resolved
+    # rows are pruned here (check-on-next-use, same cadence as reconcile) to
+    # keep the table bounded. Pending rows are never pruned.
+    try:
+        pm.prune_published_revisions(project_path)
+    except Exception as exc:  # pragma: no cover - defensive, DB unavailable
+        logger.debug(f"Could not prune published revisions: {exc}")
+
+
+class ClaudePublisher:
+    """Publishes compact learned content to root CLAUDE.md."""
+
+    def __init__(
+        self,
+        project_path: str,
+        backup_manager: BackupManager | None = None,
+        m27_client: Any | None = None,
+        target_files: list[str] | None = None,
+    ):
+        """
+        Initialize ClaudePublisher.
+
+        Args:
+            project_path: Path to the project root.
+            backup_manager: Optional shared BackupManager instance. If not provided,
+                           one will be created using ProjectMemory.
+            m27_client: Optional M2.7 client for consolidation.
+            target_files: Filenames (relative to project_path) to publish to.
+                          Defaults to ["CLAUDE.md", "AGENTS.md"]. Identical
+                          content is written to every target, with a per-file
+                          backup before each write.
+        """
+        self.project_path = Path(project_path)
+        self.target_files: list[str] = (
+            list(target_files) if target_files else ["CLAUDE.md", "AGENTS.md"]
+        )
+        # Retained for backwards compatibility with code that reads claude_md_path directly.
+        self.claude_md_path = self.project_path / self.target_files[0]
+        self.m27 = m27_client
+
+        if backup_manager is not None:
+            # Use the provided shared BackupManager
+            self._backup_manager = backup_manager
+        else:
+            # Create a shared BackupManager using ProjectMemory
+            from .project_memory import ProjectMemory
+
+            pm = ProjectMemory(str(self.project_path))
+            self._backup_manager = BackupManager(pm, str(self.project_path))
+
+        # Reconcile any revision left in 'pending' by a crash between the file
+        # swap and the commit-mark (check-on-next-use; no background daemon).
+        self._reconcile_pending_revisions()
+
+    @property
+    def _pm(self) -> Any:
+        """The ProjectMemory backing the shared BackupManager (source of truth)."""
+        return self._backup_manager._pm
+
+    def _reconcile_pending_revisions(self) -> None:
+        """Resolve revisions stuck in 'pending' from an earlier interrupted publish.
+
+        Delegates to the shared :func:`reconcile_pending_published_revisions`,
+        which covers revisions staged by *any* host-doc writer for this project
+        (including ``HostMemoryOptimizer``), keyed on the on-disk file hash.
+        """
+        reconcile_pending_published_revisions(self._pm, str(self.project_path))
+
+    @property
+    def backup_manager(self) -> BackupManager:
+        """Access the backup manager (for backwards compatibility)."""
+        return self._backup_manager
+
+    def _get_section_sizes(self) -> dict[str, int]:
+        """Get current line count for each section in published region."""
+        if not self.claude_md_path.exists():
+            return {}
+
+        content = self.claude_md_path.read_text()
+        sizes: dict[str, int] = {}
+
+        # Extract content between PUBLISHED_START and PUBLISHED_END
+        match = re.search(
+            rf"{re.escape(PUBLISHED_START)}(.*?){re.escape(PUBLISHED_END)}",
+            content,
+            re.DOTALL,
+        )
+        if not match:
+            return {}
+
+        published_content = match.group(1)
+        lines = published_content.split("\n")
+
+        current_section: str | None = None
+        section_lines: list[str] = []
+
+        for line in lines:
+            # Check if this is a section header
+            if line.startswith("### "):
+                if current_section and section_lines:
+                    sizes[current_section] = len(section_lines)
+                current_section = line
+                section_lines = []
+            else:
+                section_lines.append(line)
+
+        # Don't forget the last section
+        if current_section and section_lines:
+            sizes[current_section] = len(section_lines)
+
+        return sizes
+
+    def _consolidate_section(
+        self,
+        section_name: str,
+        entries: list[dict],
+        max_entries: int,
+    ) -> tuple[list[dict], list[dict]]:
+        """Consolidate section entries when they exceed max.
+
+        Returns tuple of (kept_entries, demoted_entries).
+        """
+        if len(entries) <= max_entries:
+            return entries, []
+
+        # Split: keep top max_entries, demote the rest
+        kept = entries[:max_entries]
+        demoted = entries[max_entries:]
+
+        # Use M2.7 to summarize demoted entries if available
+        if self.m27 and demoted:
+            demoted = self._m27_summarize_entries(demoted, section_name)
+
+        return kept, demoted
+
+    def _m27_summarize_entries(
+        self,
+        entries: list[dict],
+        section_name: str,
+    ) -> list[dict]:
+        """Use M2.7 to summarize demoted entries into condensed form."""
+        # Defensive: pinned sections should never reach this method, but if they
+        # do (e.g., a future regression), return entries unchanged rather than
+        # paraphrasing the delegation template.
+        if section_name in PINNED_SECTIONS:
+            logger.warning(
+                f"_m27_summarize_entries called for pinned section {section_name!r}; "
+                "returning entries unchanged."
+            )
+            return entries
+
+        if not self.m27:
+            return entries
+
+        # Format entries for summarization
+        entries_text = json.dumps(entries, indent=2)
+
+        prompt = f"""These entries from section '{section_name}' in CLAUDE.md need to be consolidated
+because they exceed the size cap. Create a condensed version that preserves the key insights.
+
+Entries:
+{entries_text}
+
+Return a JSON array of the same number of condensed entries, where each entry:
+- Preserves the core insight
+- Is max 80 characters
+- Removes redundant details
+- Prioritizes high-scoring entries
+
+Return ONLY the JSON array, nothing else."""
+
+        try:
+            response_text, _ = self.m27.chat(
+                messages=[{"role": "user", "content": prompt}],
+                system="You are a memory consolidation expert. Return valid JSON array only.",
+                max_tokens=2048,
+                temperature=0.5,
+            )
+
+            # Extract JSON from response
+            if "```json" in response_text:
+                start = response_text.find("```json") + 7
+                end = response_text.find("```", start)
+                if end > start:
+                    response_text = response_text[start:end].strip()
+            elif "```" in response_text:
+                start = response_text.find("```") + 3
+                end = response_text.find("```", start)
+                if end > start:
+                    response_text = response_text[start:end].strip()
+
+            summarized = json.loads(response_text)
+            if isinstance(summarized, list) and len(summarized) == len(entries):
+                return summarized
+        except Exception as e:
+            logger.warning(f"M2.7 consolidation failed: {e}")
+
+        return entries
+
+    def _record_consolidation_audit(
+        self,
+        section_name: str,
+        demoted_entries: list[dict],
+        reason: str,
+    ) -> None:
+        """Record consolidation/demotion to audit log."""
+        if not demoted_entries:
+            return
+
+        def append_audit_records(audit_path: Path, timestamp: str) -> None:
+            audit_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(audit_path, "a", encoding="utf-8") as f:
+                for entry in demoted_entries:
+                    audit_record = {
+                        "timestamp": timestamp,
+                        "section": section_name,
+                        "reason": reason,
+                        "entry": entry,
+                    }
+                    f.write(json.dumps(audit_record) + "\n")
+
+        try:
+            audit_path = self.project_path / ".muscle" / "consolidation_audit.jsonl"
+            timestamp = datetime.now().isoformat()
+
+            try:
+                with advisory_file_lock(audit_path):
+                    append_audit_records(audit_path, timestamp)
+            except OSError as lock_error:
+                logger.warning(
+                    "Failed to acquire consolidation audit lock; appending without lock: %s",
+                    lock_error,
+                )
+                append_audit_records(audit_path, timestamp)
+
+            logger.info(f"Recorded {len(demoted_entries)} demotions for section {section_name}")
+        except Exception as e:
+            logger.warning(f"Failed to record consolidation audit: {e}")
+
+    def _check_and_consolidate(
+        self,
+        critical_rules: list[dict],
+        mistake_corrections: list[dict],
+        agent_calls: list[dict],
+        skill_calls: list[dict],
+        tooling_notes: list[str],
+    ) -> tuple[list[dict], list[dict], list[dict], list[dict], list[str]]:
+        """Check section sizes and consolidate if needed.
+
+        Returns tuple of (critical_rules, mistake_corrections, agent_calls, skill_calls, tooling_notes)
+        after consolidation.
+        """
+        # Pinned sections (Methodology, Delegation Protocol, Effort & Tool Guidance)
+        # are never consolidated or size-capped. They are written verbatim from
+        # host_memory_templates.PINNED_TEMPLATE and must survive unchanged.
+        current_sizes = self._get_section_sizes()
+
+        # Calculate new sizes after adding incoming entries
+        total_critical = current_sizes.get(SECTION_CRITICAL_RULES, 0) + len(critical_rules)
+        total_mistakes = current_sizes.get(SECTION_MISTAKE_CORRECTIONS, 0) + len(
+            mistake_corrections
+        )
+        total_agents = current_sizes.get(SECTION_AGENT_CALLS, 0) + len(agent_calls)
+        total_skills = current_sizes.get(SECTION_SKILL_CALLS, 0) + len(skill_calls)
+        total_notes = current_sizes.get(SECTION_TOOLING_NOTES, 0) + len(tooling_notes)
+
+        # Consolidate each section that exceeds MAX_SECTION_LINES
+        if total_critical > MAX_SECTION_LINES:
+            consolidated, demoted = self._consolidate_section(
+                SECTION_CRITICAL_RULES,
+                critical_rules,
+                MAX_SECTION_LINES,
+            )
+            critical_rules = consolidated
+            self._record_consolidation_audit(
+                SECTION_CRITICAL_RULES,
+                demoted,
+                f"exceeded cap ({total_critical} > {MAX_SECTION_LINES})",
+            )
+
+        if total_mistakes > MAX_SECTION_LINES:
+            consolidated, demoted = self._consolidate_section(
+                SECTION_MISTAKE_CORRECTIONS,
+                mistake_corrections,
+                MAX_SECTION_LINES,
+            )
+            mistake_corrections = consolidated
+            self._record_consolidation_audit(
+                SECTION_MISTAKE_CORRECTIONS,
+                demoted,
+                f"exceeded cap ({total_mistakes} > {MAX_SECTION_LINES})",
+            )
+
+        if total_agents > MAX_SECTION_LINES:
+            consolidated, demoted = self._consolidate_section(
+                SECTION_AGENT_CALLS,
+                agent_calls,
+                MAX_SECTION_LINES,
+            )
+            agent_calls = consolidated
+            self._record_consolidation_audit(
+                SECTION_AGENT_CALLS,
+                demoted,
+                f"exceeded cap ({total_agents} > {MAX_SECTION_LINES})",
+            )
+
+        if total_skills > MAX_SECTION_LINES:
+            consolidated, demoted = self._consolidate_section(
+                SECTION_SKILL_CALLS,
+                skill_calls,
+                MAX_SECTION_LINES,
+            )
+            skill_calls = consolidated
+            self._record_consolidation_audit(
+                SECTION_SKILL_CALLS,
+                demoted,
+                f"exceeded cap ({total_skills} > {MAX_SECTION_LINES})",
+            )
+
+        if total_notes > MAX_SECTION_LINES:
+            consolidated, demoted = self._consolidate_section(
+                SECTION_TOOLING_NOTES,
+                [{"text": n} for n in tooling_notes],
+                MAX_SECTION_LINES,
+            )
+            tooling_notes = [e["text"] for e in consolidated]
+            self._record_consolidation_audit(
+                SECTION_TOOLING_NOTES,
+                demoted,
+                f"exceeded cap ({total_notes} > {MAX_SECTION_LINES})",
+            )
+
+        return critical_rules, mistake_corrections, agent_calls, skill_calls, tooling_notes
+
+    def publish(
+        self,
+        critical_rules: list[dict[str, Any]] | None = None,
+        mistake_corrections: list[dict[str, Any]] | None = None,
+        agent_calls: list[dict[str, Any]] | None = None,
+        skill_calls: list[dict[str, Any]] | None = None,
+        tooling_notes: list[str] | None = None,
+    ) -> bool:
+        """Publish compact sections to root CLAUDE.md.
+
+        Args:
+            critical_rules: List of dicts with 'text', 'score', 'validated_count'
+            mistake_corrections: List of dicts with 'mistake', 'correction', 'count'
+            agent_calls: List of dicts with 'agent_name', 'path', 'use_count'
+            skill_calls: List of dicts with 'skill_name', 'path', 'use_count'
+            tooling_notes: List of tool configuration notes
+
+        Returns:
+            True if publish succeeded, False otherwise
+        """
+        # Check sizes and consolidate once (results reused for every target).
+        (
+            critical_rules,
+            mistake_corrections,
+            agent_calls,
+            skill_calls,
+            tooling_notes,
+        ) = self._check_and_consolidate(
+            critical_rules=critical_rules or [],
+            mistake_corrections=mistake_corrections or [],
+            agent_calls=agent_calls or [],
+            skill_calls=skill_calls or [],
+            tooling_notes=tooling_notes or [],
+        )
+
+        any_written = False
+        for filename in self.target_files:
+            target_path = self.project_path / filename
+            if not target_path.exists():
+                # Skip targets that the user has not created. Do NOT auto-create
+                # here — auto-creation is the optimizer's job.
+                logger.info(
+                    f"{filename} not found at {target_path}; skipping publish to this target"
+                )
+                continue
+
+            try:
+                self._backup_manager.create_file_backup(target_path, "claude_md")
+            except FileNotFoundError:
+                logger.warning(f"{filename} not found at {target_path}, cannot backup")
+                continue
+            except Exception as e:
+                logger.error(f"Failed to create backup for {filename}: {e}")
+                continue
+
+            try:
+                # The swap below is atomic, but the read-modify-write spanning
+                # it is not: serialize it cross-process so a concurrent writer
+                # of the same host doc cannot silently lose this update.
+                with advisory_file_lock(host_doc_lock_sentinel(self.project_path, target_path)):
+                    content = target_path.read_text()
+                    updated_content = self._update_published_section(
+                        content,
+                        critical_rules=critical_rules or [],
+                        mistake_corrections=mistake_corrections or [],
+                        agent_calls=agent_calls or [],
+                        skill_calls=skill_calls or [],
+                        tooling_notes=tooling_notes or [],
+                    )
+
+                    # Two-phase publish:
+                    #   Phase 1: stage the new content as a 'pending' revision in
+                    #            the DB. If we crash after the swap but before the
+                    #            commit-mark, the next publisher init reconciles
+                    #            this row by comparing the on-disk hash to the
+                    #            staged hash.
+                    revision_id = self._pm.stage_published_revision(
+                        project_path=str(self.project_path),
+                        target_path=str(target_path),
+                        content=updated_content,
+                    )
+
+                    #   Phase 2: atomic swap (temp + fsync + os.replace) so a
+                    #            crash mid-write never leaves the file truncated.
+                    atomic_write_text(target_path, updated_content)
+                    logger.info(f"Successfully published to {filename}")
+                    any_written = True
+
+                    try:
+                        self._backup_manager._pm.insert_action_log(
+                            project_path=str(self.project_path),
+                            action_type="publish",
+                            entity_type=filename,
+                            entity_id=revision_id,
+                            details_json='{"sections": ["critical_rules", "mistake_corrections", "agent_calls", "skill_calls", "tooling_notes"]}',
+                        )
+                    except Exception as log_exc:
+                        # The file is already written but the audit-log insert
+                        # failed. Restore the pre-write content so the file and
+                        # the DB stay consistent (no published change without an
+                        # audit record), and abort the staged revision so it is
+                        # not later mistaken for an interrupted-but-successful
+                        # swap.
+                        logger.error(
+                            f"Failed to record publish action for {filename}; "
+                            f"rolling back file write: {log_exc}"
+                        )
+                        atomic_write_text(target_path, content)
+                        self._pm.abort_published_revision(revision_id)
+                        any_written = False
+                        continue
+
+                    #   Phase 3: mark the staged revision committed now that the
+                    #            file and the audit log are both in place.
+                    if not self._pm.commit_published_revision(revision_id):
+                        # A concurrent reconcile resolved this revision while the
+                        # swap was in flight. The file write succeeded, so this is
+                        # only an audit mis-label — surface it rather than stay
+                        # silent.
+                        logger.warning(
+                            f"Publish revision {revision_id} for {filename} was no longer "
+                            "pending at commit time (resolved by a concurrent reconcile); "
+                            "file content is live but the revision audit row may be "
+                            "marked aborted."
+                        )
+            except Exception as e:
+                logger.error(f"Failed to publish to {filename}: {e}")
+                continue
+
+        return any_written
+
+    def render_preview(
+        self,
+        *,
+        critical_rules: list[dict[str, Any]] | None = None,
+        mistake_corrections: list[dict[str, Any]] | None = None,
+        agent_calls: list[dict[str, Any]] | None = None,
+        skill_calls: list[dict[str, Any]] | None = None,
+        tooling_notes: list[str] | None = None,
+        compact_host_memory: bool = True,
+    ) -> str:
+        """Render the managed content without touching disk."""
+        return self._build_published_content(
+            critical_rules or [],
+            mistake_corrections or [],
+            agent_calls or [],
+            skill_calls or [],
+            tooling_notes or [],
+            compact_host_memory=compact_host_memory,
+        )
+
+    def _update_published_section(
+        self,
+        content: str,
+        critical_rules: list[dict],
+        mistake_corrections: list[dict],
+        agent_calls: list[dict],
+        skill_calls: list[dict],
+        tooling_notes: list[str],
+    ) -> str:
+        """Update the published section while preserving user content outside markers."""
+        # If no markers exist, insert them with the published content
+        if PUBLISHED_START not in content:
+            published_content = self._build_published_content(
+                critical_rules,
+                mistake_corrections,
+                agent_calls,
+                skill_calls,
+                tooling_notes,
+            )
+            return self._insert_markers(content, published_content)
+
+        # Update existing markers
+        return self._replace_published_section(
+            content,
+            critical_rules,
+            mistake_corrections,
+            agent_calls,
+            skill_calls,
+            tooling_notes,
+        )
+
+    def _build_published_content(
+        self,
+        critical_rules: list[dict],
+        mistake_corrections: list[dict],
+        agent_calls: list[dict],
+        skill_calls: list[dict],
+        tooling_notes: list[str],
+        *,
+        compact_host_memory: bool = True,
+    ) -> str:
+        """Build the compact published content section.
+
+        Pinned sections (Methodology, Delegation Protocol, Effort & Tool
+        Guidance) are always rendered first, regardless of dynamic-section
+        content. For a fixed host model they are byte-identical across runs;
+        the resolved host profile selects which model-specific fragments are
+        appended after the model-agnostic base. Dynamic sections follow.
+        """
+        lines: list[str] = []
+
+        # Pinned block — model-agnostic base + host-model fragments (Plan 3),
+        # selected by the resolved host profile's doc_fragment_keys.
+        lines.append(render_pinned_block(resolve_host_fragment_keys(self.project_path)).rstrip())
+        lines.append("")
+
+        # Critical Rules (high score rules first). When the host profile opts into
+        # point-of-action reinforcement, the top-N highest-value rules are bolded
+        # in place so they are salient where the host reads them (no extra lines,
+        # no duplication, no reordering).
+        if critical_rules:
+            from .model_profiles import resolve_host_learning_posture
+
+            reinforce = resolve_host_learning_posture(
+                self.project_path
+            ).point_of_action_reinforcement
+            lines.append(SECTION_CRITICAL_RULES)
+            sorted_rules = sorted(
+                critical_rules,
+                key=lambda r: (r.get("score", 0), r.get("validated_count", 0)),
+                reverse=True,
+            )
+            for index, rule in enumerate(sorted_rules[:MAX_SECTION_LINES]):
+                text = self._compile_host_memory_text(
+                    str(rule.get("text", "")),
+                    compact_host_memory=compact_host_memory,
+                )
+                if reinforce and index < REINFORCED_RULE_COUNT:
+                    text = f"**{text}**"
+                score = rule.get("score", 0)
+                validated = rule.get("validated_count", 0)
+                lines.append(f"- {text} (score: {score}, validated: {validated}x)")
+            lines.append("")
+
+        # Frequent Mistakes
+        if mistake_corrections:
+            lines.append(SECTION_MISTAKE_CORRECTIONS)
+            sorted_mistakes = sorted(
+                mistake_corrections,
+                key=lambda m: m.get("count", 0),
+                reverse=True,
+            )
+            for mistake in sorted_mistakes[:MAX_SECTION_LINES]:
+                avoid_text = self._compile_host_memory_text(
+                    str(mistake.get("mistake", "")),
+                    compact_host_memory=compact_host_memory,
+                )
+                fix_text = self._compile_host_memory_text(
+                    str(mistake.get("correction", "")),
+                    compact_host_memory=compact_host_memory,
+                )
+                lines.append(f"- Avoid: {avoid_text}")
+                lines.append(f"  Fix: {fix_text}")
+            lines.append("")
+
+        # Active Agent Calls
+        if agent_calls:
+            lines.append(SECTION_AGENT_CALLS)
+            sorted_agents = sorted(
+                agent_calls,
+                key=lambda a: a.get("use_count", 0),
+                reverse=True,
+            )
+            for agent in sorted_agents[:MAX_SECTION_LINES]:
+                name = agent.get("agent_name", "")
+                path = agent.get("path", "")
+                count = agent.get("use_count", 0)
+                lines.append(f"- `{name}` — {path} ({count}x)")
+            lines.append("")
+
+        # Active Skill Calls
+        if skill_calls:
+            lines.append(SECTION_SKILL_CALLS)
+            sorted_skills = sorted(
+                skill_calls,
+                key=lambda s: s.get("use_count", 0),
+                reverse=True,
+            )
+            for skill in sorted_skills[:MAX_SECTION_LINES]:
+                name = skill.get("skill_name", "")
+                path = skill.get("path", "")
+                count = skill.get("use_count", 0)
+                lines.append(f"- `{name}` — {path} ({count}x)")
+            lines.append("")
+
+        # Tooling Notes
+        if tooling_notes:
+            lines.append(SECTION_TOOLING_NOTES)
+            for note in tooling_notes[:MAX_SECTION_LINES]:
+                compiled_note = self._compile_host_memory_text(
+                    note,
+                    compact_host_memory=compact_host_memory,
+                )
+                lines.append(f"- {compiled_note}")
+            lines.append("")
+
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _compile_host_memory_text(text: str, *, compact_host_memory: bool) -> str:
+        """Apply safe render-time compaction without mutating stored rules."""
+        if not compact_host_memory:
+            return text
+        compacted, _ = compact_prompt_text(text)
+        return compacted
+
+    def _insert_markers(self, content: str, published_content: str) -> str:
+        """Insert markers with published content into CLAUDE.md."""
+        # Find a good insertion point - after the first heading or at end
+        lines = content.split("\n")
+
+        # Look for insertion point after initial headings (Project Overview, etc.)
+        insert_idx = 0
+        for i, line in enumerate(lines):
+            if line.startswith("## ") and i > 0:
+                insert_idx = i + 1
+
+        marker_block = f"\n{PUBLISHED_START}\n{published_content}\n{PUBLISHED_END}\n"
+
+        # Insert at found position
+        result_lines = lines[:insert_idx] + [marker_block] + lines[insert_idx:]
+        return "\n".join(result_lines)
+
+    def _replace_published_section(
+        self,
+        content: str,
+        critical_rules: list[dict],
+        mistake_corrections: list[dict],
+        agent_calls: list[dict],
+        skill_calls: list[dict],
+        tooling_notes: list[str],
+    ) -> str:
+        """Replace content between markers with new published content."""
+        pattern = rf"({re.escape(PUBLISHED_START)}\n)(.*?)(\n{re.escape(PUBLISHED_END)})"
+
+        new_published = self._build_published_content(
+            critical_rules,
+            mistake_corrections,
+            agent_calls,
+            skill_calls,
+            tooling_notes,
+        )
+
+        def replacement(match: re.Match[str]) -> str:
+            start = match.group(1)
+            end = match.group(3)
+            return f"{start}{new_published}{end}"
+
+        return re.sub(pattern, replacement, content, flags=re.DOTALL)
+
+    def get_critical_rules_from_memory(self) -> list[dict[str, Any]]:
+        """FALLBACK: Extract rules from .muscle/CLAUDE.md (internal markdown).
+
+        DEPRECATED: This reads from internal markdown which is NOT the source of truth.
+        Use update_markers() which queries DB directly instead.
+
+        This method exists for backward compatibility only."""
+        from .code_review.memory_manager import MemoryManager
+
+        try:
+            manager = MemoryManager(str(self.project_path))
+            rules = manager.read_rules()
+
+            # Filter and score rules
+            scored_rules = []
+            for rule in rules:
+                score = self._calculate_rule_score(
+                    rule.get("confidence", "low"),
+                    rule.get("validated_count", 0),
+                )
+                if score >= 0.5:  # Only include medium+ confidence
+                    scored_rules.append(
+                        {
+                            "text": rule.get("text", ""),
+                            "score": score,
+                            "validated_count": rule.get("validated_count", 0),
+                        }
+                    )
+
+            return scored_rules
+        except Exception as e:
+            logger.warning(f"Failed to extract critical rules: {e}")
+            return []
+
+    def _calculate_rule_score(self, confidence: str, validated_count: int) -> float:
+        """Calculate a normalized score for a rule."""
+        confidence_weights = {"high": 1.0, "medium": 0.6, "low": 0.3}
+        base = confidence_weights.get(confidence.lower(), 0.3)
+        # Boost by validated count (capped at 10)
+        boost = min(validated_count, 10) * 0.05
+        return min(base + boost, 1.0)
+
+    def get_mistake_corrections_from_memory(self) -> list[dict[str, Any]]:
+        """FALLBACK: Extract mistake corrections from .muscle/MEMORY.md.
+
+        DEPRECATED: This reads from internal markdown which is NOT the source of truth.
+        Use update_markers() which queries DB directly instead.
+
+        This method exists for backward compatibility only."""
+        memory_path = self.project_path / ".muscle" / "MEMORY.md"
+
+        if not memory_path.exists():
+            return []
+
+        try:
+            content = memory_path.read_text()
+            mistakes: dict[str, dict[str, Any]] = {}
+
+            # Extract pattern entries from MEMORY.md
+            import re
+
+            pattern = re.compile(r"- \[.*?\].*?Avoid.*?`(.*?)`.*?Fix:\s*(.+?)(?:\n|$)")
+
+            for match in pattern.finditer(content):
+                mistake = match.group(1).strip()
+                correction = match.group(2).strip()
+                if mistake in mistakes:
+                    mistakes[mistake]["count"] += 1
+                else:
+                    mistakes[mistake] = {"mistake": mistake, "correction": correction, "count": 1}
+
+            return list(mistakes.values())
+        except Exception as e:
+            logger.warning(f"Failed to extract mistake corrections: {e}")
+            return []
+
+    def get_agent_calls_from_memory(self) -> list[dict[str, Any]]:
+        """FALLBACK: Extract agent call usage from .muscle/agents/ directory.
+
+        DEPRECATED: This reads from filesystem which is NOT the source of truth.
+        Use update_markers() which queries DB directly instead.
+
+        This method exists for backward compatibility only."""
+        agents_dir = self.project_path / ".muscle" / "agents"
+        if not agents_dir.exists():
+            return []
+
+        agents = []
+        for agent_file in agents_dir.glob("*.md"):
+            try:
+                content = agent_file.read_text()
+                # Extract metadata or count usage
+                name = agent_file.stem.replace("_", "-")
+                use_count = content.count("<!-- used") + content.count("INVOKED")
+                if use_count > 0:
+                    agents.append(
+                        {
+                            "agent_name": name,
+                            "path": str(agent_file.relative_to(self.project_path)),
+                            "use_count": use_count,
+                        }
+                    )
+            except Exception:
+                continue
+
+        return agents
+
+    def get_skill_calls_from_memory(self) -> list[dict[str, Any]]:
+        """FALLBACK: Extract skill call usage from .muscle/skills/ directory.
+
+        DEPRECATED: This reads from filesystem which is NOT the source of truth.
+        Use update_markers() which queries DB directly instead.
+
+        This method exists for backward compatibility only."""
+        skills_dir = self.project_path / ".muscle" / "skills"
+        if not skills_dir.exists():
+            return []
+
+        skills = []
+        for skill_file in skills_dir.glob("*.md"):
+            try:
+                content = skill_file.read_text()
+                name = skill_file.stem.replace("_", " ").replace("-", " ")
+                use_count = content.count("<!-- used") + content.count("INVOKED")
+                if use_count > 0:
+                    skills.append(
+                        {
+                            "skill_name": name,
+                            "path": str(skill_file.relative_to(self.project_path)),
+                            "use_count": use_count,
+                        }
+                    )
+            except Exception:
+                continue
+
+        return skills
+
+    def get_tooling_notes(self) -> list[str]:
+        """Generate tooling notes from current project state."""
+        notes = []
+
+        # Check for Ruff config
+        ruff_path = self.project_path / "ruff.toml"
+        if ruff_path.exists():
+            notes.append("Ruff configured for linting (see ruff.toml)")
+
+        # Check for pyproject.toml
+        pyproject = self.project_path / "pyproject.toml"
+        if pyproject.exists():
+            notes.append("Python project configured (see pyproject.toml)")
+
+        # Check for type hints
+        try:
+            py_files = list(self.project_path.glob("**/*.py"))
+            typed = sum(
+                1 for f in py_files if "type:" in f.read_text() or "TypeGuard" in f.read_text()
+            )
+            if py_files and typed / len(py_files) > 0.5:
+                notes.append("Project uses type hints extensively")
+        except Exception:
+            pass
+
+        return notes
+
+    def insert_markers_if_missing(self) -> bool:
+        """Insert markers into CLAUDE.md if they don't exist."""
+        if not self.claude_md_path.exists():
+            logger.warning(f"CLAUDE.md not found at {self.claude_md_path}")
+            return False
+
+        try:
+            # Serialize the read-modify-write with the other host-doc writers.
+            with advisory_file_lock(host_doc_lock_sentinel(self.project_path, self.claude_md_path)):
+                content = self.claude_md_path.read_text()
+                if PUBLISHED_START in content:
+                    return True  # Already has markers
+
+                # Create backup first using shared BackupManager
+                self._backup_manager.create_backup("claude_md")
+
+                # Insert markers with empty content
+                empty_content = (
+                    f"{SECTION_CRITICAL_RULES}\n\n"
+                    f"{SECTION_MISTAKE_CORRECTIONS}\n\n"
+                    f"{SECTION_AGENT_CALLS}\n\n"
+                    f"{SECTION_SKILL_CALLS}\n\n"
+                    f"{SECTION_TOOLING_NOTES}\n"
+                )
+                updated_content = self._insert_markers(content, empty_content)
+                atomic_write_text(self.claude_md_path, updated_content)
+                return True
+        except Exception as e:
+            logger.error(f"Failed to insert markers: {e}")
+            return False
+
+    def update_markers(self) -> bool:
+        """Update markers with latest content from DB (DB-first architecture).
+
+        This method queries project_memory.db directly for authoritative data:
+        - critical_rules: learned_rules with high recurrence/success_rate
+        - agent_calls: agents ordered by use_count from DB
+        - skill_calls: skills ordered by use_count from DB
+        - tooling_notes: generated from project state
+
+        Internal markdown (.muscle/CLAUDE.md) is NOT consulted.
+        """
+        # Import here to avoid circular dependency at module level
+        from .project_memory import ProjectMemory
+
+        pm = ProjectMemory(str(self.project_path))
+
+        # Get rules from DB - source of truth
+        db_rules = pm.list_learned_rules(
+            project_path=str(self.project_path),
+            status=None,  # Get all, filter below
+            limit=100,
+        )
+        # Include all rules from DB since they're authoritative
+        # Calculate score for sorting: success_rate + recurrence boost, capped at 1.0
+        critical_rules = []
+        for rule in db_rules:
+            success_rate = rule.get("success_rate", 0.0) or 0.0
+            recurrence = rule.get("recurrence_count", 0) or 0
+            # Score formula: success_rate weighted heavily + recurrence boost
+            score = min(success_rate * 0.7 + min(recurrence / 10.0, 0.5), 1.0)
+            critical_rules.append(
+                {
+                    "text": rule.get("rule_text", ""),
+                    "score": score,
+                    "validated_count": recurrence,
+                }
+            )
+
+        # Get skills from DB
+        db_skills = pm.list_skills(
+            project_path=str(self.project_path),
+            status="active",
+            limit=50,
+        )
+        skill_calls = [
+            {
+                "skill_name": s.get("name", ""),
+                "path": s.get("file_path", ""),
+                "use_count": s.get("use_count", 0),
+            }
+            for s in db_skills
+            if s.get("use_count", 0) > 0
+        ]
+
+        # Get agents from DB
+        db_agents = pm.list_agents(
+            project_path=str(self.project_path),
+            status="active",
+            limit=50,
+        )
+        agent_calls = [
+            {
+                "agent_name": a.get("name", ""),
+                "path": a.get("file_path", ""),
+                "use_count": a.get("use_count", 0),
+            }
+            for a in db_agents
+            if a.get("use_count", 0) > 0
+        ]
+
+        # tooling_notes is generated from project state (not from markdown)
+        tooling_notes = self.get_tooling_notes()
+
+        # mistake_corrections: read from DB review_findings (high severity patterns)
+        # For now, leave as empty list - can be enhanced to query DB
+        mistake_corrections: list[dict] = []
+
+        return self.publish(
+            critical_rules=critical_rules,
+            mistake_corrections=mistake_corrections,
+            agent_calls=agent_calls,
+            skill_calls=skill_calls,
+            tooling_notes=tooling_notes,
+        )

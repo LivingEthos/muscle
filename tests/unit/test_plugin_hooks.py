@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "tools" / "muscle" / "plugin"
+PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "muscle" / "plugin"
 CLAUDE_HOOKS = PLUGIN_ROOT / "hooks" / "hooks.json"
 CODEX_HOOKS = PLUGIN_ROOT / "hooks.json"
 

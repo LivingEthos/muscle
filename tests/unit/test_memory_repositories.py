@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from tools.muscle.repository.memory import (
+from muscle.repository.memory import (
     InMemoryLearningRepository,
     InMemoryProjectRepository,
     InMemoryReviewRepository,

@@ -4,7 +4,7 @@ Unit tests for prompt compaction.
 
 from __future__ import annotations
 
-from tools.muscle.optimization.prompt_compactor import compact_prompt_text, should_compact_stage
+from muscle.optimization.prompt_compactor import compact_prompt_text, should_compact_stage
 
 
 def test_compact_prompt_text_preserves_protected_content_verbatim() -> None:
@@ -17,7 +17,7 @@ print("hello")
 ```
 
 uv run pytest tests/unit/test_loop_controller.py -q
-/Users/example/project/tools/muscle/cli.py
+/Users/example/project/src/muscle/cli.py
 https://example.com/docs
 {"status": "ok"}
 Traceback (most recent call last):
@@ -29,7 +29,7 @@ ValueError: boom
 
     assert 'print("hello")' in compacted
     assert "uv run pytest tests/unit/test_loop_controller.py -q" in compacted
-    assert "/Users/example/project/tools/muscle/cli.py" in compacted
+    assert "/Users/example/project/src/muscle/cli.py" in compacted
     assert "https://example.com/docs" in compacted
     assert '{"status": "ok"}' in compacted
     assert 'File "/tmp/app.py", line 7, in <module>' in compacted

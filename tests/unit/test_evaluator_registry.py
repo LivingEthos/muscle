@@ -5,13 +5,13 @@ Unit tests for evaluator_registry.py
 import logging
 from unittest.mock import Mock, patch
 
-from tools.muscle.evaluator_registry import (
+from muscle.evaluator_registry import (
     LANGUAGE_ALIASES,
     LANGUAGE_EVALUATORS,
     EvaluatorRegistry,
     detect_language,
 )
-from tools.muscle.types import EvalMode
+from muscle.types import EvalMode
 
 
 class TestDetectLanguage:
@@ -145,16 +145,16 @@ class TestEvaluatorRegistry:
 
         # Patch the known evaluator name so ImportError fires during _load_evaluator
         with patch(
-            "tools.muscle.evaluator_registry.EvaluatorRegistry._load_evaluator",
+            "muscle.evaluator_registry.EvaluatorRegistry._load_evaluator",
             wraps=registry._load_evaluator,
         ):
             # Manually inject an evaluator name that will fail via ImportError
             # by patching the import inside _load_evaluator for "python_compiler"
             with patch(
-                "tools.muscle.evaluators.compiler.PythonCompiler",
+                "muscle.evaluators.compiler.PythonCompiler",
                 side_effect=ImportError("mocked import failure"),
             ):
-                with caplog.at_level(logging.WARNING, logger="tools.muscle.evaluator_registry"):
+                with caplog.at_level(logging.WARNING, logger="muscle.evaluator_registry"):
                     # First call — should log the warning
                     result1 = registry._load_evaluator("python_compiler")
                     # Second call — import is cached as failed; no new warning

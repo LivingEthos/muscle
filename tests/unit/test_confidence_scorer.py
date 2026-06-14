@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tools.muscle.services.confidence_scorer import ConfidenceScorer, Severity
+from muscle.services.confidence_scorer import ConfidenceScorer, Severity
 
 
 def test_base_confidence_for_known_category():

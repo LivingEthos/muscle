@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from tools.muscle.response_cache import ResponseCache
+from muscle.response_cache import ResponseCache
 
 
 class TestResponseCache:
@@ -58,6 +58,31 @@ class TestResponseCache:
         assert cache.get(key) is not None
         assert cache.get(key) is not None
         assert cache.hit_count(key) == 2
+
+    def test_corrupt_payload_treated_as_miss(self, tmp_path: Path) -> None:
+        """Fix: M7. A row with undecodable JSON must be a miss, not a crash."""
+        import sqlite3
+
+        cache = ResponseCache(db_path=tmp_path / "test.db")
+        key = ResponseCache.build_key("m", "sys", "user")
+        cache.put(key, "m", {"v": 1}, ttl_seconds=3600)
+        # Poison the stored payload with non-JSON bytes.
+        with sqlite3.connect(cache._db) as conn:
+            conn.execute(
+                "UPDATE response_cache SET response_json = ? WHERE key = ?",
+                ("{not valid json", key),
+            )
+        assert cache.get(key) is None  # treated as miss, no exception
+
+    def test_get_busy_timeout_pragma_set(self, tmp_path: Path) -> None:
+        """Fix: M7. Connections set a bounded busy_timeout."""
+        cache = ResponseCache(db_path=tmp_path / "test.db")
+        conn = cache._connect()
+        try:
+            timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            assert timeout == 5000
+        finally:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +141,7 @@ class TestChatStructuredPackIdWiring:
 
         from pydantic import BaseModel
 
-        from tools.muscle.m27_client import M27Client
+        from muscle.m27_client import M27Client
 
         class FakeSchema(BaseModel):
             value: int

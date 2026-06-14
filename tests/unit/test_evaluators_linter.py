@@ -4,7 +4,7 @@ Unit tests for evaluators/linter.py
 
 from unittest.mock import Mock
 
-from tools.muscle.evaluators.linter import (
+from muscle.evaluators.linter import (
     BlackLinter,
     CheckstyleLinter,
     ClippyLinter,

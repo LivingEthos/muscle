@@ -5,7 +5,7 @@ Unit tests for evaluators/tester.py
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from tools.muscle.evaluators.tester import (
+from muscle.evaluators.tester import (
     CargoTestRunner,
     GoTestRunner,
     GtestRunner,

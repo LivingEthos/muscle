@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.muscle.diff_analyzer import DiffAnalyzer
+from muscle.diff_analyzer import DiffAnalyzer
 
 SAMPLE_DIFF = """\
 diff --git a/src/foo.py b/src/foo.py
@@ -98,7 +98,7 @@ def test_from_string_alias():
 
 @pytest.mark.asyncio
 async def test_diff_review_scope_builder(tmp_path: Path) -> None:
-    from tools.muscle.diff_analyzer import DiffReviewScopeBuilder
+    from muscle.diff_analyzer import DiffReviewScopeBuilder
 
     class FakeFS:
         def read_text(self, path: Path) -> str:

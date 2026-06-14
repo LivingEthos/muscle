@@ -5,14 +5,14 @@ Tests for learning_ingestor.py — LearningIngestor service for structured DB ev
 import tempfile
 from unittest.mock import MagicMock
 
-from tools.muscle.code_review.types import (
+from muscle.code_review.types import (
     IssueCategory,
     ReviewIssue,
     ReviewResult,
     Severity,
 )
-from tools.muscle.learning_ingestor import LearningIngestor
-from tools.muscle.project_memory_types import TaskStatus
+from muscle.learning_ingestor import LearningIngestor
+from muscle.project_memory_types import TaskStatus
 
 
 def _make_issue(
@@ -541,7 +541,7 @@ class TestLearningIngestorIntegration:
 
     def test_full_review_ingestion_cycle(self, tmp_path):
         """Test complete review ingestion with real ProjectMemory."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         project_path = str(tmp_path)
         pm = ProjectMemory(project_path)
@@ -592,7 +592,7 @@ class TestLearningIngestorIntegration:
 
     def test_full_task_ingestion_cycle(self, tmp_path):
         """Test complete task ingestion with real ProjectMemory."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         project_path = str(tmp_path)
         pm = ProjectMemory(project_path)
@@ -622,7 +622,7 @@ class TestLearningIngestorIntegration:
 
     def test_failed_task_ingestion(self, tmp_path):
         """Test failed task ingestion with real ProjectMemory."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         project_path = str(tmp_path)
         pm = ProjectMemory(project_path)
@@ -647,7 +647,7 @@ class TestLearningIngestorIntegration:
 
     def test_review_with_zero_findings(self, tmp_path):
         """Test review ingestion when no issues are found."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         project_path = str(tmp_path)
         pm = ProjectMemory(project_path)
@@ -671,7 +671,7 @@ class TestLearningIngestorIntegration:
 
     def test_multiple_reviews_accumulate(self, tmp_path):
         """Test that multiple reviews create multiple review_run rows."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         project_path = str(tmp_path)
         pm = ProjectMemory(project_path)

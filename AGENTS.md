@@ -27,16 +27,16 @@ uv run pytest tests/unit/test_loop_controller.py -v
 uv run pytest tests/unit/test_loop_controller.py::test_loop_controller_success_first_iteration -v
 
 # Quality checks (ALL must pass)
-uv run mypy tools/muscle/                    # Type checking
-uv run ruff check tools/muscle/              # Linting
-uv run ruff format --check tools/muscle/     # Formatting
+uv run mypy src/muscle/                    # Type checking
+uv run ruff check src/muscle/              # Linting
+uv run ruff format --check src/muscle/     # Formatting
 
 # Auto-fix lint/format issues
-uv run ruff check tools/muscle/ --fix
-uv run ruff format tools/muscle/
+uv run ruff check src/muscle/ --fix
+uv run ruff format src/muscle/
 
 # Verify all checks pass
-uv run mypy tools/muscle/ && uv run ruff check tools/muscle/ && uv run ruff format --check tools/muscle/ && uv run pytest tests/ -v
+uv run mypy src/muscle/ && uv run ruff check src/muscle/ && uv run ruff format --check src/muscle/ && uv run pytest tests/ -v
 ```
 
 ---
@@ -122,9 +122,9 @@ Each module MUST pass all checks before merging:
 
 | Check | Command | Required |
 |-------|---------|----------|
-| Types | `uv run mypy tools/muscle/` | Yes |
-| Lint | `uv run ruff check tools/muscle/` | Yes |
-| Format | `uv run ruff format --check tools/muscle/` | Yes |
+| Types | `uv run mypy src/muscle/` | Yes |
+| Lint | `uv run ruff check src/muscle/` | Yes |
+| Format | `uv run ruff format --check src/muscle/` | Yes |
 | Tests | `uv run pytest tests/` | Yes |
 
 ---
@@ -132,7 +132,7 @@ Each module MUST pass all checks before merging:
 ## Module Structure
 
 ```
-tools/muscle/
+src/muscle/
 ├── cli.py                      # CLI entry point (click-based)
 ├── types.py                    # Core data types (RunConfig, SessionReport, etc.)
 ├── m27_client.py               # MiniMax M3 API client
@@ -300,7 +300,7 @@ The plugin provides these slash commands (installed via `/plugin install muscle@
 /plugin install muscle@muscle-marketplace
 
 # Or load locally for development
-claude --plugin-dir ./tools/muscle/plugin
+claude --plugin-dir ./src/muscle/plugin
 ```
 
 ---
@@ -357,7 +357,7 @@ Once you've decided what needs to happen, write a concise plan and hand executio
 
 Keep the planning with you. Do not ask MUSCLE to plan the work. Do not do the bulk execution yourself. When MUSCLE reports back, integrate and decide — cite the MUSCLE session id so follow-ups stay linked. If MUSCLE's output is clearly off-target on a novel problem (empty pattern memory, low confidence across findings), fall back to direct reasoning.
 
-_These commands require the MUSCLE plugin bundle to be active in this project (for example, the Claude or Codex plugin bundle under `tools/muscle/plugin`). Without it, reason directly._
+_These commands require the MUSCLE plugin bundle to be active in this project (for example, the Claude or Codex plugin bundle under `src/muscle/plugin`). Without it, reason directly._
 
 ### Effort & Tool Guidance
 - On Claude Code (Opus 4.8): run MUSCLE fix-application flows at `xhigh` effort; summarization-only at `high`. In auto mode, proceed through delegations without confirmation prompts.
@@ -429,7 +429,7 @@ MUSCLE has been tested on itself:
 
 #### Critical
 - `check` command silently used DummyEvaluator for `"python"` language (not `".py"`) — added `LANGUAGE_ALIASES` including `"py"`, `"js"`, `"ts"`, `"rs"`, `"cs"`
-- Evaluator commands used `output_dir` as both `cwd` and path arg — linters tried to find `tools/muscle/tools/muscle` — fixed all to use `"."` as path when `cwd=output_dir`
+- Evaluator commands used `output_dir` as both `cwd` and path arg — linters tried to find `src/muscle/src/muscle` — fixed all to use `"."` as path when `cwd=output_dir`
 - `muscle run` sessions not persisted — LoopController.run() never called SessionManager.create_session() or save_iteration()/save_session_report() — added session_manager param and all save calls
 - Session ID collisions in SessionManager — fixed with UUID-based session IDs
 - Untracked-file auto-commit misses in GitAdapter — fixed to handle untracked files properly

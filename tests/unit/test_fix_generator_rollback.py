@@ -19,8 +19,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.muscle.code_review.fix_generator import FixGenerator
-from tools.muscle.code_review.types import IssueCategory, ReviewIssue, Severity
+from muscle.code_review.fix_generator import FixGenerator
+from muscle.code_review.types import IssueCategory, ReviewIssue, Severity
 
 
 def _issue(file_path: Path) -> ReviewIssue:
@@ -84,7 +84,7 @@ class TestApplyFixRollbackJavaScript:
         fake_proc.stdout = ""
 
         with patch(
-            "tools.muscle.code_review.fix_generator.subprocess.run",
+            "muscle.code_review.fix_generator.subprocess.run",
             return_value=fake_proc,
         ) as mock_run:
             result = generator.apply_fix(_issue(target), bad_fix)
@@ -109,7 +109,7 @@ class TestApplyFixRollbackJavaScript:
         generator = FixGenerator(MagicMock())
 
         with patch(
-            "tools.muscle.code_review.fix_generator.subprocess.run",
+            "muscle.code_review.fix_generator.subprocess.run",
             side_effect=FileNotFoundError("node not found"),
         ):
             result = generator.apply_fix(_issue(target), "const x = ;\n")
@@ -137,7 +137,7 @@ class TestApplyFixRollbackTypeScript:
         fake_proc.stdout = ""
 
         with patch(
-            "tools.muscle.code_review.fix_generator.subprocess.run",
+            "muscle.code_review.fix_generator.subprocess.run",
             return_value=fake_proc,
         ) as mock_run:
             result = generator.apply_fix(_issue(target), bad_fix)
@@ -162,7 +162,7 @@ class TestApplyFixRollbackTypeScript:
         generator = FixGenerator(MagicMock())
 
         with patch(
-            "tools.muscle.code_review.fix_generator.subprocess.run",
+            "muscle.code_review.fix_generator.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="tsc", timeout=30),
         ):
             result = generator.apply_fix(_issue(target), "export const x = ;\n")
@@ -204,13 +204,13 @@ class TestApplyFixRollbackSharedInvariants:
             fake_proc.stderr = "validator said no"
             fake_proc.stdout = ""
             cm = patch(
-                "tools.muscle.code_review.fix_generator.subprocess.run",
+                "muscle.code_review.fix_generator.subprocess.run",
                 return_value=fake_proc,
             )
         else:
             # no-op patch so the `with` block is uniform
             cm = patch(
-                "tools.muscle.code_review.fix_generator.subprocess.run",
+                "muscle.code_review.fix_generator.subprocess.run",
                 return_value=MagicMock(returncode=0, stderr="", stdout=""),
             )
 

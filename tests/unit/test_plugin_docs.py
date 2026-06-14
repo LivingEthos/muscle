@@ -1,7 +1,7 @@
 """
 CLI documentation smoke tests for plugin command docs.
 
-Verifies that all .md files in tools/muscle/plugin/commands/ reference real CLI
+Verifies that all .md files in src/muscle/plugin/commands/ reference real CLI
 commands and do not document non-existent commands like `muscle shadow *`.
 """
 
@@ -52,6 +52,7 @@ CLI_GROUPS = {
     "long-eval",
     "memory",
     "model",
+    "provider",
     "settings",
     "filters",
 }
@@ -64,6 +65,7 @@ CLI_SUBCOMMANDS = {
     "long-eval": {"run", "reports", "cleanup", "benchmark"},
     "memory": {"status", "history", "related", "import-project", "linked", "unlink"},
     "model": {"status", "history", "select", "packs"},
+    "provider": {"list", "show", "use", "setup", "login"},
     "settings": {"show", "api-key", "hooks", "platform", "reset", "review", "model"},
     "filters": {"verify", "trust", "untrust"},
 }
@@ -102,7 +104,7 @@ def _parse_frontmatter(content: str) -> dict | None:
         return None
 
 
-COMMANDS_DIR = Path(__file__).parent.parent.parent / "tools" / "muscle" / "plugin" / "commands"
+COMMANDS_DIR = Path(__file__).parent.parent.parent / "src" / "muscle" / "plugin" / "commands"
 
 
 class TestPluginDocsReferenceRealCommands:

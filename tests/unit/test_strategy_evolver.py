@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
-from tools.muscle.code_review.strategy_evolver import StrategyEvolver, StrategyResult
+from muscle.code_review.strategy_evolver import StrategyEvolver, StrategyResult
 
 
 @pytest.fixture

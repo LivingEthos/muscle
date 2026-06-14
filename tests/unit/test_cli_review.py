@@ -14,8 +14,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from tools.muscle.cli import cli
-from tools.muscle.tui.project_manager import ProjectConfig, ProjectManager
+from muscle.cli import cli
+from muscle.tui.project_manager import ProjectConfig, ProjectManager
 
 
 class TestReviewCommand:
@@ -48,7 +48,7 @@ class TestReviewCommand:
         mock_instance.run.return_value = mock_run_result
         mock_instance.get_review_result.return_value = mock_result
 
-        with patch("tools.muscle.code_review.ReviewController") as mock_class:
+        with patch("muscle.code_review.ReviewController") as mock_class:
             mock_class.return_value = mock_instance
             yield mock_instance
 
@@ -74,7 +74,7 @@ class TestReviewCommand:
         env.pop("MINIMAX_API_KEY", None)
 
         with patch(
-            "tools.muscle.foresight.build_foresight_report",
+            "muscle.foresight.build_foresight_report",
             side_effect=AssertionError("review should not call foresight"),
         ) as build_foresight:
             result = runner.invoke(
@@ -86,6 +86,45 @@ class TestReviewCommand:
         assert result.exit_code != 0
         assert "MINIMAX_API_KEY not set" in result.output
         build_foresight.assert_not_called()
+
+    def test_review_claude_subscription_needs_no_minimax_key(self, runner, mock_review_controller):
+        """Non-MiniMax providers must reach the client factory without a MiniMax key."""
+        env = os.environ.copy()
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("MINIMAX_API_KEY", None)
+        env["MUSCLE_PROVIDER"] = "claude-subscription"
+
+        with patch("muscle.cli.review.create_client") as mock_factory:
+            mock_factory.return_value = MagicMock()
+            result = runner.invoke(
+                cli,
+                ["review", "--target", "/tmp/test", "--language", "python"],
+                env=env,
+            )
+
+        assert "MINIMAX_API_KEY not set" not in result.output
+        mock_factory.assert_called_once()
+        assert result.exit_code == 0
+
+    def test_review_factory_error_exits_with_message(self, runner):
+        """Factory/constructor errors surface as a friendly CLI error, not a traceback."""
+        env = os.environ.copy()
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("MINIMAX_API_KEY", None)
+        env["MUSCLE_PROVIDER"] = "claude-subscription"
+
+        with patch(
+            "muscle.cli.review.create_client",
+            side_effect=ValueError("claude CLI not found"),
+        ):
+            result = runner.invoke(
+                cli,
+                ["review", "--target", "/tmp/test", "--language", "python"],
+                env=env,
+            )
+
+        assert result.exit_code == 1
+        assert "claude CLI not found" in result.output
 
     def test_review_with_minimax_api_key(self, runner, mock_review_controller):
         """Test that review command works with MINIMAX_API_KEY set."""
@@ -158,6 +197,185 @@ class TestReviewCommand:
         assert "Starting code review session" not in result.output
         assert "Review Complete" not in result.output
 
+    @staticmethod
+    def _controller_with(issues, *, files_reviewed, input_tokens, output_tokens):
+        from muscle.code_review.types import (
+            IssueCategory,
+            ReviewIssue,
+            Severity,
+        )
+
+        severity_map = {
+            "critical": Severity.CRITICAL,
+            "high": Severity.HIGH,
+            "medium": Severity.MEDIUM,
+            "low": Severity.LOW,
+            "info": Severity.INFO,
+        }
+        built = [
+            ReviewIssue(
+                file_path=i["file_path"],
+                line_number=i.get("line_number", 0),
+                severity=severity_map[i.get("severity", "high")],
+                category=IssueCategory.CORRECTNESS,
+                cwe_id=i.get("cwe_id"),
+                title=i["title"],
+                description=i.get("description", ""),
+                code_snippet="",
+                suggested_fix=i.get("suggested_fix"),
+                auto_fixable=i.get("auto_fixable", False),
+            )
+            for i in issues
+        ]
+
+        mock_result = MagicMock()
+        mock_result.session_id = "abc123"
+        mock_result.target_path = "/tmp/test"
+        mock_result.issues = built
+        mock_result.files_reviewed = files_reviewed
+        mock_result.critical_count = sum(1 for b in built if b.severity == Severity.CRITICAL)
+        mock_result.high_count = sum(1 for b in built if b.severity == Severity.HIGH)
+        mock_result.medium_count = 0
+        mock_result.low_count = 0
+        mock_result.info_count = 0
+        mock_result.workflow_name = "review-smart"
+        mock_result.execution_mode = "local"
+
+        mock_run_result = MagicMock()
+        mock_run_result.handoff_plan = None
+        mock_run_result.stats.duration_seconds = 0.0
+        mock_run_result.stats.tokens_used = input_tokens + output_tokens
+        mock_run_result.stats.input_tokens = input_tokens
+        mock_run_result.stats.output_tokens = output_tokens
+
+        mock_instance = MagicMock()
+        mock_instance.run.return_value = mock_run_result
+        mock_instance.get_review_result.return_value = mock_result
+        return mock_instance
+
+    def test_review_json_includes_description_and_fix(self, runner):
+        """JSON issues must carry description, suggested_fix, and cwe_id."""
+        env = os.environ.copy()
+        env["MINIMAX_API_KEY"] = "test-key"
+
+        controller = self._controller_with(
+            [
+                {
+                    "file_path": "/tmp/test/mod.py",
+                    "line_number": 12,
+                    "severity": "high",
+                    "title": "SQL injection",
+                    "description": "User input flows into a raw query.",
+                    "suggested_fix": "Use parameterized queries.",
+                    "cwe_id": "CWE-89",
+                }
+            ],
+            files_reviewed=1,
+            input_tokens=100,
+            output_tokens=50,
+        )
+        with patch("muscle.code_review.ReviewController", return_value=controller):
+            result = runner.invoke(
+                cli,
+                ["review", "--target", "/tmp/test", "--format", "json"],
+                env=env,
+            )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        issue = payload["issues"][0]
+        assert issue["description"] == "User input flows into a raw query."
+        assert issue["suggested_fix"] == "Use parameterized queries."
+        assert issue["cwe_id"] == "CWE-89"
+        assert issue["line"] == 12
+        # Path normalized relative to the target root, not an absolute path.
+        assert issue["file"] == "mod.py"
+        assert payload["warnings"] == []
+
+    def test_review_json_line_null_passthrough(self, runner):
+        """A line-less finding (line_number 0) renders as JSON null."""
+        env = os.environ.copy()
+        env["MINIMAX_API_KEY"] = "test-key"
+
+        controller = self._controller_with(
+            [
+                {
+                    "file_path": "/tmp/test/mod.py",
+                    "line_number": 0,
+                    "severity": "high",
+                    "title": "No line",
+                    "description": "A bug without a line.",
+                }
+            ],
+            files_reviewed=1,
+            input_tokens=100,
+            output_tokens=50,
+        )
+        with patch("muscle.code_review.ReviewController", return_value=controller):
+            result = runner.invoke(
+                cli,
+                ["review", "--target", "/tmp/test", "--format", "json"],
+                env=env,
+            )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["issues"][0]["line"] is None
+
+    def test_review_json_warns_on_zero_activity(self, runner):
+        """Degenerate run (scope nonempty, 0 tokens, 0 findings) emits a warning,
+        keeps exit 0, and does not read as a clean pass."""
+        env = os.environ.copy()
+        env["MINIMAX_API_KEY"] = "test-key"
+
+        controller = self._controller_with(
+            [],
+            files_reviewed=3,
+            input_tokens=0,
+            output_tokens=0,
+        )
+        with patch("muscle.code_review.ReviewController", return_value=controller):
+            result = runner.invoke(
+                cli,
+                ["review", "--target", "/tmp/test", "--format", "json"],
+                env=env,
+            )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["warnings"]
+        assert "no LLM activity" in payload["warnings"][0]
+
+    def test_review_json_no_warning_when_findings_present(self, runner):
+        """Zero LLM tokens WITH findings (deterministic detectors) is legitimate."""
+        env = os.environ.copy()
+        env["MINIMAX_API_KEY"] = "test-key"
+
+        controller = self._controller_with(
+            [
+                {
+                    "file_path": "/tmp/test/mod.py",
+                    "line_number": 5,
+                    "severity": "high",
+                    "title": "Deterministic finding",
+                    "description": "Found by a local detector.",
+                }
+            ],
+            files_reviewed=2,
+            input_tokens=0,
+            output_tokens=0,
+        )
+        with patch("muscle.code_review.ReviewController", return_value=controller):
+            result = runner.invoke(
+                cli,
+                ["review", "--target", "/tmp/test", "--format", "json"],
+                env=env,
+            )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["warnings"] == []
+
     def test_review_json_format_writes_output_file(
         self,
         runner,
@@ -194,8 +412,8 @@ class TestReviewCommand:
         env["MINIMAX_API_KEY"] = "test-key"
 
         with (
-            patch("tools.muscle.cli.ProjectMemory") as mock_project_memory,
-            patch("tools.muscle.cli.LearningPipeline") as mock_learning_pipeline,
+            patch("muscle.cli.review.ProjectMemory") as mock_project_memory,
+            patch("muscle.cli.review.LearningPipeline") as mock_learning_pipeline,
         ):
             result = runner.invoke(
                 cli,
@@ -217,7 +435,7 @@ class TestReviewCommand:
         env["MINIMAX_API_KEY"] = "test-key"
 
         with patch(
-            "tools.muscle.cli.ModelPackManager",
+            "muscle.cli._shared.ModelPackManager",
             side_effect=AssertionError("review should not instantiate remote model-pack flows"),
         ):
             result = runner.invoke(
@@ -319,7 +537,7 @@ class TestReviewCommand:
         mock_instance.run.return_value = mock_run_result
         mock_instance.get_review_result.return_value = mock_result
 
-        with patch("tools.muscle.code_review.ReviewController") as mock_class:
+        with patch("muscle.code_review.ReviewController") as mock_class:
             mock_class.return_value = mock_instance
             result = runner.invoke(
                 cli,
@@ -349,7 +567,7 @@ class TestReviewCommand:
         env = os.environ.copy()
         env["MINIMAX_API_KEY"] = "test-key"
 
-        with patch("tools.muscle.code_review.shadow_worker.WorkerManager") as mock_manager_cls:
+        with patch("muscle.code_review.shadow_worker.WorkerManager") as mock_manager_cls:
             mock_manager = MagicMock()
             mock_manager.submit_shadow_job.return_value = "shadow123"
             mock_manager_cls.return_value = mock_manager
@@ -386,7 +604,7 @@ class TestReviewCommand:
         mock_run_result.stats.duration_seconds = 0.0
         mock_run_result.stats.tokens_used = 0
 
-        with patch("tools.muscle.code_review.ReviewController") as mock_class:
+        with patch("muscle.code_review.ReviewController") as mock_class:
             mock_instance = MagicMock()
             mock_instance.run.return_value = mock_run_result
             mock_instance.get_review_result.return_value = mock_result
@@ -401,6 +619,49 @@ class TestReviewCommand:
         assert result.exit_code == 0
         config = mock_class.call_args.kwargs["config"]
         assert config.execution_mode == "worktree"
+
+    def test_review_async_workers_flag_threads_into_config(self, runner):
+        env = os.environ.copy()
+        env["MINIMAX_API_KEY"] = "test-key"
+
+        mock_result = MagicMock()
+        mock_result.session_id = "abc123"
+        mock_result.target_path = "/tmp/test"
+        mock_result.issues = []
+        mock_result.critical_count = 0
+        mock_result.high_count = 0
+        mock_result.medium_count = 0
+        mock_result.low_count = 0
+        mock_result.info_count = 0
+
+        mock_run_result = MagicMock()
+        mock_run_result.handoff_plan = None
+        mock_run_result.stats.duration_seconds = 0.0
+        mock_run_result.stats.tokens_used = 0
+
+        with patch("muscle.code_review.ReviewController") as mock_class:
+            mock_instance = MagicMock()
+            mock_instance.run.return_value = mock_run_result
+            mock_instance.get_review_result.return_value = mock_result
+            mock_class.return_value = mock_instance
+
+            result = runner.invoke(
+                cli,
+                [
+                    "review",
+                    "--target",
+                    "/tmp/test",
+                    "--async-workers",
+                    "--async-worker-limit",
+                    "2",
+                ],
+                env=env,
+            )
+
+        assert result.exit_code == 0
+        config = mock_class.call_args.kwargs["config"]
+        assert config.async_workers is True
+        assert config.async_worker_limit == 2
 
     def test_review_uses_nearest_project_execution_config(self, runner, tmp_path, monkeypatch):
         env = os.environ.copy()
@@ -437,7 +698,7 @@ class TestReviewCommand:
         mock_run_result.stats.duration_seconds = 0.0
         mock_run_result.stats.tokens_used = 0
 
-        with patch("tools.muscle.code_review.ReviewController") as mock_class:
+        with patch("muscle.code_review.ReviewController") as mock_class:
             mock_instance = MagicMock()
             mock_instance.run.return_value = mock_run_result
             mock_instance.get_review_result.return_value = mock_result
@@ -448,6 +709,60 @@ class TestReviewCommand:
         assert result.exit_code == 0
         config = mock_class.call_args.kwargs["config"]
         assert config.execution_mode == "worktree"
+
+    def test_review_uses_nearest_project_async_worker_config(
+        self,
+        runner,
+        tmp_path,
+        monkeypatch,
+    ):
+        env = os.environ.copy()
+        env["MINIMAX_API_KEY"] = "test-key"
+
+        manager = ProjectManager(base_path=tmp_path)
+        assert manager.init_project(
+            ProjectConfig(
+                name="benchmark-project",
+                path=tmp_path,
+                languages=["python"],
+                review_async_workers=True,
+                review_async_worker_limit=2,
+            )
+        )
+
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        target = src_dir / "main.py"
+        target.write_text("print('hello')\n", encoding="utf-8")
+        monkeypatch.chdir(src_dir)
+
+        mock_result = MagicMock()
+        mock_result.session_id = "abc123"
+        mock_result.target_path = str(target)
+        mock_result.issues = []
+        mock_result.critical_count = 0
+        mock_result.high_count = 0
+        mock_result.medium_count = 0
+        mock_result.low_count = 0
+        mock_result.info_count = 0
+
+        mock_run_result = MagicMock()
+        mock_run_result.handoff_plan = None
+        mock_run_result.stats.duration_seconds = 0.0
+        mock_run_result.stats.tokens_used = 0
+
+        with patch("muscle.code_review.ReviewController") as mock_class:
+            mock_instance = MagicMock()
+            mock_instance.run.return_value = mock_run_result
+            mock_instance.get_review_result.return_value = mock_result
+            mock_class.return_value = mock_instance
+
+            result = runner.invoke(cli, ["review", "--target", str(target)], env=env)
+
+        assert result.exit_code == 0
+        config = mock_class.call_args.kwargs["config"]
+        assert config.async_workers is True
+        assert config.async_worker_limit == 2
 
 
 class TestReviewLearningIntegration:
@@ -487,11 +802,11 @@ class TestReviewLearningIntegration:
 
         with (
             patch(
-                "tools.muscle.code_review.ReviewController",
+                "muscle.code_review.ReviewController",
                 return_value=mock_controller,
             ),
             patch(
-                "tools.muscle.cli.LearningPipeline",
+                "muscle.cli.review.LearningPipeline",
                 return_value=mock_pipeline,
             ) as mock_pipeline_class,
         ):
@@ -534,11 +849,11 @@ class TestReviewLearningIntegration:
 
         with (
             patch(
-                "tools.muscle.code_review.ReviewController",
+                "muscle.code_review.ReviewController",
                 return_value=mock_controller,
             ),
             patch(
-                "tools.muscle.cli.LearningPipeline",
+                "muscle.cli.review.LearningPipeline",
                 return_value=mock_pipeline,
             ),
         ):

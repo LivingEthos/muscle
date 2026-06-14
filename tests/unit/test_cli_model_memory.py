@@ -11,16 +11,16 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from tools.muscle.cli import cli
-from tools.muscle.project_memory import ProjectMemory
-from tools.muscle.project_memory_types import ModelPackMetadata
-from tools.muscle.tui.project_manager import ProjectConfig, ProjectManager
+from muscle.cli import cli
+from muscle.project_memory import ProjectMemory
+from muscle.project_memory_types import ModelPackMetadata
+from muscle.tui.project_manager import ProjectConfig, ProjectManager
 
 
 @pytest.fixture
 def isolate_system_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "home" / ".muscle" / "system.db"
-    monkeypatch.setattr("tools.muscle.system_db.DEFAULT_SYSTEM_DB_PATH", db_path)
+    monkeypatch.setattr("muscle.system_db.DEFAULT_SYSTEM_DB_PATH", db_path)
     return db_path
 
 
@@ -304,7 +304,7 @@ def test_model_pack_install_from_repo_command(
                 pack_path=str(tmp_path / ".muscle" / "cache-pack"),
             )
 
-    monkeypatch.setattr("tools.muscle.cli.ModelPackManager", StubManager)
+    monkeypatch.setattr("muscle.cli.model.ModelPackManager", StubManager)
 
     with pytest.MonkeyPatch.context() as chdir_patch:
         chdir_patch.chdir(tmp_path)
@@ -369,7 +369,7 @@ def test_model_pack_update_command(
                 pack_path=str(tmp_path / ".muscle" / "cache-pack"),
             )
 
-    monkeypatch.setattr("tools.muscle.cli.ModelPackManager", StubManager)
+    monkeypatch.setattr("muscle.cli.model.ModelPackManager", StubManager)
 
     with pytest.MonkeyPatch.context() as chdir_patch:
         chdir_patch.chdir(tmp_path)
@@ -435,7 +435,7 @@ def test_model_pack_submit_reuses_existing_submission_output(
                 "duplicate_of_export_id": "abc123",
             }
 
-    monkeypatch.setattr("tools.muscle.cli.ModelPackManager", StubManager)
+    monkeypatch.setattr("muscle.cli.model.ModelPackManager", StubManager)
 
     with pytest.MonkeyPatch.context() as chdir_patch:
         chdir_patch.chdir(tmp_path)

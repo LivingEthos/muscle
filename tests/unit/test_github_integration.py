@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from tools.muscle.adapters.github_integration import GitHubIntegration, GitHubIntegrationConfig
+from muscle.adapters.github_integration import GitHubIntegration, GitHubIntegrationConfig
 
 
 class TestGitHubIntegrationConfig:

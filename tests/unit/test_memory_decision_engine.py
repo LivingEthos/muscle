@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from tools.muscle.memory_decision_engine import (
+from muscle.memory_decision_engine import (
     DecisionThresholds,
     DecisionType,
     MemoryDecisionEngine,
     ScoreBreakdown,
     ScoringWeights,
 )
-from tools.muscle.project_memory import ProjectMemory
+from muscle.project_memory import ProjectMemory
 
 
 @pytest.fixture

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.muscle.project_notes import (
+from muscle.project_notes import (
     VALID_CATEGORIES,
     ProjectNotes,
     _delete_project_note,
@@ -47,7 +47,7 @@ class TestNoteCategories:
 
 class TestProjectNotesAdd:
     def test_add_note_calls_insert(self, notes: ProjectNotes, mock_memory: MagicMock) -> None:
-        with patch("tools.muscle.project_notes._insert_project_note") as mock_insert:
+        with patch("muscle.project_notes._insert_project_note") as mock_insert:
             mock_insert.return_value = 5
 
             note_id = notes.add_note(
@@ -65,7 +65,7 @@ class TestProjectNotesAdd:
             assert call_kwargs["project_path"] == "/fake/project"
 
     def test_add_note_custom_timestamp(self, notes: ProjectNotes, mock_memory: MagicMock) -> None:
-        with patch("tools.muscle.project_notes._insert_project_note") as mock_insert:
+        with patch("muscle.project_notes._insert_project_note") as mock_insert:
             mock_insert.return_value = 1
             notes.add_note(
                 category="gotcha",
@@ -84,8 +84,8 @@ class TestProjectNotesAdd:
 class TestProjectNotesUpdate:
     def test_update_note_calls_memory(self, notes: ProjectNotes, mock_memory: MagicMock) -> None:
         with (
-            patch("tools.muscle.project_notes._get_project_note") as mock_get,
-            patch("tools.muscle.project_notes._update_project_note") as mock_update,
+            patch("muscle.project_notes._get_project_note") as mock_get,
+            patch("muscle.project_notes._update_project_note") as mock_update,
         ):
             mock_get.return_value = {"id": 3, "content": "old content", "title": "old title"}
             mock_update.return_value = True
@@ -101,7 +101,7 @@ class TestProjectNotesUpdate:
             assert call_kwargs["title"] == "New title"
 
     def test_update_note_not_found(self, notes: ProjectNotes, mock_memory: MagicMock) -> None:
-        with patch("tools.muscle.project_notes._get_project_note") as mock_get:
+        with patch("muscle.project_notes._get_project_note") as mock_get:
             mock_get.return_value = None
             result = notes.update_note(999, title="x")
             assert result is False
@@ -109,7 +109,7 @@ class TestProjectNotesUpdate:
     def test_update_note_invalid_category(
         self, notes: ProjectNotes, mock_memory: MagicMock
     ) -> None:
-        with patch("tools.muscle.project_notes._get_project_note") as mock_get:
+        with patch("muscle.project_notes._get_project_note") as mock_get:
             mock_get.return_value = {"id": 1, "content": "c", "title": "t"}
             with pytest.raises(ValueError, match="Invalid category"):
                 notes.update_note(1, category="bad_cat")
@@ -119,7 +119,7 @@ class TestProjectNotesGet:
     def test_get_notes_returns_note_entries(
         self, notes: ProjectNotes, mock_memory: MagicMock
     ) -> None:
-        with patch("tools.muscle.project_notes._list_project_notes") as mock_list:
+        with patch("muscle.project_notes._list_project_notes") as mock_list:
             mock_list.return_value = [
                 {
                     "id": 1,
@@ -153,7 +153,7 @@ class TestProjectNotesGet:
     def test_get_notes_filtered_by_category(
         self, notes: ProjectNotes, mock_memory: MagicMock
     ) -> None:
-        with patch("tools.muscle.project_notes._list_project_notes") as mock_list:
+        with patch("muscle.project_notes._list_project_notes") as mock_list:
             mock_list.return_value = []
             notes.get_notes(category="dependency")
             mock_list.assert_called_once_with(
@@ -161,7 +161,7 @@ class TestProjectNotesGet:
             )
 
     def test_get_notes_by_category(self, notes: ProjectNotes, mock_memory: MagicMock) -> None:
-        with patch("tools.muscle.project_notes._list_project_notes") as mock_list:
+        with patch("muscle.project_notes._list_project_notes") as mock_list:
             mock_list.return_value = [
                 {
                     "id": 1,
@@ -184,9 +184,9 @@ class TestProjectNotesDedupe:
     ) -> None:
         """Notes with very similar titles (>= 0.85 similarity) should be merged."""
         with (
-            patch("tools.muscle.project_notes._list_project_notes") as mock_list,
-            patch("tools.muscle.project_notes._update_project_note"),
-            patch("tools.muscle.project_notes._delete_project_note") as mock_delete,
+            patch("muscle.project_notes._list_project_notes") as mock_list,
+            patch("muscle.project_notes._update_project_note"),
+            patch("muscle.project_notes._delete_project_note") as mock_delete,
         ):
             mock_list.return_value = [
                 {
@@ -219,8 +219,8 @@ class TestProjectNotesDedupe:
         self, notes: ProjectNotes, mock_memory: MagicMock
     ) -> None:
         with (
-            patch("tools.muscle.project_notes._list_project_notes") as mock_list,
-            patch("tools.muscle.project_notes._delete_project_note") as mock_delete,
+            patch("muscle.project_notes._list_project_notes") as mock_list,
+            patch("muscle.project_notes._delete_project_note") as mock_delete,
         ):
             mock_list.return_value = [
                 {
@@ -253,7 +253,7 @@ class TestProjectMemoryHelpers:
 
     def _make_pm(self) -> MagicMock:
         """Build a partially-real ProjectMemory whose _get_connection returns a mock cursor."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         # Create a real-feeling PM without triggering __init__ DB init
         pm = ProjectMemory.__new__(ProjectMemory)

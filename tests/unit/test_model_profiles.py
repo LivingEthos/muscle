@@ -1,0 +1,231 @@
+import warnings
+
+import pytest
+
+from muscle.host_effort_policy import HostEffortLevel
+from muscle.model_profiles import (
+    PROFILES,
+    VALID_DOC_FRAGMENT_KEYS,
+    ActiveProfiles,
+    AgentBehavior,
+    HostBehavior,
+    ModelProfile,
+    SecurityPosture,
+    profile_for,
+    resolve_active_profiles,
+    resolve_agent_security_posture,
+    resolve_host_learning_posture,
+    resolve_host_synthesis_floor,
+    validate_profile,
+)
+
+OPUS_KEY = "anthropic/claude-opus-4-8@2026-05-28"
+M3_KEY = "minimax/m3@1"
+FABLE_KEY = "anthropic/claude-fable-5@2026-06-09"
+
+
+def _minimal_profile(**overrides) -> ModelProfile:
+    base: dict[str, object] = {
+        "canonical_key": "test/model@1",
+        "display_name": "Test",
+        "positions": frozenset({"agent"}),
+    }
+    base.update(overrides)
+    return ModelProfile(**base)  # type: ignore[arg-type]  # dict[str, object] vs typed kwargs; values correct at runtime
+
+
+def test_defaults_are_conservative():
+    p = _minimal_profile()
+    assert p.agent.keep_thinking_on_all_stages is False
+    assert dict(p.agent.stage_effort) == {}
+    assert p.agent.default_effort == "medium"
+    assert p.security.dependency_snippet_policy == "sanitize"
+    assert p.host.synthesis_effort_floor is HostEffortLevel.MEDIUM
+
+
+def test_validate_profile_accepts_valid():
+    validate_profile(_minimal_profile())  # no raise
+
+
+def test_validate_profile_rejects_bad_effort():
+    bad = _minimal_profile(agent=AgentBehavior(stage_effort={"semantic_review": "turbo"}))
+    with pytest.raises(AssertionError):
+        validate_profile(bad)
+
+
+def test_validate_profile_rejects_bad_dependency_policy():
+    bad = _minimal_profile(security=SecurityPosture(dependency_snippet_policy="raw"))
+    with pytest.raises(AssertionError):
+        validate_profile(bad)
+
+
+def test_profile_is_frozen():
+    from dataclasses import FrozenInstanceError
+
+    p = _minimal_profile()
+    with pytest.raises(FrozenInstanceError):
+        p.canonical_key = "other"  # type: ignore[misc]
+
+
+def test_registry_contains_expected_profiles():
+    assert set(PROFILES) == {"default", OPUS_KEY, M3_KEY, FABLE_KEY}
+
+
+def test_default_profile_preserves_today_agent_behavior():
+    d = PROFILES["default"]
+    assert d.agent.keep_thinking_on_all_stages is False
+    assert dict(d.agent.stage_effort) == {}
+    assert d.host.doc_fragment_keys == ()
+
+
+def test_m3_profile_is_byte_identical_legacy_shaped():
+    m3 = PROFILES[M3_KEY]
+    assert m3.agent.keep_thinking_on_all_stages is False
+    assert dict(m3.agent.stage_effort) == {}
+    assert m3.positions == frozenset({"agent"})
+
+
+def test_opus_profile_full_values():
+    opus = PROFILES[OPUS_KEY]
+    assert opus.agent.keep_thinking_on_all_stages is True
+    assert opus.agent.stage_effort["semantic_review"] == "xhigh"
+    assert opus.agent.stage_effort["fix_generation"] == "xhigh"
+    assert opus.agent.stage_effort["verification"] == "high"
+    assert opus.agent.stage_effort["memory_consolidation"] == "low"
+    assert opus.agent.default_effort == "high"
+    assert opus.host.synthesis_effort_floor is HostEffortLevel.HIGH
+    assert "untrusted_content_and_thinking" in opus.host.doc_fragment_keys
+    assert "literalism_narration" in opus.host.doc_fragment_keys
+    assert opus.security.prompt_injection_sensitivity == "elevated"
+    assert opus.security.dependency_snippet_policy == "metadata_only"
+    assert opus.security.untrusted_envelope_emphasis == "elevated"
+    assert opus.security.cyber_safeguard_friction is True
+    assert opus.evaluation.grader_aware is True
+    assert opus.learning.point_of_action_reinforcement is True
+    assert opus.learning.repeated_violation_escalation is True
+    assert {"host", "agent"} <= opus.positions
+
+
+def test_fable_profile_is_premium_host_placeholder():
+    fable = PROFILES[FABLE_KEY]
+    assert fable.positions == frozenset({"host"})
+    assert fable.host.synthesis_effort_floor is HostEffortLevel.HIGH
+    assert fable.host.doc_fragment_keys == ()  # no Opus-card-specific fragments
+
+
+def test_profile_for_known_key_returns_it():
+    assert profile_for(OPUS_KEY) is PROFILES[OPUS_KEY]
+
+
+def test_profile_for_none_returns_default_quietly():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning fails the test
+        assert profile_for(None) is PROFILES["default"]
+
+
+def test_profile_for_unknown_key_warns_and_defaults():
+    with pytest.warns(RuntimeWarning):
+        result = profile_for("garbage/not-a-real-model@9")
+    assert result is PROFILES["default"]
+
+
+def test_profile_for_recognized_unprofiled_model_is_quiet():
+    for key in ("minimax/m2.7@1", "anthropic/claude-sonnet@4", "openai/gpt-5.5@1"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any warning fails
+            assert profile_for(key) is PROFILES["default"]
+
+
+def test_opus_stage_effort_is_immutable():
+    with pytest.raises(TypeError):
+        PROFILES[OPUS_KEY].agent.stage_effort["new_stage"] = "xhigh"  # type: ignore[index]
+
+
+def test_validate_profile_rejects_empty_positions():
+    bad = _minimal_profile(positions=frozenset())
+    with pytest.raises(AssertionError):
+        validate_profile(bad)
+
+
+def test_resolve_active_profiles_opus_host_minimax_agent(monkeypatch, tmp_path):
+    # Host = Opus via explicit env; agent = default MiniMax provider.
+    monkeypatch.setenv("MUSCLE_HOST_MODEL", "opus")
+    monkeypatch.delenv("MUSCLE_PROVIDER", raising=False)
+    active = resolve_active_profiles(tmp_path)
+    assert isinstance(active, ActiveProfiles)
+    assert active.host.canonical_key == OPUS_KEY
+    assert active.agent.canonical_key == M3_KEY
+    assert active.host_identity.identity_source == "host_explicit"
+
+
+def test_resolve_active_profiles_unknown_host_is_default(monkeypatch, tmp_path):
+    monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+    monkeypatch.delenv("MUSCLE_PROVIDER", raising=False)
+    # Isolate from the real ~/.claude/settings.json (which may have a model set).
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    active = resolve_active_profiles(tmp_path)
+    assert active.host.canonical_key == "default"
+
+
+def test_resolve_active_profiles_opus_agent(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUSCLE_PROVIDER", "anthropic-api")
+    monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+    active = resolve_active_profiles(tmp_path)
+    assert active.agent.canonical_key == OPUS_KEY
+    assert active.agent_identity.identity_source.startswith("agent_provider:")
+
+
+def test_validate_profile_rejects_unknown_fragment_key():
+    bad = _minimal_profile(
+        positions=frozenset({"host"}),
+        host=HostBehavior(doc_fragment_keys=("not_a_real_fragment",)),
+    )
+    with pytest.raises(AssertionError):
+        validate_profile(bad)
+
+
+def test_opus_fragment_keys_are_all_valid():
+    opus = PROFILES[OPUS_KEY]
+    assert set(opus.host.doc_fragment_keys) <= VALID_DOC_FRAGMENT_KEYS
+
+
+def test_resolve_agent_security_posture_opus(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUSCLE_PROVIDER", "anthropic-api")
+    monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+    sec = resolve_agent_security_posture(tmp_path)
+    assert sec.dependency_snippet_policy == "metadata_only"
+    assert sec.untrusted_envelope_emphasis == "elevated"
+
+
+def test_resolve_agent_security_posture_default_is_sanitize_standard(monkeypatch, tmp_path):
+    monkeypatch.delenv("MUSCLE_PROVIDER", raising=False)
+    monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+    sec = resolve_agent_security_posture(tmp_path)
+    assert sec.dependency_snippet_policy == "sanitize"
+    assert sec.untrusted_envelope_emphasis == "standard"
+
+
+def test_resolve_host_synthesis_floor_opus(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUSCLE_HOST_MODEL", "opus")
+    assert resolve_host_synthesis_floor(tmp_path) == HostEffortLevel.HIGH
+
+
+def test_resolve_host_synthesis_floor_unknown_is_medium(monkeypatch, tmp_path):
+    monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    assert resolve_host_synthesis_floor(tmp_path) == HostEffortLevel.MEDIUM
+
+
+def test_resolve_host_learning_posture_opus(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUSCLE_HOST_MODEL", "opus")
+    posture = resolve_host_learning_posture(tmp_path)
+    assert posture.point_of_action_reinforcement is True
+    assert posture.repeated_violation_escalation is True
+
+
+def test_resolve_host_learning_posture_unknown_is_off(monkeypatch, tmp_path):
+    monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    posture = resolve_host_learning_posture(tmp_path)
+    assert posture.point_of_action_reinforcement is False
+    assert posture.repeated_violation_escalation is False

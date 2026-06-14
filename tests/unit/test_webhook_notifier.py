@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.muscle.webhook_notifier import WebhookEvent, WebhookNotifier
+from muscle.webhook_notifier import WebhookEvent, WebhookNotifier
 
 
 class TestWebhookNotifier:
@@ -63,7 +63,7 @@ class TestWebhookNotifier:
         mock_session_ctx.post = MagicMock(return_value=mock_post_ctx)
 
         with patch("aiohttp.ClientSession", return_value=mock_session_ctx):
-            from tools.muscle.webhook_notifier import WebhookPayload
+            from muscle.webhook_notifier import WebhookPayload
 
             payload = WebhookPayload(
                 event="session_start",
@@ -92,7 +92,7 @@ class TestWebhookNotifier:
         )
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            from tools.muscle.webhook_notifier import WebhookPayload
+            from muscle.webhook_notifier import WebhookPayload
 
             payload = WebhookPayload(
                 event="session_start",
@@ -108,7 +108,7 @@ class TestWebhookNotifier:
         notifier = WebhookNotifier(webhook_url="https://example.com/webhook")
 
         with patch("aiohttp.ClientSession", side_effect=ConnectionError("Network unreachable")):
-            from tools.muscle.webhook_notifier import WebhookPayload
+            from muscle.webhook_notifier import WebhookPayload
 
             payload = WebhookPayload(
                 event="session_start",

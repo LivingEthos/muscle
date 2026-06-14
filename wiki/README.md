@@ -3,9 +3,9 @@
 | Field | Value |
 |---|---|
 | Audience | Users, maintainers, release operators, and coding agents |
-| Scope | `tools/muscle/` runtime and `tools/muscle/plugin/` bundle |
+| Scope | `src/muscle/` runtime and `src/muscle/plugin/` bundle |
 | Status | Current repo-local wiki database |
-| Source of truth | Current repository files, especially [`README.md`](../README.md), [`tools/muscle/cli.py`](../tools/muscle/cli.py), and [`tools/muscle/plugin/`](../tools/muscle/plugin/) |
+| Source of truth | Current repository files, especially [`README.md`](../README.md), [`src/muscle/cli/`](../src/muscle/cli/), and [`src/muscle/plugin/`](../src/muscle/plugin/) |
 | Online-docs readiness | Pages are split by topic, use stable slugs, and have matching YAML catalogs under [`data/`](data/) |
 
 MUSCLE is a self-learning code review and developer-ops plugin for Claude Code,
@@ -45,12 +45,12 @@ This wiki is designed to work in three ways:
 
 ## Current Implementation Notes
 
-- Active runtime package: [`tools/muscle/`](../tools/muscle/).
+- Active runtime package: [`src/muscle/`](../src/muscle/).
 - Legacy package: `tools/scle/`; do not use it as source-of-truth for current
   plugin docs.
-- Plugin command docs: [`tools/muscle/plugin/commands/`](../tools/muscle/plugin/commands/).
-- Claude plugin metadata: [`tools/muscle/plugin/.claude-plugin/`](../tools/muscle/plugin/.claude-plugin/).
-- Codex plugin metadata: [`tools/muscle/plugin/.codex-plugin/`](../tools/muscle/plugin/.codex-plugin/).
+- Plugin command docs: [`src/muscle/plugin/commands/`](../src/muscle/plugin/commands/).
+- Claude plugin metadata: [`src/muscle/plugin/.claude-plugin/`](../src/muscle/plugin/.claude-plugin/).
+- Codex plugin metadata: [`src/muscle/plugin/.codex-plugin/`](../src/muscle/plugin/.codex-plugin/).
 - Per-project state is DB-first in `.muscle/project_memory.db`; markdown memory
   files and `active-review.md` are compatibility or convenience surfaces.
 

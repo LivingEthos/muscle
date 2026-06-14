@@ -5,7 +5,7 @@ Unit tests for evaluators/base.py
 from subprocess import TimeoutExpired
 from unittest.mock import Mock, patch
 
-from tools.muscle.evaluators.base import BaseEvaluator, EvaluatorResult
+from muscle.evaluators.base import BaseEvaluator, EvaluatorResult
 
 
 class ConcreteEvaluator(BaseEvaluator):

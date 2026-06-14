@@ -4,7 +4,7 @@ Unit tests for project_builder.py
 
 from pathlib import Path
 
-from tools.muscle.project_builder import ProjectBuilder
+from muscle.project_builder import ProjectBuilder
 
 
 class TestProjectBuilder:

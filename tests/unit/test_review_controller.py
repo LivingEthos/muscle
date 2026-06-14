@@ -15,12 +15,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.muscle.code_review.code_reviewer import CodeReviewer
-from tools.muscle.code_review.fix_generator import FixGenerator, FixResult, GeneratedFix
-from tools.muscle.code_review.handoff_generator import HandoffGenerator
-from tools.muscle.code_review.review_controller import ReviewContext, ReviewController
-from tools.muscle.code_review.static_analyzer import StaticAnalyzer
-from tools.muscle.code_review.types import (
+from muscle.command_evidence import CommandEvidence
+from muscle.code_review.code_reviewer import CodeReviewer
+from muscle.code_review.fix_generator import FixGenerator, FixResult, GeneratedFix
+from muscle.code_review.handoff_generator import HandoffGenerator
+from muscle.code_review.review_controller import ReviewContext, ReviewController
+from muscle.code_review.static_analyzer import StaticAnalyzer
+from muscle.code_review.types import (
     HandoffPlan,
     IssueCategory,
     ReviewConfig,
@@ -32,10 +33,14 @@ from tools.muscle.code_review.types import (
     StaticAnalysisResult,
     StaticIssue,
 )
-from tools.muscle.code_review.verification_loop import VerificationResult
-from tools.muscle.m27_client import M27Client
-from tools.muscle.project_memory import ProjectMemory
-from tools.muscle.tui.project_manager import ProjectConfig, ProjectManager
+from muscle.code_review.async_worker_policy import (
+    SKIP_EASY_TASK,
+    TRIGGER_VERIFICATION_FAILED_ONCE,
+)
+from muscle.code_review.verification_loop import VerificationResult
+from muscle.m27_client import M27Client
+from muscle.project_memory import ProjectMemory
+from muscle.tui.project_manager import ProjectConfig, ProjectManager
 
 
 class MockM27Client(M27Client):
@@ -92,6 +97,20 @@ class TestReviewControllerInitialization:
         controller._emit(ReviewEvent.REVIEW_START, {"test": "data"})
         assert len(callback_called) == 1
         assert callback_called[0][0] == ReviewEvent.REVIEW_START
+
+    def test_emit_swallows_callback_exceptions(self):
+        """A throwing observer must not abort the review (FAILOPEN#6)."""
+        config = ReviewConfig(target_path="/tmp/test")
+        mock_client = MockM27Client()
+
+        def boom(event: ReviewEvent, data: dict):
+            raise RuntimeError("observer blew up")
+
+        controller = ReviewController(
+            config=config, m27_client=mock_client, event_callback=boom, use_kb=False
+        )
+        # Must not raise.
+        controller._emit(ReviewEvent.REVIEW_START, {"test": "data"})
 
 
 class TestReviewModes:
@@ -164,6 +183,123 @@ class TestReviewModes:
         )
         assert manifest["artifact_count"] >= 3
         assert "summary.md" in manifest["artifacts"]
+        assert "verification-claims.json" in manifest["artifacts"]
+        claims = json.loads(
+            (Path(ctx.artifact_dir) / "verification-claims.json").read_text(encoding="utf-8")
+        )
+        assert claims["not_run"][0]["claim_type"] == "not_run"
+
+    def test_auto_fix_validation_writes_verification_claims(self, tmp_path):
+        target = tmp_path / "module.py"
+        target.write_text("print('hello')\n", encoding="utf-8")
+        config = ReviewConfig(target_path=str(target), mode=ReviewMode.AUTO_FIX)
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+        ctx = ReviewContext(session_id="claims-session", config=config, stats=ReviewStats())
+        artifact_store = controller._ensure_artifact_store(ctx)
+        evidence = CommandEvidence(
+            command=["ruff", "check"],
+            cwd=str(tmp_path),
+            exit_code=0,
+            duration_ms=5,
+            artifact_dir=str(tmp_path / ".muscle" / "review_artifacts" / "command-evidence"),
+        )
+        static_results = [
+            StaticAnalysisResult(
+                tool_name="ruff",
+                language="python",
+                issues=[],
+                duration_seconds=0.1,
+                evidence=evidence,
+            )
+        ]
+
+        with patch.object(controller.static_analyzer, "analyze", return_value=static_results):
+            payload = controller._validate_post_fix_state(ctx)
+
+        assert payload["status"] == "passed"
+        claims_path = Path(artifact_store.artifact_dir) / "verification-claims.json"
+        claims = json.loads(claims_path.read_text(encoding="utf-8"))
+        assert claims["allowed_claims"][0]["claim_type"] == "linted"
+        assert claims["allowed_claims"][0]["evidence_id"] == evidence.evidence_id
+
+    def test_async_workers_easy_task_writes_skipped_artifact(self, tmp_path):
+        target = tmp_path / "module.py"
+        target.write_text("print('hello')\n", encoding="utf-8")
+        config = ReviewConfig(
+            target_path=str(target),
+            mode=ReviewMode.REVIEW,
+            async_workers=True,
+        )
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+
+        with (
+            patch.object(controller.static_analyzer, "analyze", return_value=[]),
+            patch.object(controller, "_route_review_request", return_value=False),
+            patch.object(
+                controller.code_reviewer,
+                "review",
+                return_value=(
+                    [self._make_review_issue(file_path=str(target))],
+                    {"token_usage": 0},
+                ),
+            ),
+        ):
+            ctx = controller.run()
+
+        assert ctx.artifact_dir is not None
+        payload = json.loads(
+            (Path(ctx.artifact_dir) / "async-worker-policy.json").read_text(encoding="utf-8")
+        )
+        assert payload["enabled"] is True
+        assert payload["should_run"] is False
+        assert payload["skipped_reason"] == SKIP_EASY_TASK
+        assert payload["worker_jobs"] == []
+
+    def test_async_workers_verification_failure_queues_evidence_backed_worker(self, tmp_path):
+        target = tmp_path / "module.py"
+        target.write_text("print('hello')\n", encoding="utf-8")
+        config = ReviewConfig(
+            target_path=str(target),
+            mode=ReviewMode.AUTO_FIX,
+            async_workers=True,
+            async_worker_limit=1,
+        )
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+        ctx = ReviewContext(
+            session_id="async-session",
+            config=config,
+            stats=ReviewStats(failed_fixes=1),
+            issues=[self._make_review_issue(file_path=str(target))],
+            scope_summary={
+                "delegation_route": {
+                    "confidence": 0.9,
+                    "tier": "reasoning",
+                },
+                "source_files": [str(target)],
+            },
+        )
+
+        with patch("muscle.code_review.shadow_worker.WorkerManager") as mock_manager_cls:
+            mock_manager = MagicMock()
+            mock_manager.submit_shadow_job.return_value = "job12345"
+            mock_manager_cls.return_value = mock_manager
+            decision = controller._finalize_async_worker_policy(
+                ctx,
+                {"status": "issues-remaining", "performed": True},
+            )
+
+        assert decision.should_run is True
+        assert TRIGGER_VERIFICATION_FAILED_ONCE in decision.trigger_reasons
+        assert decision.worker_jobs[0].evidence_id.startswith("async-worker:")
+        assert decision.worker_evidence_ids == [decision.worker_jobs[0].evidence_id]
+        mock_manager.submit_shadow_job.assert_called_once()
+        artifact_dir = ctx.artifact_dir
+        assert artifact_dir is not None
+        payload = json.loads(
+            (Path(artifact_dir) / "async-worker-policy.json").read_text(encoding="utf-8")
+        )
+        assert payload["worker_jobs"][0]["job_id"] == "job12345"
+        assert payload["worker_jobs"][0]["evidence_id"].startswith("async-worker:")
 
     def test_run_plan_mode(self):
         config = ReviewConfig(target_path="/tmp/test", mode=ReviewMode.PLAN)
@@ -253,6 +389,40 @@ class TestReviewModes:
                     ctx = controller.run()
 
         assert ctx is not None
+
+    def test_auto_fix_mode_sets_auto_fixed_stat(self):
+        # Regression: legacy auto-fix mode must set auto_fixed alongside
+        # fixed_issues. auto_fixed is the authoritative count for delegation
+        # verification status (_delegation_verification_status) and the public
+        # ReviewResult.auto_fixed_count; leaving it 0 mislabels verified auto-fixes.
+        config = ReviewConfig(target_path="/tmp/test", mode=ReviewMode.AUTO_FIX)
+        mock_client = MockM27Client()
+        controller = ReviewController(config=config, m27_client=mock_client, use_kb=False)
+
+        issue = self._make_fixable_issue()
+        mock_static_result = [
+            StaticAnalysisResult(
+                tool_name="ruff",
+                language="python",
+                issues=[],
+                duration_seconds=0.1,
+            )
+        ]
+
+        with patch.object(controller.static_analyzer, "analyze", return_value=mock_static_result):
+            with patch.object(
+                controller.code_reviewer, "review", return_value=([issue], "summary")
+            ):
+                with patch.object(
+                    controller, "_apply_fix_with_verification", return_value=(True, None)
+                ):
+                    ctx = controller.run()
+
+        assert ctx.stats.fixed_issues == 1
+        assert ctx.stats.auto_fixed == ctx.stats.fixed_issues
+        result = controller.get_review_result()
+        assert result is not None
+        assert result.auto_fixed_count == 1
 
     def test_run_hybrid_mode(self):
         config = ReviewConfig(target_path="/tmp/test", mode=ReviewMode.HYBRID)
@@ -748,13 +918,13 @@ class TestRC02WorktreeCleanupFailureCounter:
         assert controller._worktree_cleanup_failures == 0
 
         # Simulate a cleanup failure by patching GitWorktreeManager
-        from tools.muscle.code_review.worktree_manager import WorktreeSession
+        from muscle.code_review.worktree_manager import WorktreeSession
 
         fake_session = MagicMock(spec=WorktreeSession)
         fake_session.worktree_path = str(tmp_path / "wt")
         fake_session.base_branch = "main"
 
-        with patch("tools.muscle.code_review.review_controller.GitWorktreeManager") as mock_mgr_cls:
+        with patch("muscle.code_review.review_controller.GitWorktreeManager") as mock_mgr_cls:
             mock_mgr = mock_mgr_cls.return_value
             mock_mgr.is_available.return_value = True
             mock_mgr.create.return_value = fake_session
@@ -770,7 +940,7 @@ class TestRC02WorktreeCleanupFailureCounter:
         """RC-02: A cleanup failure must not propagate as an exception."""
         controller = self._make_controller(tmp_path)
 
-        from tools.muscle.code_review.worktree_manager import WorktreeSession
+        from muscle.code_review.worktree_manager import WorktreeSession
 
         fake_session = MagicMock(spec=WorktreeSession)
         fake_session.worktree_path = str(tmp_path / "wt")
@@ -778,7 +948,7 @@ class TestRC02WorktreeCleanupFailureCounter:
 
         raised_exception: list[Exception] = []
 
-        with patch("tools.muscle.code_review.review_controller.GitWorktreeManager") as mock_mgr_cls:
+        with patch("muscle.code_review.review_controller.GitWorktreeManager") as mock_mgr_cls:
             mock_mgr = mock_mgr_cls.return_value
             mock_mgr.is_available.return_value = True
             mock_mgr.create.return_value = fake_session
@@ -867,7 +1037,7 @@ class TestRC03FixLockReleasedOnException:
                 side_effect=RuntimeError("simulated exception in locked region"),
             ):
                 with patch(
-                    "tools.muscle.code_review.review_controller.Lock",
+                    "muscle.code_review.review_controller.Lock",
                     side_effect=capturing_lock,
                 ):
                     with patch.object(
@@ -922,3 +1092,326 @@ class TestRC03FixLockReleasedOnException:
         acquired = fix_lock.acquire(blocking=False)
         assert acquired, "Lock was not released; deadlock would occur"
         fix_lock.release()
+
+
+class TestFixLockMapDoesNotLeak:
+    """CONCURRENCY: _fix_locks is a WeakValueDictionary so idle entries evict."""
+
+    def test_fix_lock_entry_evicted_when_no_holder(self):
+        import gc
+
+        config = ReviewConfig(target_path="/tmp/test")
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+
+        # Returned lock with no retained reference must drop from the map.
+        controller._get_fix_lock("/tmp/test/a.py")
+        gc.collect()
+        assert len(controller._fix_locks) == 0
+
+    def test_fix_lock_entry_retained_while_held(self):
+        config = ReviewConfig(target_path="/tmp/test")
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+
+        lock = controller._get_fix_lock("/tmp/test/a.py")
+        # Same path returns the same lock while a strong ref is alive.
+        assert controller._get_fix_lock("/tmp/test/a.py") is lock
+
+
+class TestFixApplyCrossProcessLock:
+    """CONCURRENCY: fix-apply takes an advisory file lock on a `.muscle/locks/`
+    sentinel so two muscle processes auto-fixing the same file serialize."""
+
+    def test_advisory_lock_taken_on_expected_sentinel(self, tmp_path):
+        from contextlib import contextmanager
+
+        file_path = tmp_path / "src.py"
+        file_path.write_text("x = 1\n")
+
+        controller = ReviewController(
+            config=ReviewConfig(target_path=str(file_path), mode=ReviewMode.AUTO_FIX),
+            m27_client=MockM27Client(),
+            use_kb=False,
+            project_path=str(tmp_path),
+        )
+        issue = ReviewIssue(
+            file_path=str(file_path),
+            line_number=1,
+            severity=Severity.MEDIUM,
+            category=IssueCategory.CORRECTNESS,
+            cwe_id=None,
+            title="Bug",
+            description="Bug description",
+            code_snippet="x = 1",
+            suggested_fix="x = 2",
+            auto_fixable=True,
+        )
+        ctx = ReviewContext(session_id="sess", config=controller.config, stats=ReviewStats())
+        controller._review_context = ctx
+
+        expected_sentinel = controller._fix_file_lock_sentinel(str(file_path))
+        locked_paths: list[Path] = []
+
+        @contextmanager
+        def spy_lock(path):
+            locked_paths.append(Path(path))
+            yield
+
+        with (
+            patch(
+                "muscle.code_review.review_controller.advisory_file_lock",
+                spy_lock,
+            ),
+            patch.object(
+                controller.fix_generator,
+                "generate_fix",
+                return_value=GeneratedFix(ok=True, file_path=str(file_path), code="x = 2\n"),
+            ),
+            patch.object(
+                controller.fix_generator,
+                "apply_fix",
+                return_value=FixResult(
+                    success=True,
+                    file_path=str(file_path),
+                    original_content="x = 1\n",
+                    fixed_content="x = 2\n",
+                    applied=True,
+                    verified=False,
+                ),
+            ),
+            patch.object(
+                controller.verification_loop,
+                "verify_fix",
+                return_value=VerificationResult(
+                    issue=issue,
+                    fix_applied=True,
+                    fix_verified=True,
+                    verification_details="verified",
+                    reverted=False,
+                ),
+            ),
+        ):
+            success, _ = controller._apply_fix_with_verification(ctx, issue)
+
+        assert success is True
+        # The advisory lock was taken on the per-path sentinel under .muscle/locks/.
+        assert expected_sentinel in locked_paths
+        assert expected_sentinel.parent == tmp_path / ".muscle" / "locks"
+
+    def test_sentinel_path_is_stable_and_repo_clean(self, tmp_path):
+        controller = ReviewController(
+            config=ReviewConfig(target_path=str(tmp_path)),
+            m27_client=MockM27Client(),
+            use_kb=False,
+            project_path=str(tmp_path),
+        )
+        src = tmp_path / "deep" / "module.py"
+        s1 = controller._fix_file_lock_sentinel(str(src))
+        s2 = controller._fix_file_lock_sentinel(str(src))
+        # Deterministic for a given resolved path.
+        assert s1 == s2
+        # Lock sentinel lives under .muscle/locks/, never next to user sources.
+        assert s1.parent == tmp_path / ".muscle" / "locks"
+        assert src.parent != s1.parent
+
+
+class TestUnknownReviewModeRaises:
+    """FAILOPEN#7: an unrecognized mode must fail loudly, not run as hybrid."""
+
+    def test_run_raises_value_error_for_unknown_mode(self, tmp_path):
+        config = ReviewConfig(target_path=str(tmp_path), mode=ReviewMode.REVIEW)
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+
+        class _FakeMode:
+            value = "bogus"
+
+        # ReviewConfig is a frozen dataclass; bypass __setattr__ to inject an
+        # out-of-band mode that matches no dispatch branch.
+        object.__setattr__(controller.config, "mode", _FakeMode())
+
+        with (
+            patch.object(controller, "_assert_path_within_project"),
+            patch.object(controller, "_should_use_isolated_worktree", return_value=False),
+            patch.object(controller, "_resolve_workflow_name", return_value=""),
+        ):
+            with pytest.raises(ValueError, match="Unknown review mode"):
+                controller.run()
+
+
+class TestReviewDelegationTokenSplit:
+    """COST#1/#2: review delegation events record the measured input/output split."""
+
+    def test_record_delegation_event_uses_real_token_split(self, tmp_path):
+        from muscle.delegation_metrics import estimate_m27_cents
+
+        config = ReviewConfig(target_path=str(tmp_path), mode=ReviewMode.REVIEW)
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+        ctx = ReviewContext(
+            session_id="rev-split",
+            config=config,
+            stats=ReviewStats(input_tokens=900, output_tokens=300, tokens_used=1200),
+        )
+
+        recorded = []
+        fake_metrics = MagicMock()
+        fake_metrics.record.side_effect = lambda event: recorded.append(event)
+        with patch(
+            "muscle.code_review.review_controller.DelegationMetrics",
+            return_value=fake_metrics,
+        ):
+            controller._record_delegation_event(ctx)
+
+        assert len(recorded) == 1
+        event = recorded[0]
+        assert event.m27_tokens_in == 900
+        assert event.m27_tokens_out == 300
+        assert event.m27_usd_cents == estimate_m27_cents("MiniMax-M2.7", 900, 300)
+
+    def test_record_delegation_event_attributes_legacy_remainder_to_input(self, tmp_path):
+        from muscle.delegation_metrics import estimate_m27_cents
+
+        config = ReviewConfig(target_path=str(tmp_path), mode=ReviewMode.REVIEW)
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+        ctx = ReviewContext(
+            session_id="rev-legacy",
+            config=config,
+            stats=ReviewStats(input_tokens=0, output_tokens=0, tokens_used=1200),
+        )
+
+        recorded = []
+        fake_metrics = MagicMock()
+        fake_metrics.record.side_effect = lambda event: recorded.append(event)
+        with patch(
+            "muscle.code_review.review_controller.DelegationMetrics",
+            return_value=fake_metrics,
+        ):
+            controller._record_delegation_event(ctx)
+
+        assert recorded[0].m27_tokens_in == 1200
+        assert recorded[0].m27_tokens_out == 0
+        assert recorded[0].m27_usd_cents == estimate_m27_cents("MiniMax-M2.7", 1200, 0)
+
+    def test_record_delegation_event_includes_host_risk_metadata(self, tmp_path):
+        config = ReviewConfig(target_path=str(tmp_path), mode=ReviewMode.PRESSURE)
+        controller = ReviewController(config=config, m27_client=MockM27Client(), use_kb=False)
+        ctx = ReviewContext(
+            session_id="rev-risk",
+            config=config,
+            scope_summary={
+                "delegation_route": {
+                    "tier": "architectural",
+                    "recommended": "escalate_to_host",
+                    "confidence": 0.82,
+                    "host_risk": {
+                        "requested_host_model": "claude-fable-5",
+                        "recommended_host": "claude-opus-4-8",
+                        "safe_for_fable": False,
+                        "likely_fallback": True,
+                        "reason_codes": ["cyber_dual_use"],
+                        "needs_user_confirmation": True,
+                        "fallback_policy": "confirm_before_fable_or_use_executor",
+                    },
+                    "host_effort": {
+                        "effort": "xhigh",
+                        "max_output_tokens": 16384,
+                        "retry_ladder": ["xhigh", "max"],
+                        "stop_condition": "stop_after_evidence_backed_synthesis",
+                        "must_not_downgrade": True,
+                        "avoided_escalation": True,
+                    },
+                }
+            },
+            stats=ReviewStats(input_tokens=100, output_tokens=20, tokens_used=120),
+        )
+
+        recorded = []
+        fake_metrics = MagicMock()
+        fake_metrics.record.side_effect = lambda event: recorded.append(event)
+        with patch(
+            "muscle.code_review.review_controller.DelegationMetrics",
+            return_value=fake_metrics,
+        ):
+            controller._record_delegation_event(ctx)
+
+        metadata = recorded[0].metadata
+        assert metadata["requested_host_model"] == "claude-fable-5"
+        assert metadata["recommended_host_model"] == "claude-opus-4-8"
+        assert metadata["host_risk_safe_for_fable"] is False
+        assert metadata["host_risk_likely_fallback"] is True
+        assert metadata["host_risk_reason_codes"] == ["cyber_dual_use"]
+        assert metadata["host_risk_needs_user_confirmation"] is True
+        assert metadata["fallback_policy"] == "confirm_before_fable_or_use_executor"
+        assert metadata["host_effort_level"] == "xhigh"
+        assert metadata["host_effort_max_output_tokens"] == 16384
+        assert metadata["host_effort_retry_ladder"] == ["xhigh", "max"]
+        assert metadata["host_effort_must_not_downgrade"] is True
+        assert metadata["host_effort_avoided_escalation"] is True
+
+
+def test_apply_fix_accumulates_verification_token_split(tmp_path):
+    """The verification token split lands on ctx.stats alongside the combined total."""
+    current = tmp_path / "current"
+    current.mkdir()
+    ProjectManager(current).init_project(
+        ProjectConfig(name="current", path=current, languages=["Python"])
+    )
+    file_path = current / "module.py"
+    file_path.write_text("x = 1\n", encoding="utf-8")
+
+    controller = ReviewController(
+        config=ReviewConfig(target_path=str(file_path), mode=ReviewMode.AUTO_FIX),
+        m27_client=MockM27Client(),
+        use_kb=False,
+        project_path=str(current),
+    )
+    issue = ReviewIssue(
+        file_path=str(file_path),
+        line_number=1,
+        severity=Severity.MEDIUM,
+        category=IssueCategory.CORRECTNESS,
+        cwe_id=None,
+        title="Bug",
+        description="Bug description",
+        code_snippet="x = 1",
+        suggested_fix="x = 2",
+        auto_fixable=True,
+    )
+    ctx = ReviewContext(session_id="review-session", config=controller.config, stats=ReviewStats())
+    controller._review_context = ctx
+
+    with patch.object(
+        controller.fix_generator,
+        "generate_fix",
+        return_value=GeneratedFix(ok=True, file_path=str(file_path), code="x = 2\n"),
+    ):
+        with patch.object(
+            controller.fix_generator,
+            "apply_fix",
+            return_value=FixResult(
+                success=True,
+                file_path=str(file_path),
+                original_content="x = 1\n",
+                fixed_content="x = 2\n",
+                applied=True,
+                verified=False,
+            ),
+        ):
+            with patch.object(
+                controller.verification_loop,
+                "verify_fix",
+                return_value=VerificationResult(
+                    issue=issue,
+                    fix_applied=True,
+                    fix_verified=True,
+                    verification_details="verified",
+                    reverted=False,
+                    tokens_spent=150,
+                    input_tokens_spent=110,
+                    output_tokens_spent=40,
+                ),
+            ):
+                success, _ = controller._apply_fix_with_verification(ctx, issue)
+
+    assert success is True
+    assert ctx.stats.tokens_used == 150
+    assert ctx.stats.input_tokens == 110
+    assert ctx.stats.output_tokens == 40

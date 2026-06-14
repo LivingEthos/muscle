@@ -14,8 +14,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.muscle.code_review.shadow_broker import ShadowBroker
-from tools.muscle.code_review.types import Intensity, ReviewMode
+from muscle.code_review.shadow_broker import ShadowBroker
+from muscle.code_review.types import Intensity, ReviewMode
 
 
 @pytest.fixture
@@ -100,10 +100,10 @@ class TestShadowWorkerHeartbeatRecovery:
                 return datetime.fromtimestamp(ts, tz)
 
         with patch(
-            "tools.muscle.code_review.shadow_broker.datetime",
+            "muscle.code_review.shadow_broker.datetime",
             FakeDateTime,
         ), patch(
-            "tools.muscle.project_memory.datetime",
+            "muscle.project_memory.datetime",
             FakeDateTime,
         ):
             # Staleness threshold of 60s < 600s we advanced => job is stale
@@ -140,10 +140,10 @@ class TestShadowWorkerHeartbeatRecovery:
                 return datetime.fromtimestamp(ts, tz)
 
         with patch(
-            "tools.muscle.code_review.shadow_broker.datetime",
+            "muscle.code_review.shadow_broker.datetime",
             FakeDateTime,
         ), patch(
-            "tools.muscle.project_memory.datetime",
+            "muscle.project_memory.datetime",
             FakeDateTime,
         ):
             reaped = broker.reap_stale_jobs(max_staleness_seconds=60.0)

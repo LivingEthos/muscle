@@ -3,9 +3,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from tools.muscle.code_review.shadow_broker import ShadowBroker
-from tools.muscle.code_review.types import Intensity, ReviewMode
-from tools.muscle.code_review.worktree_manager import GitWorktreeManager
+from muscle.code_review.shadow_broker import ShadowBroker
+from muscle.code_review.types import Intensity, ReviewMode
+from muscle.code_review.worktree_manager import GitWorktreeManager
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:

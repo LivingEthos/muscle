@@ -4,7 +4,7 @@
 |---|---|
 | Audience | First-time users |
 | Status | Minimal successful workflow |
-| Source of truth | [`README.md`](../../README.md), [`tools/muscle/plugin/commands/review.md`](../../tools/muscle/plugin/commands/review.md), [`tools/muscle/cli.py`](../../tools/muscle/cli.py) |
+| Source of truth | [`README.md`](../../README.md), [`src/muscle/plugin/commands/review.md`](../../src/muscle/plugin/commands/review.md), [`src/muscle/cli.py`](../../src/muscle/cli.py) |
 | Primary commands | `muscle init`, `muscle review`, `muscle check`, `muscle doctor` |
 
 This path gets a project from zero to a first review.

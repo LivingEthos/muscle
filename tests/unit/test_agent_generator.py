@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from tools.muscle.code_review.agent_generator import (
+from muscle.code_review.agent_generator import (
     MAX_ACTIVE_AGENTS,
     MAX_AGENT_REVISIONS,
     MIN_EVIDENCE_COUNT,
@@ -94,17 +94,14 @@ class TestAgentGenerator:
         )
         assert generator.validate_agent(test_file) is True
 
-    def test_max_agents_enforced(self, generator, tmp_path, monkeypatch):
-        agents_dir = tmp_path / ".muscle" / "agents"
-        agents_dir.mkdir(parents=True, exist_ok=True)
-        for i in range(10):
-            (agents_dir / f"agent_{i}.md").write_text(
-                "---\nname: a\ndescription: b\ntriggers:\ncapabilities:\n---"
-            )
-        monkeypatch.setattr(
-            AgentGenerator, "list_agents", lambda self: [f"a{i}.md" for i in range(10)]
-        )
-        result = generator.generate_agent(Mock(), [])
+    def test_max_agents_enforced(self, generator, mock_pm):
+        # Capacity is enforced via can_create_agent (DB-backed source of truth):
+        # at max capacity with no agent available to archive, creation refuses.
+        mock_pm.get_active_agents_count.return_value = MAX_ACTIVE_AGENTS
+        mock_pm.get_least_used_active_agent.return_value = None
+        mock_pattern = Mock()
+        mock_pattern.pattern = "some_new_pattern"
+        result = generator.generate_agent(mock_pattern, [])
         assert result is None
 
     def test_generate_agent_already_exists(self, generator, tmp_path, monkeypatch):
@@ -177,10 +174,12 @@ class TestEvidenceThreshold:
         result = generator._check_evidence_threshold("some_pattern")
         assert result is True
 
-    def test_check_evidence_threshold_without_pm(self, tmp_path, mock_m27):
+    def test_check_evidence_threshold_without_pm_fails_closed(self, tmp_path, mock_m27):
+        # Security boundary: without the DB we cannot verify evidence, so the
+        # gate must fail closed (refuse) rather than create agents blindly.
         gen = AgentGenerator(project_path=str(tmp_path), m27_client=mock_m27, project_memory=None)
         result = gen._check_evidence_threshold("some_pattern")
-        assert result is True  # Should pass if no PM available
+        assert result is False
 
 
 class TestCanCreateAgent:
@@ -384,6 +383,209 @@ class TestFetchReviewedIssues:
         issues = generator._fetch_reviewed_issues("test_trigger")
 
         assert len(issues) >= 1
+
+
+class TestFailClosedSecurity:
+    """The evidence/capacity gates are safety boundaries and must fail closed."""
+
+    def test_can_create_agent_fails_closed_without_pm(self, tmp_path, mock_m27):
+        gen = AgentGenerator(project_path=str(tmp_path), m27_client=mock_m27, project_memory=None)
+        can_create, reason = gen.can_create_agent("some_pattern")
+        assert can_create is False
+        assert reason == "safety subsystem unavailable"
+
+    def test_generate_agent_refuses_without_pm(self, tmp_path, mock_m27):
+        # No PM -> evidence gate fails closed -> no agent is written.
+        gen = AgentGenerator(project_path=str(tmp_path), m27_client=mock_m27, project_memory=None)
+        mock_pattern = Mock()
+        mock_pattern.pattern = "novel_pattern"
+        result = gen.generate_agent(mock_pattern, [])
+        assert result is None
+        assert gen.list_agents() == []
+        mock_m27.chat.assert_not_called()
+
+
+class TestSafeAgentPath:
+    def test_safe_agent_path_accepts_clean_name(self, generator):
+        path = generator._safe_agent_path("sql_injection")
+        assert path == generator.agents_dir / "sql_injection.md"
+
+    def test_safe_agent_path_rejects_traversal(self, generator):
+        with pytest.raises(ValueError):
+            generator._safe_agent_path("../../etc/passwd")
+
+    def test_safe_agent_path_rejects_uppercase(self, generator):
+        with pytest.raises(ValueError):
+            generator._safe_agent_path("BadName")
+
+    def test_safe_agent_path_rejects_dot(self, generator):
+        with pytest.raises(ValueError):
+            generator._safe_agent_path("name.with.dots")
+
+
+class TestAtomicWriteAndGuard:
+    def test_generate_agent_uses_atomic_write(self, generator, mock_m27, mock_pm):
+        mock_pattern = Mock()
+        mock_pattern.pattern = "novel_pattern"
+        mock_pattern.category = "security"
+        mock_pattern.occurrences = 5
+        mock_pattern.confidence = 0.9
+        mock_pattern.files = []
+        mock_pm.count_decisions_for_pattern.return_value = 5
+        mock_pm.insert_agent.return_value = 1
+        mock_m27.chat.return_value = (
+            "---\nname: a\ndescription: b\ntriggers:\ncapabilities:\n---\n# Agent",
+            {},
+        )
+
+        with patch("muscle.code_review.agent_generator.atomic_write_text") as mock_atomic:
+            result = generator.generate_agent(mock_pattern, [])
+
+        assert result is not None
+        mock_atomic.assert_called_once()
+        # write_text must not be used for the LLM content
+        written_path = mock_atomic.call_args[0][0]
+        assert written_path == generator.agents_dir / "novel_pattern.md"
+
+    def test_generate_agent_respects_exists_guard(self, generator, mock_m27, mock_pm):
+        mock_pattern = Mock()
+        mock_pattern.pattern = "existing_pat"
+        mock_pattern.category = "security"
+        mock_pattern.occurrences = 5
+        mock_pattern.files = []
+        mock_pm.count_decisions_for_pattern.return_value = 5
+        # Pre-create the file so the exists-check short-circuits.
+        (generator.agents_dir / "existing_pat.md").write_text("---\nname: x\n---")
+
+        result = generator.generate_agent(mock_pattern, [])
+        assert result is None
+        mock_m27.chat.assert_not_called()
+
+
+class TestBackupPrecondition:
+    def test_archive_aborts_when_backup_fails(self, generator, mock_pm):
+        agent_id = 7
+        agent_file = generator.agents_dir / "to_archive.md"
+        agent_file.write_text("---\nname: x\n---")
+        mock_pm.get_agent.return_value = {
+            "id": agent_id,
+            "name": "to_archive",
+            "file_path": str(agent_file),
+        }
+
+        with patch.object(generator, "_get_backup_manager") as mock_get_bm:
+            mock_bm = Mock()
+            mock_bm.create_backup.side_effect = OSError("disk full")
+            mock_get_bm.return_value = mock_bm
+
+            result = generator.archive_agent(agent_id)
+
+        assert result is False
+        mock_pm.archive_agent.assert_not_called()
+
+    def test_archive_aborts_when_backup_returns_nothing(self, generator, mock_pm):
+        agent_id = 8
+        agent_file = generator.agents_dir / "to_archive2.md"
+        agent_file.write_text("---\nname: x\n---")
+        mock_pm.get_agent.return_value = {
+            "id": agent_id,
+            "name": "to_archive2",
+            "file_path": str(agent_file),
+        }
+
+        with patch.object(generator, "_get_backup_manager") as mock_get_bm:
+            mock_bm = Mock()
+            mock_bm.create_backup.return_value = None
+            mock_get_bm.return_value = mock_bm
+
+            result = generator.archive_agent(agent_id)
+
+        assert result is False
+        mock_pm.archive_agent.assert_not_called()
+
+    def test_revise_aborts_when_backup_fails(self, generator, mock_pm, mock_m27):
+        agent_file = generator.agents_dir / "to_revise.md"
+        original = "---\nname: test\ndescription: old\ntriggers:\ncapabilities:\n---"
+        agent_file.write_text(original)
+        mock_pm.get_agent.return_value = {
+            "id": 1,
+            "name": "to_revise",
+            "revision_count": 1,
+            "archived_at": None,
+            "file_path": str(agent_file),
+            "trigger_pattern": "test_pattern",
+            "description": "",
+            "revision_history_json": "[]",
+        }
+
+        with patch.object(generator, "_backup_agent_file") as mock_backup:
+            mock_backup.side_effect = OSError("disk full")
+            result = generator.revise_agent(1)
+
+        assert result is None
+        # Destructive overwrite must not have happened.
+        assert agent_file.read_text() == original
+        mock_m27.chat.assert_not_called()
+
+
+class TestGenerateAgentLockingContract:
+    """The whole capacity-check + evict + create sequence must run under ONE
+    advisory lock on the agents-dir sentinel (non-reentrant lock, acquired once).
+    """
+
+    def _ok_pattern(self):
+        # Concrete (JSON-serializable) attributes so the DB-registration path
+        # that runs after a successful create does not choke on Mock objects.
+        return _EvidencePattern(
+            pattern="locking_pattern",
+            category="security",
+            occurrences=5,
+            files=["a.py"],
+        )
+
+    def test_lock_acquired_once_on_sentinel_around_whole_sequence(
+        self, generator, mock_m27, mock_pm
+    ):
+        from contextlib import contextmanager
+
+        events: list[str] = []
+
+        @contextmanager
+        def spy_lock(path):
+            events.append(f"lock-enter:{Path(path).name}")
+            try:
+                yield
+            finally:
+                events.append(f"lock-exit:{Path(path).name}")
+
+        def chat_side_effect(*args, **kwargs):
+            events.append("m27-chat")
+            return ("---\nname: x\ndescription: y\ntriggers:\ncapabilities:\n---", Mock())
+
+        mock_m27.chat.side_effect = chat_side_effect
+        mock_pm.get_active_agents_count.return_value = 0
+        mock_pm.count_decisions_for_pattern.return_value = 5
+
+        sentinel = generator._agents_lock_sentinel()
+        with patch("muscle.code_review.agent_generator.advisory_file_lock", spy_lock):
+            result = generator.generate_agent(self._ok_pattern(), [])
+
+        assert result is not None
+        # Exactly one lock acquisition, on the dir-wide sentinel.
+        assert events.count(f"lock-enter:{sentinel.name}") == 1
+        assert [e for e in events if e.startswith("lock-enter")] == [f"lock-enter:{sentinel.name}"]
+        # The LLM call (and the create it gates) happens INSIDE the lock.
+        enter_idx = events.index(f"lock-enter:{sentinel.name}")
+        exit_idx = events.index(f"lock-exit:{sentinel.name}")
+        chat_idx = events.index("m27-chat")
+        assert enter_idx < chat_idx < exit_idx
+
+    def test_at_capacity_refuses_under_lock_without_chat(self, generator, mock_m27, mock_pm):
+        mock_pm.get_active_agents_count.return_value = MAX_ACTIVE_AGENTS
+        mock_pm.get_least_used_active_agent.return_value = None
+        result = generator.generate_agent(self._ok_pattern(), [])
+        assert result is None
+        mock_m27.chat.assert_not_called()
 
 
 class TestEvidencePattern:

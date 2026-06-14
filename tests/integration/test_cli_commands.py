@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from tools.muscle.cli import cli
+from muscle.cli import cli
 
 
 @pytest.fixture
@@ -60,7 +60,7 @@ class TestReviewCLI:
             mock_controller.get_review_result.return_value = mock_result
 
             with patch(
-                "tools.muscle.code_review.review_controller.ReviewController",
+                "muscle.code_review.review_controller.ReviewController",
                 return_value=mock_controller,
             ):
                 result = runner.invoke(
@@ -93,7 +93,7 @@ class TestReviewCLI:
         mock_controller.run.return_value = mock_ctx
         mock_controller.get_review_result.return_value = mock_result
 
-        with patch("tools.muscle.code_review.ReviewController", return_value=mock_controller):
+        with patch("muscle.code_review.ReviewController", return_value=mock_controller):
             result = runner.invoke(
                 cli,
                 ["review", "--target", "/tmp/test", "--format", "json"],
@@ -141,7 +141,7 @@ class TestReviewCLI:
             mock_controller.get_review_result.return_value = mock_result
 
             with patch(
-                "tools.muscle.code_review.review_controller.ReviewController",
+                "muscle.code_review.review_controller.ReviewController",
                 return_value=mock_controller,
             ):
                 result = runner.invoke(
@@ -162,7 +162,7 @@ class TestKBCLI:
 
     def test_kb_stats(self, runner: CliRunner):
         """kb stats should display statistics."""
-        with patch("tools.muscle.strategy_kb.GlobalKnowledgeBase") as mock_kb_cls:
+        with patch("muscle.strategy_kb.GlobalKnowledgeBase") as mock_kb_cls:
             mock_kb = MagicMock()
             mock_kb.strategy_kb.get_statistics.return_value = {
                 "total_strategies": 10,
@@ -178,7 +178,7 @@ class TestKBCLI:
         """kb export then import should round-trip."""
         export_file = str(tmp_path / "kb_export.json")
 
-        with patch("tools.muscle.strategy_kb.GlobalKnowledgeBase") as mock_kb_cls:
+        with patch("muscle.strategy_kb.GlobalKnowledgeBase") as mock_kb_cls:
             mock_kb = MagicMock()
             mock_kb.strategy_kb.export_to_json.return_value = None
             mock_kb.strategy_kb.import_from_json.return_value = 5
@@ -198,7 +198,7 @@ class TestKBCLI:
 
     def test_kb_clear_with_force(self, runner: CliRunner):
         """kb clear --force should skip confirmation."""
-        with patch("tools.muscle.strategy_kb.GlobalKnowledgeBase") as mock_kb_cls:
+        with patch("muscle.strategy_kb.GlobalKnowledgeBase") as mock_kb_cls:
             mock_kb = MagicMock()
             mock_kb.strategy_kb.clear.return_value = None
             mock_kb_cls.return_value = mock_kb
@@ -209,7 +209,7 @@ class TestKBCLI:
 
     def test_kb_knowledge_add(self, runner: CliRunner):
         """kb knowledge-add should add a strategy."""
-        with patch("tools.muscle.cli.GlobalKnowledgeBase") as mock_kb_cls:
+        with patch("muscle.cli.memory.GlobalKnowledgeBase") as mock_kb_cls:
             mock_kb = MagicMock()
             mock_kb.add_solution.return_value = 42
             mock_kb_cls.return_value = mock_kb
@@ -238,7 +238,7 @@ class TestCostCLI:
 
     def test_cost_stats(self, runner: CliRunner):
         """cost stats should show cache statistics."""
-        with patch("tools.muscle.cost_optimizer.CostOptimizer") as mock_cls:
+        with patch("muscle.cost_optimizer.CostOptimizer") as mock_cls:
             mock_opt = MagicMock()
             mock_opt.get_cache_stats.return_value = {
                 "cached_items": 25,
@@ -267,7 +267,7 @@ class TestImproveCLI:
 
     def test_improve_report(self, runner: CliRunner):
         """improve report should show self-review output."""
-        with patch("tools.muscle.self_improver.SelfImprover") as mock_cls:
+        with patch("muscle.self_improver.SelfImprover") as mock_cls:
             mock_improver = MagicMock()
             mock_improver.run_self_review.return_value = "Self-improvement report content"
             mock_cls.return_value = mock_improver
@@ -279,7 +279,7 @@ class TestImproveCLI:
         """improve export/import should work."""
         export_file = str(tmp_path / "improve_export.json")
 
-        with patch("tools.muscle.self_improver.SelfImprover") as mock_cls:
+        with patch("muscle.self_improver.SelfImprover") as mock_cls:
             mock_improver = MagicMock()
             mock_improver.export_data.return_value = None
             mock_improver.import_data.return_value = 3
@@ -294,7 +294,7 @@ class TestImproveCLI:
 
     def test_improve_clear_with_force(self, runner: CliRunner):
         """improve clear --force should clear data."""
-        with patch("tools.muscle.self_improver.SelfImprover") as mock_cls:
+        with patch("muscle.self_improver.SelfImprover") as mock_cls:
             mock_improver = MagicMock()
             mock_cls.return_value = mock_improver
 
@@ -303,7 +303,7 @@ class TestImproveCLI:
 
     def test_improve_prompt(self, runner: CliRunner):
         """improve prompt should generate a prompt."""
-        with patch("tools.muscle.self_improver.SelfImprover") as mock_cls:
+        with patch("muscle.self_improver.SelfImprover") as mock_cls:
             mock_improver = MagicMock()
             mock_improver.generate_improved_system_prompt.return_value = "You are MUSCLE, improved."
             mock_cls.return_value = mock_improver
@@ -322,7 +322,7 @@ class TestLongEvalCLI:
 
     def test_long_eval_run(self, runner: CliRunner):
         """long-eval run should execute a deep evaluation."""
-        with patch("tools.muscle.code_review.long_eval_runner.LongEvalRunner") as mock_cls:
+        with patch("muscle.code_review.long_eval_runner.LongEvalRunner") as mock_cls:
             mock_runner = MagicMock()
             mock_runner.run_long_eval.return_value = {
                 "total_issues": 3,
@@ -337,7 +337,7 @@ class TestLongEvalCLI:
 
     def test_long_eval_reports(self, runner: CliRunner):
         """long-eval reports should list recent reports."""
-        with patch("tools.muscle.code_review.long_eval_runner.LongEvalRunner") as mock_cls:
+        with patch("muscle.code_review.long_eval_runner.LongEvalRunner") as mock_cls:
             mock_runner = MagicMock()
             mock_runner.list_reports.return_value = []
             mock_cls.return_value = mock_runner
@@ -347,7 +347,7 @@ class TestLongEvalCLI:
 
     def test_long_eval_cleanup_with_force(self, runner: CliRunner):
         """long-eval cleanup --force should remove old reports."""
-        with patch("tools.muscle.code_review.long_eval_runner.LongEvalRunner") as mock_cls:
+        with patch("muscle.code_review.long_eval_runner.LongEvalRunner") as mock_cls:
             mock_runner = MagicMock()
             mock_runner.cleanup_old_reports.return_value = 2
             mock_cls.return_value = mock_runner
@@ -357,7 +357,7 @@ class TestLongEvalCLI:
 
     def test_long_eval_benchmark(self, runner: CliRunner):
         """long-eval benchmark should execute the benchmark harness."""
-        with patch("tools.muscle.code_review.review_benchmark.ReviewBenchmarkRunner") as mock_cls:
+        with patch("muscle.code_review.review_benchmark.ReviewBenchmarkRunner") as mock_cls:
             mock_runner = MagicMock()
             mock_runner.run_benchmark.return_value = {
                 "aggregate": {
@@ -392,7 +392,7 @@ class TestLongEvalCLI:
 
     def test_long_eval_benchmark_enforce_gates_failure(self, runner: CliRunner):
         """long-eval benchmark --enforce-gates should fail when release gates fail."""
-        with patch("tools.muscle.code_review.review_benchmark.ReviewBenchmarkRunner") as mock_cls:
+        with patch("muscle.code_review.review_benchmark.ReviewBenchmarkRunner") as mock_cls:
             mock_runner = MagicMock()
             mock_runner.run_benchmark.return_value = {
                 "aggregate": {
@@ -428,7 +428,7 @@ class TestLongEvalCLI:
             mock_cls.return_value = mock_runner
 
             with patch(
-                "tools.muscle.cli._run_benchmark_release_invariants",
+                "muscle.cli.cost._run_benchmark_release_invariants",
                 return_value={"checked": True, "passed": True, "summary": "ok", "details": {}},
             ):
                 result = runner.invoke(cli, ["long-eval", "benchmark", "--enforce-gates"])

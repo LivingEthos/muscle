@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from tools.muscle.evaluators.compiler import (
+from muscle.evaluators.compiler import (
     _STDERR_MAX_BYTES,
     GoCompiler,
     GppCompiler,
@@ -188,7 +188,7 @@ class TestCapStderr:
 
     def test_long_stderr_truncated(self, caplog):
         big_stderr = "e" * (_STDERR_MAX_BYTES + 100)
-        with caplog.at_level(logging.WARNING, logger="tools.muscle.evaluators.compiler"):
+        with caplog.at_level(logging.WARNING, logger="muscle.evaluators.compiler"):
             result = _cap_stderr(big_stderr)
         assert len(result) < len(big_stderr)
         assert result.endswith("... [stderr truncated]")
@@ -212,10 +212,10 @@ class TestNodeCompilerStderrCap:
         (tmp_path / "bad.js").write_text("{{{{")
 
         with patch(
-            "tools.muscle.evaluators.compiler.NodeCompiler._run_command",
+            "muscle.evaluators.compiler.NodeCompiler._run_command",
             return_value=(1, "", big_stderr),
         ):
-            with caplog.at_level(logging.WARNING, logger="tools.muscle.evaluators.compiler"):
+            with caplog.at_level(logging.WARNING, logger="muscle.evaluators.compiler"):
                 result = NodeCompiler().evaluate(str(tmp_path))
 
         assert result.success is False

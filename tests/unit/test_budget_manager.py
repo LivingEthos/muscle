@@ -6,8 +6,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.muscle.budget_manager import BudgetManager
-from tools.muscle.types import BudgetMode
+from muscle.budget_manager import BudgetManager
+from muscle.types import BudgetMode
 
 
 def test_budget_manager_unlimited():
@@ -83,9 +83,9 @@ def test_budget_manager_save_state():
 
 def test_budget_info_usage_percent_zero_total():
     """Test usage_percent returns 0.0 when total_tokens is 0."""
-    from tools.muscle.budget_manager import BudgetInfo
+    from muscle.budget_manager import BudgetSnapshot
 
-    info = BudgetInfo(
+    info = BudgetSnapshot(
         total_tokens=0,
         used_tokens=0,
         remaining_tokens=0,
@@ -96,15 +96,45 @@ def test_budget_info_usage_percent_zero_total():
 
 def test_budget_info_usage_percent_normal():
     """Test usage_percent calculation."""
-    from tools.muscle.budget_manager import BudgetInfo
+    from muscle.budget_manager import BudgetSnapshot
 
-    info = BudgetInfo(
+    info = BudgetSnapshot(
         total_tokens=100,
         used_tokens=50,
         remaining_tokens=50,
         mode=BudgetMode.FIXED,
     )
     assert info.usage_percent == 50.0
+
+
+def test_can_afford_does_not_consume_fixed_budget():
+    """Regression: affordability checks are pure; consume/check_budget mutate."""
+    manager = BudgetManager(mode=BudgetMode.FIXED, fixed_limit=100)
+
+    assert manager.can_afford(40) is True
+    assert manager.fixed_limit == 100
+
+    ok, reason = manager.consume(40)
+    assert ok is True
+    assert reason == ""
+    assert manager.fixed_limit == 60
+
+    ok, reason = manager.check_budget(10)
+    assert ok is True
+    assert reason == ""
+    assert manager.fixed_limit == 50
+
+
+def test_consume_rejects_without_modifying_fixed_budget():
+    """Regression: failed consumption leaves the remaining budget unchanged."""
+    manager = BudgetManager(mode=BudgetMode.FIXED, fixed_limit=25)
+
+    assert manager.can_afford(30) is False
+    ok, reason = manager.consume(30)
+
+    assert ok is False
+    assert reason == "Budget exceeded"
+    assert manager.fixed_limit == 25
 
 
 def test_check_budget_fixed_limit_zero_returns_true():

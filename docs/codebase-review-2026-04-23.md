@@ -28,14 +28,14 @@ execution.
 
 Major implemented areas:
 
-- CLI orchestration in `tools/muscle/cli.py`.
+- CLI orchestration in `src/muscle/cli.py`.
 - MiniMax Anthropic-compatible client, rate limiting, caching, and telemetry in
-  `tools/muscle/m27_client.py`.
-- Generate/evaluate/evolve loop in `tools/muscle/loop_controller.py`.
-- Review/fix/verify/learn pipeline in `tools/muscle/code_review/`.
-- Project-local SQLite memory in `tools/muscle/project_memory.py` and migrations.
-- Plugin command bundles under `tools/muscle/plugin/`.
-- TUI/project setup support under `tools/muscle/tui/`.
+  `src/muscle/m27_client.py`.
+- Generate/evaluate/evolve loop in `src/muscle/loop_controller.py`.
+- Review/fix/verify/learn pipeline in `src/muscle/code_review/`.
+- Project-local SQLite memory in `src/muscle/project_memory.py` and migrations.
+- Plugin command bundles under `src/muscle/plugin/`.
+- TUI/project setup support under `src/muscle/tui/`.
 
 The architecture is ambitious and coherent, but the codebase is now large enough
 that a few safety contracts are drifting: isolated execution, validation
@@ -52,9 +52,9 @@ Results after syncing:
 
 | Command | Result |
 |---|---|
-| `uv run ruff check tools/muscle/` | Passed |
-| `uv run ruff format --check tools/muscle/` | Failed: `tools/muscle/delegation_metrics.py` and `tools/muscle/migrations/_0017_delegation_event_metadata.py` would be reformatted |
-| `uv run mypy tools/muscle/` | Failed: `tools/muscle/code_review/__init__.py:76` missing return type annotation |
+| `uv run ruff check src/muscle/` | Passed |
+| `uv run ruff format --check src/muscle/` | Failed: `src/muscle/delegation_metrics.py` and `src/muscle/migrations/_0017_delegation_event_metadata.py` would be reformatted |
+| `uv run mypy src/muscle/` | Failed: `src/muscle/code_review/__init__.py:76` missing return type annotation |
 | `uv run pytest tests/ -q` | Passed: `2139 passed, 3 skipped in 174.83s` |
 
 Test run caveat: after pytest printed its passing summary, background worker
@@ -73,18 +73,18 @@ gap around shadow worker lifecycle.
 `ReviewController.run()` validates target containment before it dispatches to
 worktree mode:
 
-- `tools/muscle/code_review/review_controller.py:304`
-- `tools/muscle/code_review/review_controller.py:366`
+- `src/muscle/code_review/review_controller.py:304`
+- `src/muscle/code_review/review_controller.py:366`
 
 In `_run_in_isolated_worktree()`, the controller maps the target into the temp
 worktree, then builds a child controller with `target_path=mapped_target` but
 still passes `project_path=self.project_path`:
 
-- `tools/muscle/code_review/review_controller.py:403`
-- `tools/muscle/code_review/review_controller.py:410`
-- `tools/muscle/code_review/review_controller.py:416`
-- `tools/muscle/code_review/review_controller.py:423`
-- `tools/muscle/code_review/review_controller.py:426`
+- `src/muscle/code_review/review_controller.py:403`
+- `src/muscle/code_review/review_controller.py:410`
+- `src/muscle/code_review/review_controller.py:416`
+- `src/muscle/code_review/review_controller.py:423`
+- `src/muscle/code_review/review_controller.py:426`
 
 The child controller then runs the same containment check and compares the temp
 worktree path against the original repository root. That should raise
@@ -102,19 +102,19 @@ artifacts and applying deltas. Add an integration test that exercises the real
 
 The verifier prompt asks M2.7 to answer `VERIFIED`, `BREAKS`, or `NEEDS_WORK`:
 
-- `tools/muscle/code_review/verification_loop.py:203`
+- `src/muscle/code_review/verification_loop.py:203`
 
 But the code only fails on text containing `BREAKS` or `FAILS`:
 
-- `tools/muscle/code_review/verification_loop.py:133`
-- `tools/muscle/code_review/verification_loop.py:262`
+- `src/muscle/code_review/verification_loop.py:133`
+- `src/muscle/code_review/verification_loop.py:262`
 
 `NEEDS_WORK` can fall through to local validation and become verified if syntax,
 lint, and tests pass. The local validation checks also fail open on exceptions:
 
-- `tools/muscle/code_review/verification_loop.py:446`
-- `tools/muscle/code_review/verification_loop.py:472`
-- `tools/muscle/code_review/verification_loop.py:495`
+- `src/muscle/code_review/verification_loop.py:446`
+- `src/muscle/code_review/verification_loop.py:472`
+- `src/muscle/code_review/verification_loop.py:495`
 
 Impact: a fix that the semantic verifier explicitly says is incomplete can be
 recorded as verified and fed into the learning pipeline. Missing tools or
@@ -129,22 +129,22 @@ the fix was validated.
 
 `LoopController._run_iteration()` adds generation usage directly:
 
-- `tools/muscle/loop_controller.py:454`
+- `src/muscle/loop_controller.py:454`
 
 It also returns the same `gen_usage.total` as `IterationResult.token_cost`:
 
-- `tools/muscle/loop_controller.py:480`
-- `tools/muscle/loop_controller.py:483`
+- `src/muscle/loop_controller.py:480`
+- `src/muscle/loop_controller.py:483`
 
 Then `LoopController.run()` adds `iteration_result.token_cost` again:
 
-- `tools/muscle/loop_controller.py:714`
-- `tools/muscle/loop_controller.py:718`
+- `src/muscle/loop_controller.py:714`
+- `src/muscle/loop_controller.py:718`
 
 Budget enforcement also happens after an iteration's generation/evaluation work,
 using only `iteration_result.token_cost`:
 
-- `tools/muscle/loop_controller.py:762`
+- `src/muscle/loop_controller.py:762`
 
 Impact: generation tokens are counted twice, while other model spend can be
 handled inconsistently. Reports, cost tracking, webhook payloads, and budget
@@ -159,20 +159,20 @@ reviewer, and verifier spend under one budget model.
 
 `FixGenerator._commit_fix()` stages fixed content as `<original suffix>.muscle.tmp`:
 
-- `tools/muscle/code_review/fix_generator.py:385`
-- `tools/muscle/code_review/fix_generator.py:386`
+- `src/muscle/code_review/fix_generator.py:385`
+- `src/muscle/code_review/fix_generator.py:386`
 
 For TypeScript it then runs:
 
-- `tools/muscle/code_review/fix_generator.py:458`
-- `tools/muscle/code_review/fix_generator.py:460`
+- `src/muscle/code_review/fix_generator.py:458`
+- `src/muscle/code_review/fix_generator.py:460`
 
 The staged path for `foo.ts` becomes `foo.ts.muscle.tmp`, which is likely not
 treated as a TypeScript source file by normal tooling. For every language except
 Python, JSON, JavaScript, and TypeScript, validation returns a hard failure:
 
-- `tools/muscle/code_review/fix_generator.py:462`
-- `tools/muscle/code_review/fix_generator.py:464`
+- `src/muscle/code_review/fix_generator.py:462`
+- `src/muscle/code_review/fix_generator.py:464`
 
 Impact: auto-fix can fail for valid TypeScript fixes due to the temp suffix, and
 advertised review/fix flows for Go, Rust, Java, C/C++, etc. cannot apply fixes
@@ -187,30 +187,30 @@ For unsupported languages, either implement validators or mark the result as
 
 `ReviewConfig` exposes `include_patterns` and `exclude_patterns`:
 
-- `tools/muscle/code_review/types.py:132`
-- `tools/muscle/code_review/types.py:133`
+- `src/muscle/code_review/types.py:132`
+- `src/muscle/code_review/types.py:133`
 
 `ReviewController` passes them to `StaticAnalyzer`:
 
-- `tools/muscle/code_review/review_controller.py:155`
-- `tools/muscle/code_review/review_controller.py:158`
+- `src/muscle/code_review/review_controller.py:155`
+- `src/muscle/code_review/review_controller.py:158`
 
 `StaticAnalyzer` stores them and defines `_should_include()`:
 
-- `tools/muscle/code_review/static_analyzer.py:165`
-- `tools/muscle/code_review/static_analyzer.py:228`
+- `src/muscle/code_review/static_analyzer.py:165`
+- `src/muscle/code_review/static_analyzer.py:228`
 
 But `analyze()` and `_run_tool()` do not call `_should_include()`. For directory
 targets, tools run against the whole target directory:
 
-- `tools/muscle/code_review/static_analyzer.py:276`
-- `tools/muscle/code_review/static_analyzer.py:280`
+- `src/muscle/code_review/static_analyzer.py:276`
+- `src/muscle/code_review/static_analyzer.py:280`
 
 Language detection also scans every nested file without applying default
 exclusions:
 
-- `tools/muscle/code_review/static_analyzer.py:205`
-- `tools/muscle/code_review/static_analyzer.py:206`
+- `src/muscle/code_review/static_analyzer.py:205`
+- `src/muscle/code_review/static_analyzer.py:206`
 
 Impact: user-configured scope controls can be silently ignored. Large directories
 such as `.venv`, `.git`, generated artifacts, or the untracked `muscle-main/`
@@ -226,17 +226,17 @@ stored.
 When static analysis produces no issues, `CodeReviewer.review()` recursively
 adds all files matching many source extensions:
 
-- `tools/muscle/code_review/code_reviewer.py:422`
-- `tools/muscle/code_review/code_reviewer.py:429`
-- `tools/muscle/code_review/code_reviewer.py:442`
+- `src/muscle/code_review/code_reviewer.py:422`
+- `src/muscle/code_review/code_reviewer.py:429`
+- `src/muscle/code_review/code_reviewer.py:442`
 
 This does not appear to apply ignore rules for `.git`, `.muscle`, `.venv`,
 `node_modules`, generated outputs, or duplicate repo copies.
 
 If a per-file review future raises, the exception is only logged:
 
-- `tools/muscle/code_review/code_reviewer.py:483`
-- `tools/muscle/code_review/code_reviewer.py:499`
+- `src/muscle/code_review/code_reviewer.py:483`
+- `src/muscle/code_review/code_reviewer.py:499`
 
 The summary returned to callers does not count failed/skipped files.
 
@@ -252,17 +252,17 @@ cap proactive file counts by profile, and include `files_failed`,
 
 The evaluator registry advertises Java and C# mappings:
 
-- `tools/muscle/evaluator_registry.py:31`
-- `tools/muscle/evaluator_registry.py:35`
+- `src/muscle/evaluator_registry.py:31`
+- `src/muscle/evaluator_registry.py:35`
 
 But `_load_evaluator()` has no cases for `javac_compiler`, `junit_runner`,
 `checkstyle_linter`, `csc_compiler`, `nunit_runner`, or `dotnet_linter`:
 
-- `tools/muscle/evaluator_registry.py:108`
-- `tools/muscle/evaluator_registry.py:184`
-- `tools/muscle/evaluator_registry.py:185`
+- `src/muscle/evaluator_registry.py:108`
+- `src/muscle/evaluator_registry.py:184`
+- `src/muscle/evaluator_registry.py:185`
 
-Some Java/dotnet evaluator classes exist under `tools/muscle/evaluators/`, but
+Some Java/dotnet evaluator classes exist under `src/muscle/evaluators/`, but
 they are not wired into the registry.
 
 Impact: `muscle check --language java` and generated/evaluated Java/C# sessions
@@ -278,19 +278,19 @@ evaluator.
 
 The CLI builds an evaluator with `config.language`:
 
-- `tools/muscle/cli.py:1328`
-- `tools/muscle/cli.py:1332`
+- `src/muscle/cli.py:1328`
+- `src/muscle/cli.py:1332`
 
 But the code-generation wrapper does not pass the language to `CodeGenerator`:
 
-- `tools/muscle/cli.py:1334`
-- `tools/muscle/cli.py:1340`
-- `tools/muscle/cli.py:1344`
+- `src/muscle/cli.py:1334`
+- `src/muscle/cli.py:1340`
+- `src/muscle/cli.py:1344`
 
 `CodeGenerator.generate()` calls `_build_user_prompt()` with `language=None`:
 
-- `tools/muscle/code_generator.py:221`
-- `tools/muscle/code_generator.py:225`
+- `src/muscle/code_generator.py:221`
+- `src/muscle/code_generator.py:225`
 
 Impact: the generator may create code in a different language than the evaluator
 or user requested unless the task text itself repeats the language.
@@ -304,14 +304,14 @@ so cached output cannot cross language boundaries.
 `LoopController._run_iteration()` snapshots only top-level names under the output
 directory:
 
-- `tools/muscle/loop_controller.py:386`
-- `tools/muscle/loop_controller.py:396`
-- `tools/muscle/loop_controller.py:399`
+- `src/muscle/loop_controller.py:386`
+- `src/muscle/loop_controller.py:396`
+- `src/muscle/loop_controller.py:399`
 
 After generation, it again compares only top-level names:
 
-- `tools/muscle/loop_controller.py:470`
-- `tools/muscle/loop_controller.py:478`
+- `src/muscle/loop_controller.py:470`
+- `src/muscle/loop_controller.py:478`
 
 Impact: nested generated files, modified existing files, and deletions are not
 reflected in `files_generated` or downstream session reports. This weakens
@@ -324,8 +324,8 @@ excluding caches and build outputs. Report added, modified, and deleted files.
 
 `_parse_golangci_json()` sets `file_path` from `FromLinter`:
 
-- `tools/muscle/code_review/static_analyzer.py:473`
-- `tools/muscle/code_review/static_analyzer.py:480`
+- `src/muscle/code_review/static_analyzer.py:473`
+- `src/muscle/code_review/static_analyzer.py:480`
 
 The unit test expects this behavior:
 
@@ -347,18 +347,18 @@ change the test to assert source file paths.
 `ClaudePublisher` defaults to publishing identical content to both `CLAUDE.md`
 and `AGENTS.md`:
 
-- `tools/muscle/claude_publisher.py:88`
-- `tools/muscle/claude_publisher.py:95`
+- `src/muscle/claude_publisher.py:88`
+- `src/muscle/claude_publisher.py:95`
 
 Before every target write, it calls:
 
-- `tools/muscle/claude_publisher.py:412`
-- `tools/muscle/claude_publisher.py:416`
+- `src/muscle/claude_publisher.py:412`
+- `src/muscle/claude_publisher.py:416`
 
 `BackupManager` resolves `claude_md` backups to the root `CLAUDE.md` only:
 
-- `tools/muscle/backup_manager.py:469`
-- `tools/muscle/backup_manager.py:470`
+- `src/muscle/backup_manager.py:469`
+- `src/muscle/backup_manager.py:470`
 
 Impact: writing `AGENTS.md` is not backed up as advertised. In an AGENTS-only
 project, publishing can skip `AGENTS.md` because backing up `CLAUDE.md` fails.
@@ -371,9 +371,9 @@ backup type to carry the actual target file.
 `ReviewController.run()` catches all structured workflow exceptions and falls
 back to legacy review modes:
 
-- `tools/muscle/code_review/review_controller.py:322`
-- `tools/muscle/code_review/review_controller.py:329`
-- `tools/muscle/code_review/review_controller.py:330`
+- `src/muscle/code_review/review_controller.py:322`
+- `src/muscle/code_review/review_controller.py:329`
+- `src/muscle/code_review/review_controller.py:330`
 
 Impact: if a structured workflow applied fixes or wrote artifacts before a later
 node failed, fallback can run a second review/fix pass over a partially changed
@@ -388,18 +388,18 @@ or roll back via worktree/session transaction before fallback.
 `M27Client` stores rate and concurrency limiters as class-level state. It only
 configures them if `_rate_limiter` is `None`:
 
-- `tools/muscle/m27_client.py:262`
-- `tools/muscle/m27_client.py:264`
+- `src/muscle/m27_client.py:262`
+- `src/muscle/m27_client.py:264`
 
 Environment values are parsed directly:
 
-- `tools/muscle/m27_client.py:265`
-- `tools/muscle/m27_client.py:266`
+- `src/muscle/m27_client.py:265`
+- `src/muscle/m27_client.py:266`
 
 `RateLimiter` divides by `calls_per_second` without validation:
 
-- `tools/muscle/m27_client.py:96`
-- `tools/muscle/m27_client.py:99`
+- `src/muscle/m27_client.py:96`
+- `src/muscle/m27_client.py:99`
 
 Impact: the first client constructed in a process silently controls all later
 clients, even if a command requests different limits. Invalid env values can
@@ -413,8 +413,8 @@ for command-scoped clients.
 
 The Claude plugin manifest embeds a one-line install script:
 
-- `tools/muscle/plugin/.claude-plugin/plugin.json:13`
-- `tools/muscle/plugin/.claude-plugin/plugin.json:14`
+- `src/muscle/plugin/.claude-plugin/plugin.json:13`
+- `src/muscle/plugin/.claude-plugin/plugin.json:14`
 
 It installs with `uv pip install -e .` or `python -m pip install -e .`, then
 creates a symlink to `${INSTALL_DIR}/.venv/bin/muscle` only in the fresh-clone
@@ -434,8 +434,8 @@ Recommendation: use `uv tool install`, `uv venv && uv pip install`, or
 For a file target, the CLI infers language from the suffix but sets
 `eval_target` to the parent directory:
 
-- `tools/muscle/cli.py:1757`
-- `tools/muscle/cli.py:1762`
+- `src/muscle/cli.py:1757`
+- `src/muscle/cli.py:1762`
 
 Impact: `muscle check --target src/foo.py` can fail or pass based on unrelated
 files in `src/`. It does not perform the narrow validation implied by the file
@@ -449,9 +449,9 @@ rename CLI messaging to make the parent-directory behavior explicit.
 `ProjectManager._detect_languages()` turns `"*.py"` into `".py"` before calling
 `rglob()`:
 
-- `tools/muscle/tui/project_manager.py:93`
-- `tools/muscle/tui/project_manager.py:106`
-- `tools/muscle/tui/project_manager.py:107`
+- `src/muscle/tui/project_manager.py:93`
+- `src/muscle/tui/project_manager.py:106`
+- `src/muscle/tui/project_manager.py:107`
 
 Impact: projects with source files but no package metadata can miss language
 detection for Python and CMake/C++ indicators.
@@ -462,22 +462,22 @@ Recommendation: call `path.rglob(pattern)` for glob patterns.
 
 `ProjectManager` defines:
 
-- `tools/muscle/tui/project_manager.py:23`
+- `src/muscle/tui/project_manager.py:23`
 
 It writes the file with `json.dump()`:
 
-- `tools/muscle/tui/project_manager.py:134`
-- `tools/muscle/tui/project_manager.py:157`
+- `src/muscle/tui/project_manager.py:134`
+- `src/muscle/tui/project_manager.py:157`
 
 It also reads updates with `json.load()`:
 
-- `tools/muscle/tui/project_manager.py:409`
-- `tools/muscle/tui/project_manager.py:411`
+- `src/muscle/tui/project_manager.py:409`
+- `src/muscle/tui/project_manager.py:411`
 
 `TuiDataProvider` now documents the ambiguity and supports JSON first, then YAML:
 
-- `tools/muscle/tui/data_provider.py:112`
-- `tools/muscle/tui/data_provider.py:129`
+- `src/muscle/tui/data_provider.py:112`
+- `src/muscle/tui/data_provider.py:129`
 
 Impact: users and external tools reasonably expect YAML from the extension.
 Tests currently lock in the JSON-in-YAML-file behavior.
@@ -511,14 +511,14 @@ for file references and absolute local paths.
 
 The checkout contains a dirty working tree, deleted planning docs, many modified
 tests/modules, and an untracked `muscle-main/` directory. The active package is
-already about 50,335 Python LOC under `tools/muscle/`, with several very large
+already about 50,335 Python LOC under `src/muscle/`, with several very large
 modules:
 
-- `tools/muscle/cli.py`: 5,363 lines
-- `tools/muscle/project_memory.py`: 3,916 lines
-- `tools/muscle/code_review/review_controller.py`: 1,511 lines
-- `tools/muscle/code_review/code_reviewer.py`: 1,174 lines
-- `tools/muscle/m27_client.py`: 1,046 lines
+- `src/muscle/cli.py`: 5,363 lines
+- `src/muscle/project_memory.py`: 3,916 lines
+- `src/muscle/code_review/review_controller.py`: 1,511 lines
+- `src/muscle/code_review/code_reviewer.py`: 1,174 lines
+- `src/muscle/m27_client.py`: 1,046 lines
 
 Impact: broad recursive scanners and semantic review paths are more likely to
 scan unintended code. Large orchestration modules also make regression isolation

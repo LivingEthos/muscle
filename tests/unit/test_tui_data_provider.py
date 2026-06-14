@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 
-from tools.muscle.tui.data_provider import TUIDataProvider
+from muscle.tui.data_provider import TUIDataProvider
 
 
 def test_load_config_reads_json_from_config_yaml(tmp_path):

@@ -1,0 +1,16 @@
+{
+  "canonical_model_key": "anthropic/claude-fable-5@2026-06-09",
+  "generated_at": "2026-06-12T00:00:00",
+  "lesson_count": 6,
+  "lessons_schema_version": "1.0",
+  "repository_layout_version": "1.0",
+  "repository_path": "packs/anthropic/claude-fable-5@2026-06-09",
+  "schema_version": "1.0",
+  "source_ref": "local",
+  "supported_aliases": [
+    "anthropic/claude-fable-5@2026-06-09",
+    "claude-fable-5",
+    "fable 5"
+  ],
+  "version": "0.1.0"
+}

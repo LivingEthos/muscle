@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`tools.muscle.packs` (Phase B.5).
+"""Unit tests for :mod:`muscle.packs` (Phase B.5).
 
 Covers:
 
@@ -16,6 +16,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sqlite3
@@ -24,14 +25,28 @@ from pathlib import Path
 
 import pytest
 
-from tools.muscle.migrations import MigrationRunner
-from tools.muscle.optimization.context_budgeter import ContextBudgeter
-from tools.muscle.packs import Pack, PackBuilder, PackStore
-from tools.muscle.response_cache import ResponseCache
+from muscle.migrations import MigrationRunner
+from muscle.lesson_resolver import LessonRenderBudget, LessonResolver
+from muscle.model_packs import ModelPackManager
+from muscle.optimization.context_budgeter import ContextBudgeter
+from muscle.packs import Pack, PackBuilder, PackStore
+from muscle.project_memory import ProjectMemory
+from muscle.response_cache import ResponseCache
+from muscle.system_db import SystemDatabase
+from muscle.tui.project_manager import ProjectConfig, ProjectManager
 
 logger = logging.getLogger(__name__)
 
 HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+FABLE_CANONICAL_KEY = "anthropic/claude-fable-5@2026-06-09"
+FABLE_BUNDLE_DIR = (
+    Path(__file__).parents[2]
+    / "src"
+    / "muscle"
+    / "model_pack_bundles"
+    / "anthropic"
+    / "claude-fable-5@2026-06-09"
+)
 
 
 @pytest.fixture
@@ -184,3 +199,85 @@ def test_pack_id_propagates_to_response_cache_key(
         pack_id=pack.id,
     )
     assert pack_key == pack_key_again
+
+
+def test_fable_local_model_pack_bundle_validates_and_installs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "home" / ".muscle" / "system.db"
+    monkeypatch.setattr("muscle.system_db.DEFAULT_SYSTEM_DB_PATH", db_path)
+    manager = ModelPackManager(str(tmp_path))
+
+    metadata = manager.install_bundle(
+        FABLE_BUNDLE_DIR,
+        expected_canonical_model_key=FABLE_CANONICAL_KEY,
+    )
+
+    assert metadata.canonical_model_key == FABLE_CANONICAL_KEY
+    assert metadata.version == "0.1.0"
+    installed = manager.system_db.list_model_packs()
+    assert any(pack["canonical_model_key"] == FABLE_CANONICAL_KEY for pack in installed)
+    lessons = manager.system_db.get_model_pack_lessons(FABLE_CANONICAL_KEY)
+    assert len(lessons) == 6
+    assert {str(row["safety_scope"]) for row in lessons} == {"host-orchestration"}
+    manifest = json.loads((FABLE_BUNDLE_DIR / "pack.json").read_text(encoding="utf-8"))
+    assert manifest["supported_aliases"] == [
+        "anthropic/claude-fable-5@2026-06-09",
+        "claude-fable-5",
+        "fable 5",
+    ]
+
+
+def test_lesson_resolver_retrieves_fable_host_orchestration_pack(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "home" / ".muscle" / "system.db"
+    monkeypatch.setattr("muscle.system_db.DEFAULT_SYSTEM_DB_PATH", db_path)
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    ProjectManager(project_root).init_project(
+        ProjectConfig(name="project", path=project_root, languages=["Python"])
+    )
+    project_memory = ProjectMemory(str(project_root))
+    system_db = SystemDatabase()
+    ModelPackManager(
+        str(project_root),
+        project_memory=project_memory,
+        system_db=system_db,
+    ).install_bundle(FABLE_BUNDLE_DIR, expected_canonical_model_key=FABLE_CANONICAL_KEY)
+
+    resolver = LessonResolver(
+        project_path=str(project_root),
+        project_memory=project_memory,
+        system_db=system_db,
+        project_config=ProjectConfig(
+            name="project",
+            path=project_root,
+            languages=["Python"],
+            model_pack_mode="auto",
+        ),
+        requested_model_label="claude-fable-5",
+        provider_endpoint="https://api.anthropic.com/v1/messages",
+    )
+
+    result = resolver.resolve_for_prompt(
+        query_text="plan a Fable review route with typed verification claims",
+        stage="semantic_review",
+        session_id="sess-fable",
+        language="Python",
+        render_budget=LessonRenderBudget(
+            name="fable-pack-test",
+            max_total_tokens=600,
+            source_token_limits={"local": 0, "related": 0, "model-pack": 600, "global": 0},
+        ),
+    )
+
+    assert result.canonical_model_key == FABLE_CANONICAL_KEY
+    fable_lessons = [lesson for lesson in result.lessons if lesson.source == "model-pack"]
+    assert fable_lessons
+    assert any("host-risk preflight" in lesson.lesson_text for lesson in fable_lessons)
+    assert {lesson.metadata["safety_scope"] for lesson in fable_lessons} == {
+        "host-orchestration"
+    }

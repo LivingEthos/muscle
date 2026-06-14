@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.muscle.code_review.long_eval_runner import LongEvalConfig, LongEvalRunner
+from muscle.code_review.long_eval_runner import LongEvalConfig, LongEvalRunner
 
 
 class TestLongEvalConfig:
@@ -42,7 +42,7 @@ class TestLongEvalRunner:
                 "high_issues": [],
                 "total_issues": 0,
             }
-            with patch("tools.muscle.code_review.long_eval_runner.LearningPipeline") as mock_pl:
+            with patch("muscle.code_review.long_eval_runner.LearningPipeline") as mock_pl:
                 mock_pipeline = MagicMock()
                 mock_pipeline.learn_from_review.return_value = {}
                 mock_pl.return_value = mock_pipeline
@@ -187,7 +187,7 @@ class TestLongEvalLearningIntegration:
                 "high_issues": [],
                 "total_issues": 0,
             }
-            with patch("tools.muscle.code_review.long_eval_runner.LearningPipeline") as mock_pl:
+            with patch("muscle.code_review.long_eval_runner.LearningPipeline") as mock_pl:
                 mock_pipeline = MagicMock()
                 mock_pipeline.learn_from_review.return_value = {}
                 mock_pl.return_value = mock_pipeline
@@ -206,7 +206,7 @@ class TestLongEvalLearningIntegration:
                 "high_issues": [],
                 "total_issues": 0,
             }
-            with patch("tools.muscle.code_review.long_eval_runner.LearningPipeline") as mock_pl:
+            with patch("muscle.code_review.long_eval_runner.LearningPipeline") as mock_pl:
                 mock_pl.side_effect = Exception("Pipeline init failed")
                 result = runner.run_long_eval()
                 # Should still return results despite learning failure

@@ -13,7 +13,7 @@
       "source": {
         "source": "git-subdir",
         "url": "https://github.com/LivingEthos/muscle.git",
-        "path": "tools/muscle/plugin"
+        "path": "src/muscle/plugin"
       },
       "description": "Self-learning code review for real projects: static analysis, semantic review, project-local memory, doctor diagnostics, savings reports, discovery, filters, model routing, context packs, and release-gate evidence.",
       "version": "0.1.0",

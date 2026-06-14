@@ -4,7 +4,7 @@
 |---|---|
 | Audience | Plugin users, host agents, and maintainers |
 | Status | Current bundled agents and skill |
-| Source of truth | [`tools/muscle/plugin/agents/`](../../tools/muscle/plugin/agents/), [`tools/muscle/plugin/skills/code-review/SKILL.md`](../../tools/muscle/plugin/skills/code-review/SKILL.md), [`tools/muscle/code_review/agent_generator.py`](../../tools/muscle/code_review/agent_generator.py), [`tools/muscle/code_review/skill_generator.py`](../../tools/muscle/code_review/skill_generator.py) |
+| Source of truth | [`src/muscle/plugin/agents/`](../../src/muscle/plugin/agents/), [`src/muscle/plugin/skills/code-review/SKILL.md`](../../src/muscle/plugin/skills/code-review/SKILL.md), [`src/muscle/code_review/agent_generator.py`](../../src/muscle/code_review/agent_generator.py), [`src/muscle/code_review/skill_generator.py`](../../src/muscle/code_review/skill_generator.py) |
 
 The plugin bundle includes static host-facing agents and a code-review skill.
 MUSCLE can also generate project-local `.muscle/skills/` and `.muscle/agents/`

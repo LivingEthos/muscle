@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.muscle.backup_manager import BackupManager
+from muscle.backup_manager import BackupManager
 
 
 class TestBackupManager:
@@ -19,14 +19,14 @@ class TestBackupManager:
 
     def _make_pm_and_bm(self, tmpdir: str):
         """Create a ProjectMemory and BackupManager pair for testing."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         pm = ProjectMemory(tmpdir)
         return pm, BackupManager(pm, tmpdir, retention_days=7)
 
     def test_backup_manager_init(self):
         """BackupManager initializes correctly."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pm = ProjectMemory(tmpdir)
@@ -36,7 +36,7 @@ class TestBackupManager:
 
     def test_backup_manager_custom_retention(self):
         """BackupManager respects custom retention_days."""
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pm = ProjectMemory(tmpdir)
@@ -343,7 +343,7 @@ class TestBackupManager:
         assert result is not None
         assert result["restored_count"] == 1
 
-        from tools.muscle.project_memory import ProjectMemory
+        from muscle.project_memory import ProjectMemory
 
         restored_pm = ProjectMemory(tmpdir)
         restored_task = restored_pm.get_task(task_id)
@@ -415,7 +415,7 @@ class TestBackupManager:
                 raise OSError("simulated apply failure")
             real_replace(src, dst)
 
-        with patch("tools.muscle.backup_manager.os.replace", side_effect=flaky_replace):
+        with patch("muscle.backup_manager.os.replace", side_effect=flaky_replace):
             result = bm.restore_backup(backup_id)
 
         assert result is not None
@@ -483,7 +483,7 @@ class TestBackupManager:
         # than ``time.sleep`` so the test is fast and flake-free.
         t1 = real_datetime(2026, 4, 16, 10, 0, 0)
         t2 = real_datetime(2026, 4, 16, 10, 0, 1)
-        with patch("tools.muscle.backup_manager.datetime") as mock_dt:
+        with patch("muscle.backup_manager.datetime") as mock_dt:
             mock_dt.now.return_value = t1
             mock_dt.side_effect = lambda *a, **kw: real_datetime(*a, **kw)
             b1 = bm.create_backup("config")
@@ -491,7 +491,7 @@ class TestBackupManager:
 
         # Change content
         bm._muscle_dir.joinpath("config.yaml").write_text("v2\n")
-        with patch("tools.muscle.backup_manager.datetime") as mock_dt:
+        with patch("muscle.backup_manager.datetime") as mock_dt:
             mock_dt.now.return_value = t2
             mock_dt.side_effect = lambda *a, **kw: real_datetime(*a, **kw)
             b2 = bm.create_backup("config")

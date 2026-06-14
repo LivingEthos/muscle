@@ -8,8 +8,8 @@ import json
 
 import pytest
 
-from tools.muscle.code_review.shadow_broker import ShadowBroker
-from tools.muscle.code_review.types import Intensity, ReviewMode
+from muscle.code_review.shadow_broker import ShadowBroker
+from muscle.code_review.types import Intensity, ReviewMode
 
 
 @pytest.fixture

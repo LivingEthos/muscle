@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from tools.muscle.migrations import CURRENT_SCHEMA_VERSION
-from tools.muscle.project_memory import ProjectMemory
+from muscle.migrations import CURRENT_SCHEMA_VERSION
+from muscle.project_memory import ProjectMemory
 
 
 @pytest.fixture
@@ -238,6 +238,110 @@ class TestReviewFindingHelpers:
 
         findings = pm.list_findings_for_run(run_id)
         assert len(findings) == 3
+
+
+class TestCountFindingsByRule:
+    """Test count_findings_by_rule across runs and projects."""
+
+    def test_counts_across_runs(self, pm, temp_project_dir):
+        """Rule that fires in two separate runs should count as 2."""
+        project = str(temp_project_dir)
+        run1 = pm.insert_review_run(
+            project_path=project,
+            review_mode="review",
+            target_path="src/a.py",
+            findings_count=1,
+            token_cost=0,
+            duration_ms=0,
+            created_at=datetime.now().isoformat(),
+        )
+        run2 = pm.insert_review_run(
+            project_path=project,
+            review_mode="review",
+            target_path="src/b.py",
+            findings_count=2,
+            token_cost=0,
+            duration_ms=0,
+            created_at=datetime.now().isoformat(),
+        )
+        pm.insert_review_finding(
+            review_run_id=run1,
+            rule_id="CWE-89",
+            severity="HIGH",
+            file_path="src/a.py",
+            line_number=1,
+            message="SQL injection",
+        )
+        pm.insert_review_finding(
+            review_run_id=run2,
+            rule_id="CWE-89",
+            severity="HIGH",
+            file_path="src/b.py",
+            line_number=2,
+            message="SQL injection again",
+        )
+        pm.insert_review_finding(
+            review_run_id=run2,
+            rule_id="CWE-79",
+            severity="HIGH",
+            file_path="src/b.py",
+            line_number=3,
+            message="XSS",
+        )
+
+        assert pm.count_findings_by_rule(project, "CWE-89") == 2
+        assert pm.count_findings_by_rule(project, "CWE-79") == 1
+        assert pm.count_findings_by_rule(project, "CWE-000") == 0
+
+    def test_does_not_count_other_projects(self, temp_project_dir):
+        """Findings from a different project must not be counted."""
+        other_dir = temp_project_dir / "other"
+        other_dir.mkdir(parents=True, exist_ok=True)
+
+        pm_main = ProjectMemory(str(temp_project_dir))
+        pm_other = ProjectMemory(str(other_dir))
+
+        project = str(temp_project_dir)
+        other_project = str(other_dir)
+
+        run_main = pm_main.insert_review_run(
+            project_path=project,
+            review_mode="review",
+            target_path="src/a.py",
+            findings_count=1,
+            token_cost=0,
+            duration_ms=0,
+            created_at=datetime.now().isoformat(),
+        )
+        run_other = pm_other.insert_review_run(
+            project_path=other_project,
+            review_mode="review",
+            target_path="src/a.py",
+            findings_count=1,
+            token_cost=0,
+            duration_ms=0,
+            created_at=datetime.now().isoformat(),
+        )
+        pm_main.insert_review_finding(
+            review_run_id=run_main,
+            rule_id="CWE-89",
+            severity="HIGH",
+            file_path="src/a.py",
+            line_number=1,
+            message="in main project",
+        )
+        pm_other.insert_review_finding(
+            review_run_id=run_other,
+            rule_id="CWE-89",
+            severity="HIGH",
+            file_path="src/a.py",
+            line_number=1,
+            message="in other project",
+        )
+
+        # Each PM uses its own DB file; count for main project should be 1
+        assert pm_main.count_findings_by_rule(project, "CWE-89") == 1
+        assert pm_other.count_findings_by_rule(other_project, "CWE-89") == 1
 
 
 class TestFixAttemptHelpers:
@@ -933,6 +1037,61 @@ class TestObservabilityHelpers:
         assert len(history) == 2
         assert history[0]["canonical_model_key"] == "openai/gpt-5-mini@1"
         assert history[1]["identity_source"] == "unresolved"
+
+
+class TestTransferredLessonTransactions:
+    """Regression tests for cross-project lesson transaction boundaries."""
+
+    def test_promote_rolls_back_rule_insert_when_status_update_fails(
+        self,
+        pm,
+        temp_project_dir,
+        monkeypatch,
+    ):
+        lesson_id = pm.upsert_transferred_lesson(
+            project_path=str(temp_project_dir),
+            source_project_path="/source/project",
+            lesson_text="Validate incoming payment payloads.",
+            trigger_pattern="payment validation",
+            validation_status="provisional",
+        )
+        lesson = pm.get_transferred_lesson(lesson_id)
+        assert lesson is not None
+        for _ in range(3):
+            assert pm.record_transferred_lesson_outcome(str(lesson["lesson_key"]), success=True)
+
+        def fail_status_update(conn, failed_lesson_id, local_rule_id):
+            raise RuntimeError("crash between rule insert and status update")
+
+        monkeypatch.setattr(
+            ProjectMemory,
+            "_mark_transferred_lesson_promoted",
+            staticmethod(fail_status_update),
+        )
+        with pytest.raises(RuntimeError, match="crash between rule insert"):
+            pm.promote_transferred_lesson(lesson_id)
+
+        assert (
+            pm.list_learned_rules(
+                project_path=str(temp_project_dir),
+                trigger_pattern="payment validation",
+            )
+            == []
+        )
+        assert pm.get_transferred_lesson(lesson_id)["validation_status"] == "validated"
+
+        monkeypatch.undo()
+        promoted_rule_id = pm.promote_transferred_lesson(lesson_id)
+
+        assert promoted_rule_id > 0
+        promoted_lesson = pm.get_transferred_lesson(lesson_id)
+        assert promoted_lesson["validation_status"] == "promoted"
+        assert promoted_lesson["promoted_rule_id"] == promoted_rule_id
+        rules = pm.list_learned_rules(
+            project_path=str(temp_project_dir),
+            trigger_pattern="payment validation",
+        )
+        assert len(rules) == 1
 
 
 class TestConnectionContextManager:

@@ -19,10 +19,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.muscle.code_review.code_reviewer import CodeReviewer
-from tools.muscle.code_review.review_controller import ReviewController
-from tools.muscle.code_review.static_analyzer import StaticAnalyzer
-from tools.muscle.code_review.types import (
+from muscle.code_review.code_reviewer import CodeReviewer
+from muscle.code_review.review_controller import ReviewController
+from muscle.code_review.static_analyzer import StaticAnalyzer
+from muscle.code_review.types import (
     IssueCategory,
     ReviewConfig,
     ReviewMode,
