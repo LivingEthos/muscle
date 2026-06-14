@@ -83,3 +83,36 @@ def test_metadata_uses_standard_delegation_keys() -> None:
     assert metadata["host_effort_max_output_tokens"] == 8192
     assert metadata["host_effort_must_not_downgrade"] is True
     assert metadata["host_effort_retry_ladder"] == ["high", "xhigh", "max"]
+
+
+def test_synthesis_floor_raises_routine_medium_to_high() -> None:
+    decision = decide_host_effort(
+        route_tier="mechanical",
+        target_type="file",
+        synthesis_effort_floor=HostEffortLevel.HIGH,
+    )
+    assert decision.effort == HostEffortLevel.HIGH
+    assert decision.retry_ladder[0] == HostEffortLevel.HIGH
+    assert "host synthesis effort floor high" in decision.rationale
+
+
+def test_synthesis_floor_default_medium_is_noop() -> None:
+    floored = decide_host_effort(
+        route_tier="mechanical",
+        target_type="file",
+        synthesis_effort_floor=HostEffortLevel.MEDIUM,
+    )
+    baseline = decide_host_effort(route_tier="mechanical", target_type="file")
+    assert floored.effort == HostEffortLevel.MEDIUM
+    assert floored.to_dict() == baseline.to_dict()
+
+
+def test_synthesis_floor_does_not_lower_higher_evidence_effort() -> None:
+    decision = decide_host_effort(
+        route_tier="mechanical",
+        verification_failure_count=2,
+        synthesis_effort_floor=HostEffortLevel.HIGH,
+    )
+    assert decision.effort == HostEffortLevel.XHIGH
+    # The floor must not disturb the evidence-driven must_not_downgrade flag.
+    assert decision.must_not_downgrade is True

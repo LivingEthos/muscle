@@ -77,6 +77,7 @@ def decide_host_effort(
     explicit_user_maximum_effort: bool = False,
     time_budget_seconds: int | None = None,
     token_budget: int | None = None,
+    synthesis_effort_floor: HostEffortLevel = HostEffortLevel.MEDIUM,
 ) -> HostEffortDecision:
     """Return a host effort decision from deterministic routing evidence.
 
@@ -92,6 +93,8 @@ def decide_host_effort(
         explicit_user_maximum_effort: User explicitly requested maximum effort.
         time_budget_seconds: Optional wall-clock budget.
         token_budget: Optional token budget.
+        synthesis_effort_floor: Minimum effort for intelligence-sensitive host
+            synthesis, from the resolved host profile (raises the baseline only).
 
     Returns:
         HostEffortDecision with a bounded retry ladder and rationale.
@@ -99,6 +102,11 @@ def decide_host_effort(
     effort = HostEffortLevel.MEDIUM
     reasons: list[str] = ["default medium for routine host synthesis"]
     must_not_downgrade = False
+
+    floored = _max_effort(effort, synthesis_effort_floor)
+    if floored != effort:
+        effort = floored
+        reasons.append(f"host synthesis effort floor {synthesis_effort_floor.value}")
 
     if route_tier == "architectural" or target_type == "directory" or target_size >= 10_000:
         effort = _max_effort(effort, HostEffortLevel.HIGH)
