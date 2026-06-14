@@ -38,6 +38,40 @@ still need to be folded back into this file when the design pass ends.
 
 ## Just completed
 
+### 2026-06-13 — Model-aware optimization profiles (Plans 1–7 + follow-ups)
+
+Status: completed and verified on `release-prep` (not yet merged to `main`).
+
+The 7-plan model-aware-profile roadmap is complete: a typed `ModelProfile`
+registry (`src/muscle/model_profiles.py`) + host/agent detection
+(`host_model_resolver.py`) whose knobs are consumed at every seam. Every profile
+field now has a real consumer (no dead knobs):
+
+- Agent per-stage effort + always-on thinking → `anthropic_client.py`; per-stage
+  effort also wired into the claude-CLI transport (`claude_cli_client.py`) so
+  Opus-via-CLI gets `xhigh` on coding stages (follow-up).
+- Host doc fragments → `claude_publisher.py` / `host_memory_templates.py`;
+  synthesis effort floor → `routing.py` / `host_effort_policy.py`.
+- Security posture (dependency snippet policy, untrusted-envelope emphasis) →
+  `source_context.py` / `code_reviewer.py` / `review_controller.py` (agent-driven);
+  cyber-safeguard friction note → `cli/provider.py`.
+- Eval `grader_aware` → `review_benchmark.py`; learning reinforcement +
+  repeated-violation escalation → `claude_publisher.py` / `verification_loop.py`.
+- Handoffs emit self-contained delegation specs + recovered M3 fields
+  (`handoff_generator.py`).
+
+Follow-ups also landed: real cross-run recurrence counting
+(`learning_pipeline._get_recurrence_count` via `ProjectMemory.count_findings_by_rule`).
+
+Intentional design boundaries (kept as-is): `fetch_sources` dependency context is
+foreground-review-only (the structured-workflow/committee path does not consume
+supplemental context — documented in `review_controller._build_source_context`);
+the codex CLI transport has no `--effort` control so per-stage effort does not
+apply there.
+
+Gates: `uv run mypy src/muscle/`, `ruff check`, `ruff format --check` clean (191
+files); full suite green.
+
 ### 2026-06-12 — OpenAI-compatible tool schema compatibility
 
 Status: completed and verified.

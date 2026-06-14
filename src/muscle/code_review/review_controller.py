@@ -1709,7 +1709,16 @@ class ReviewController:
         return ctx
 
     def _build_source_context(self) -> str:
-        """Build supplemental JS/TS dependency context via opensrc. Never raises."""
+        """Build supplemental JS/TS dependency context via opensrc. Never raises.
+
+        Foreground-only: this is wired exclusively through ``_run_review_mode``
+        (which passes the result as ``supplemental_context`` to
+        ``code_reviewer.review``). The structured-workflow / committee path
+        (``_run_structured_workflow`` → ``CommitteeReviewer.run_agent``) does not
+        consume supplemental context, so ``fetch_sources`` is intentionally a
+        foreground-review feature. The agent-profile-driven snippet policy +
+        envelope emphasis (Plan 4) therefore apply on the foreground path only.
+        """
         try:
             from ..model_profiles import resolve_agent_security_posture
             from .source_context import SourceContextBuilder
