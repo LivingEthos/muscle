@@ -309,6 +309,24 @@ def _agent_identity(project_path: Path | None) -> ModelIdentity:
     )
 
 
+def resolve_host_synthesis_floor(project_path: Path | str | None) -> HostEffortLevel:
+    """Resolve the active HOST profile's synthesis effort floor, defensively.
+
+    Resolves only the host (no agent/provider work) and returns the conservative
+    default floor (``MEDIUM``) on any resolution failure, so routing never breaks
+    on profile-resolution edge cases. Mirrors resolve_host_fragment_keys.
+    """
+    try:
+        from .host_model_resolver import HostModelResolver  # noqa: PLC0415
+
+        resolved = Path(project_path) if project_path is not None else None
+        host_identity = HostModelResolver().resolve(resolved)
+        return profile_for(host_identity.canonical_model_key).host.synthesis_effort_floor
+    except Exception:
+        logger.debug("resolve_host_synthesis_floor failed; using MEDIUM", exc_info=True)
+        return HostEffortLevel.MEDIUM
+
+
 def resolve_agent_security_posture(project_path: Path | str | None) -> SecurityPosture:
     """Resolve the active AGENT (executor) profile's SecurityPosture, defensively.
 

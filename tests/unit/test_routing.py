@@ -200,7 +200,11 @@ class TestRouteCLI:
         assert "Tier:" in result.output
         assert "mechanical" in result.output
 
-    def test_route_json_output(self, runner: CliRunner) -> None:
+    def test_route_json_output(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
         with patch("muscle.cli.plumbing.create_client") as mock_client_cls:
             mock_instance = MagicMock()
             mock_client_cls.return_value = mock_instance
@@ -227,7 +231,11 @@ class TestRouteCLI:
         assert output["provider_identity_trust"] == "first-party"
         assert output["provider_cost_confidence"] == "known"
 
-    def test_route_json_includes_host_risk_metadata(self, runner: CliRunner) -> None:
+    def test_route_json_includes_host_risk_metadata(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
         with patch.dict("os.environ", {}, clear=False):
             import os as _os
 
@@ -359,6 +367,23 @@ class TestOfflineRoute:
         assert decision.host_effort is not None
         assert decision.host_effort.effort.value == "xhigh"
         assert decision.host_effort.avoided_escalation is True
+
+
+class TestHostSynthesisFloor:
+    def test_opus_host_raises_routine_floor_to_high(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MUSCLE_HOST_MODEL", "opus")
+        decision = offline_route("rename a variable across files")
+        assert decision.host_effort is not None
+        assert decision.host_effort.effort.value == "high"
+
+    def test_unknown_host_keeps_routine_floor_medium(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+        decision = offline_route("rename a variable across files")
+        assert decision.host_effort is not None
+        assert decision.host_effort.effort.value == "medium"
 
 
 def test_benchmark_routing_profiles_prefers_candidate_without_quality_regression() -> None:

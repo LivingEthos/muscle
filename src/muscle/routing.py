@@ -151,11 +151,11 @@ class TaskRouter:
         cached = self._cache_get(cache_key)
         if cached is not None:
             decision = RouteDecision(**cached, from_cache=True, host_risk=host_risk)
-            return _with_route_metadata(decision, features)
+            return _with_route_metadata(decision, features, scope)
 
         decision = self._classify_via_m27(task_description, scope)
         decision.host_risk = host_risk
-        decision = _with_route_metadata(decision, features)
+        decision = _with_route_metadata(decision, features, scope)
         self._cache_put(cache_key, decision)
         return decision
 
@@ -413,8 +413,9 @@ def _host_risk_input_from_route(
 def _with_route_metadata(
     decision: RouteDecision,
     features: dict[str, str],
+    project_path: Path | None = None,
 ) -> RouteDecision:
-    decision.host_effort = _host_effort_from_features(decision, features)
+    decision.host_effort = _host_effort_from_features(decision, features, project_path)
     decision.provider_metadata = _provider_route_metadata(decision, features)
     return decision
 
@@ -422,7 +423,10 @@ def _with_route_metadata(
 def _host_effort_from_features(
     decision: RouteDecision,
     features: dict[str, str],
+    project_path: Path | None = None,
 ) -> HostEffortDecision:
+    from .model_profiles import resolve_host_synthesis_floor  # noqa: PLC0415
+
     fallback_risk = bool(decision.host_risk and decision.host_risk.likely_fallback)
     return decide_host_effort(
         route_tier=decision.tier.value,
@@ -438,6 +442,7 @@ def _host_effort_from_features(
         in {"max", "maximum", "xhigh"},
         time_budget_seconds=_optional_int_feature(features.get("time_budget_seconds")),
         token_budget=_optional_int_feature(features.get("token_budget")),
+        synthesis_effort_floor=resolve_host_synthesis_floor(project_path),
     )
 
 

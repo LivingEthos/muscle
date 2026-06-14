@@ -14,6 +14,7 @@ from muscle.model_profiles import (
     profile_for,
     resolve_active_profiles,
     resolve_agent_security_posture,
+    resolve_host_synthesis_floor,
     validate_profile,
 )
 
@@ -201,3 +202,14 @@ def test_resolve_agent_security_posture_default_is_sanitize_standard(monkeypatch
     sec = resolve_agent_security_posture(tmp_path)
     assert sec.dependency_snippet_policy == "sanitize"
     assert sec.untrusted_envelope_emphasis == "standard"
+
+
+def test_resolve_host_synthesis_floor_opus(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUSCLE_HOST_MODEL", "opus")
+    assert resolve_host_synthesis_floor(tmp_path) == HostEffortLevel.HIGH
+
+
+def test_resolve_host_synthesis_floor_unknown_is_medium(monkeypatch, tmp_path):
+    monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    assert resolve_host_synthesis_floor(tmp_path) == HostEffortLevel.MEDIUM
