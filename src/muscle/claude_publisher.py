@@ -69,6 +69,10 @@ PINNED_SECTIONS: frozenset[str] = frozenset(
 # Size cap per section
 MAX_SECTION_LINES = 50
 
+# Number of highest-value Critical Rules to emphasize when the host profile sets
+# point_of_action_reinforcement (re-surface the top rules where the host reads them).
+REINFORCED_RULE_COUNT = 3
+
 
 def host_doc_lock_sentinel(project_path: Path, target_path: Path) -> Path:
     """Cross-process lock sentinel for a host-doc read-modify-write.
@@ -679,19 +683,29 @@ Return ONLY the JSON array, nothing else."""
         lines.append(render_pinned_block(resolve_host_fragment_keys(self.project_path)).rstrip())
         lines.append("")
 
-        # Critical Rules (high score rules first)
+        # Critical Rules (high score rules first). When the host profile opts into
+        # point-of-action reinforcement, the top-N highest-value rules are bolded
+        # in place so they are salient where the host reads them (no extra lines,
+        # no duplication, no reordering).
         if critical_rules:
+            from .model_profiles import resolve_host_learning_posture
+
+            reinforce = resolve_host_learning_posture(
+                self.project_path
+            ).point_of_action_reinforcement
             lines.append(SECTION_CRITICAL_RULES)
             sorted_rules = sorted(
                 critical_rules,
                 key=lambda r: (r.get("score", 0), r.get("validated_count", 0)),
                 reverse=True,
             )
-            for rule in sorted_rules[:MAX_SECTION_LINES]:
+            for index, rule in enumerate(sorted_rules[:MAX_SECTION_LINES]):
                 text = self._compile_host_memory_text(
                     str(rule.get("text", "")),
                     compact_host_memory=compact_host_memory,
                 )
+                if reinforce and index < REINFORCED_RULE_COUNT:
+                    text = f"**{text}**"
                 score = rule.get("score", 0)
                 validated = rule.get("validated_count", 0)
                 lines.append(f"- {text} (score: {score}, validated: {validated}x)")

@@ -835,3 +835,38 @@ class TestPublisherHostFragments:
         )
         content = (tmp_path / "CLAUDE.md").read_text()
         assert "interprets instructions literally" not in content
+
+
+class TestPointOfActionReinforcement:
+    RULES = [
+        {"text": "Top value rule", "score": 0.9, "validated_count": 5},
+        {"text": "Mid value rule", "score": 0.6, "validated_count": 2},
+        {"text": "Low value rule", "score": 0.2, "validated_count": 1},
+        {"text": "Fourth rule", "score": 0.1, "validated_count": 1},
+    ]
+
+    def test_opus_host_bolds_top_rules(self, monkeypatch, tmp_path):
+        from muscle.claude_publisher import ClaudePublisher
+
+        monkeypatch.setenv("MUSCLE_HOST_MODEL", "opus")
+        (tmp_path / "CLAUDE.md").write_text("# CLAUDE.md\n")
+        ClaudePublisher(str(tmp_path)).publish(critical_rules=list(self.RULES))
+        content = (tmp_path / "CLAUDE.md").read_text()
+        assert "- **Top value rule**" in content
+        assert "- **Mid value rule**" in content
+        assert "- **Low value rule**" in content
+        assert "- **Fourth rule**" not in content
+        assert "- Fourth rule (score:" in content
+        # Only the rule text is bolded; the score/validated suffix stays outside.
+        assert "- **Top value rule** (score: 0.9, validated: 5x)" in content
+
+    def test_unknown_host_does_not_bold(self, monkeypatch, tmp_path):
+        from muscle.claude_publisher import ClaudePublisher
+
+        monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+        (tmp_path / "CLAUDE.md").write_text("# CLAUDE.md\n")
+        ClaudePublisher(str(tmp_path)).publish(critical_rules=list(self.RULES))
+        content = (tmp_path / "CLAUDE.md").read_text()
+        assert "- **Top value rule**" not in content
+        assert "- Top value rule (score:" in content
