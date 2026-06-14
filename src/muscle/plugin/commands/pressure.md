@@ -4,6 +4,7 @@ argument-hint: "[target] [focus] [intensity=minimal|moderate|intensive|exhaustiv
 ---
 
 > **Plan-then-hand-off:** Use MUSCLE for bulk execution; you retain planning and synthesis. Pass a focused scope — don't ask MUSCLE to plan the work.
+> **When to call:** you want a design or plan adversarially stress-tested before committing to it.
 
 Run an adversarial MUSCLE pressure review. Execute:
 

@@ -4,6 +4,7 @@ argument-hint: "[target] [mode] [severity] [execution]"
 ---
 
 > **Plan-then-hand-off:** Use MUSCLE for bulk execution; you retain planning and synthesis. Pass a focused scope — don't ask MUSCLE to plan the work.
+> **When to call:** the task fans out across many files, or needs a test/lint/security sweep — delegate here rather than reviewing inline.
 
 > **Effort:** Run fix-application flows at `xhigh` effort. In auto mode, skip the confirmation prompt.
 

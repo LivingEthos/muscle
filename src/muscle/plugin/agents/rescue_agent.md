@@ -3,6 +3,7 @@ description: Deep-dive investigation of complex issues including root cause anal
 ---
 
 > **Plan-then-hand-off:** Use MUSCLE for bulk execution; you retain planning and synthesis. Pass a focused scope — don't ask MUSCLE to plan the work.
+> **When to call:** a single failure needs a deep root-cause dive (race condition, memory leak, flaky test) — delegate here rather than spelunking inline.
 
 # MUSCLE Rescue Agent
 

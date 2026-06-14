@@ -4,6 +4,7 @@ argument-hint: "[prompt] [target] [intensity=minimal|moderate|intensive|exhausti
 ---
 
 > **Plan-then-hand-off:** Use MUSCLE for bulk execution; you retain planning and synthesis. Pass a focused scope — don't ask MUSCLE to plan the work.
+> **When to call:** a single failure needs a deep root-cause dive (race condition, memory leak, flaky test) — delegate here rather than spelunking inline.
 
 Hand off a directed root-cause investigation to MUSCLE's M3 rescue subagent. Execute:
 
