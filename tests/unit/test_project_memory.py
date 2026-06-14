@@ -240,6 +240,110 @@ class TestReviewFindingHelpers:
         assert len(findings) == 3
 
 
+class TestCountFindingsByRule:
+    """Test count_findings_by_rule across runs and projects."""
+
+    def test_counts_across_runs(self, pm, temp_project_dir):
+        """Rule that fires in two separate runs should count as 2."""
+        project = str(temp_project_dir)
+        run1 = pm.insert_review_run(
+            project_path=project,
+            review_mode="review",
+            target_path="src/a.py",
+            findings_count=1,
+            token_cost=0,
+            duration_ms=0,
+            created_at=datetime.now().isoformat(),
+        )
+        run2 = pm.insert_review_run(
+            project_path=project,
+            review_mode="review",
+            target_path="src/b.py",
+            findings_count=2,
+            token_cost=0,
+            duration_ms=0,
+            created_at=datetime.now().isoformat(),
+        )
+        pm.insert_review_finding(
+            review_run_id=run1,
+            rule_id="CWE-89",
+            severity="HIGH",
+            file_path="src/a.py",
+            line_number=1,
+            message="SQL injection",
+        )
+        pm.insert_review_finding(
+            review_run_id=run2,
+            rule_id="CWE-89",
+            severity="HIGH",
+            file_path="src/b.py",
+            line_number=2,
+            message="SQL injection again",
+        )
+        pm.insert_review_finding(
+            review_run_id=run2,
+            rule_id="CWE-79",
+            severity="HIGH",
+            file_path="src/b.py",
+            line_number=3,
+            message="XSS",
+        )
+
+        assert pm.count_findings_by_rule(project, "CWE-89") == 2
+        assert pm.count_findings_by_rule(project, "CWE-79") == 1
+        assert pm.count_findings_by_rule(project, "CWE-000") == 0
+
+    def test_does_not_count_other_projects(self, temp_project_dir):
+        """Findings from a different project must not be counted."""
+        other_dir = temp_project_dir / "other"
+        other_dir.mkdir(parents=True, exist_ok=True)
+
+        pm_main = ProjectMemory(str(temp_project_dir))
+        pm_other = ProjectMemory(str(other_dir))
+
+        project = str(temp_project_dir)
+        other_project = str(other_dir)
+
+        run_main = pm_main.insert_review_run(
+            project_path=project,
+            review_mode="review",
+            target_path="src/a.py",
+            findings_count=1,
+            token_cost=0,
+            duration_ms=0,
+            created_at=datetime.now().isoformat(),
+        )
+        run_other = pm_other.insert_review_run(
+            project_path=other_project,
+            review_mode="review",
+            target_path="src/a.py",
+            findings_count=1,
+            token_cost=0,
+            duration_ms=0,
+            created_at=datetime.now().isoformat(),
+        )
+        pm_main.insert_review_finding(
+            review_run_id=run_main,
+            rule_id="CWE-89",
+            severity="HIGH",
+            file_path="src/a.py",
+            line_number=1,
+            message="in main project",
+        )
+        pm_other.insert_review_finding(
+            review_run_id=run_other,
+            rule_id="CWE-89",
+            severity="HIGH",
+            file_path="src/a.py",
+            line_number=1,
+            message="in other project",
+        )
+
+        # Each PM uses its own DB file; count for main project should be 1
+        assert pm_main.count_findings_by_rule(project, "CWE-89") == 1
+        assert pm_other.count_findings_by_rule(other_project, "CWE-89") == 1
+
+
 class TestFixAttemptHelpers:
     """Test fix attempt helper methods."""
 

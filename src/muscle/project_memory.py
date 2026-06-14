@@ -416,6 +416,22 @@ class ProjectMemory:
             if conn:
                 conn.close()
 
+    def count_findings_by_rule(self, project_path: str, rule_id: str) -> int:
+        """Count review_findings rows for a rule_id across all runs of a project.
+
+        Used by the learning pipeline as the recurrence signal (how many times a
+        rule has fired). Joins through review_runs since review_findings has no
+        project_path column.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM review_findings rf "
+                "JOIN review_runs rr ON rf.review_run_id = rr.id "
+                "WHERE rr.project_path = ? AND rf.rule_id = ?",
+                (project_path, rule_id),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
     # -------------------------------------------------------------------------
     # Fix attempt helpers
     # -------------------------------------------------------------------------

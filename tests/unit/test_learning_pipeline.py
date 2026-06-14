@@ -486,9 +486,7 @@ class TestLearningPipelineSkillGeneration:
             pipeline = LearningPipeline(tmpdir)
 
             # Mock PatternDetector to return no patterns
-            with patch(
-                "muscle.code_review.learning_pipeline.PatternDetector"
-            ) as mock_detector_cls:
+            with patch("muscle.code_review.learning_pipeline.PatternDetector") as mock_detector_cls:
                 mock_detector = MagicMock()
                 mock_detector.detect_patterns.return_value = []
                 mock_detector.get_skill_candidates.return_value = []
@@ -506,9 +504,7 @@ class TestLearningPipelineSkillGeneration:
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = LearningPipeline(tmpdir)
 
-            with patch(
-                "muscle.code_review.learning_pipeline.PatternDetector"
-            ) as mock_detector_cls:
+            with patch("muscle.code_review.learning_pipeline.PatternDetector") as mock_detector_cls:
                 mock_detector_cls.side_effect = Exception("DB error")
 
                 skill_count, agent_count = pipeline._detect_and_generate_specializations()
@@ -544,6 +540,104 @@ class TestLearningPipelineInit:
             assert pipeline.project_path == Path(tmpdir)
             assert pipeline.memory_manager is not None
             assert pipeline.m27 is None
+
+
+def _make_issue_with_cwe(title: str, cwe_id: str, severity: Severity | None = None) -> ReviewIssue:
+    """Helper to build a ReviewIssue with a known CWE id for recurrence tests."""
+    return ReviewIssue(
+        file_path="src/foo.py",
+        line_number=10,
+        severity=severity or Severity.HIGH,
+        category=IssueCategory.CORRECTNESS,
+        cwe_id=cwe_id,
+        title=title,
+        description="Test description",
+        code_snippet="x = 1",
+        suggested_fix="Fix it",
+    )
+
+
+class TestLearningPipelineRecurrenceCount:
+    """Tests for _get_recurrence_count — real DB-backed counting."""
+
+    def test_recurrence_count_is_one_after_first_review(self):
+        """After a single learn_from_review, the same issue should count as 1."""
+        from muscle.code_review.learning_pipeline import LearningPipeline
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pipeline = LearningPipeline(tmpdir)
+            issue = _make_issue_with_cwe("SQL injection", "CWE-89")
+            result = _make_review_result([issue])
+
+            pipeline.learn_from_review(result)
+
+            count = pipeline._get_recurrence_count(issue)
+            assert count == 1  # exactly one occurrence after a single review
+
+    def test_recurrence_count_rises_after_second_review(self):
+        """Same issue seen in two successive reviews should count as 2."""
+        from muscle.code_review.learning_pipeline import LearningPipeline
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pipeline = LearningPipeline(tmpdir)
+            issue = _make_issue_with_cwe("SQL injection", "CWE-89")
+            result = _make_review_result([issue])
+
+            pipeline.learn_from_review(result)
+            pipeline.learn_from_review(result)
+
+            count = pipeline._get_recurrence_count(issue)
+            assert count == 2
+
+    def test_recurrence_count_via_direct_pm_insert(self):
+        """Unit-level: insert findings directly via pm and assert _get_recurrence_count returns correct value."""
+        from datetime import datetime
+
+        from muscle.code_review.learning_pipeline import LearningPipeline
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pipeline = LearningPipeline(tmpdir)
+            issue = _make_issue_with_cwe("Buffer overflow", "CWE-120")
+            project = str(pipeline.project_path)
+            rule_id = pipeline._ingestor._issue_to_rule_id(issue)
+
+            # Insert two findings directly (simulating two prior review runs)
+            run1 = pipeline._pm.insert_review_run(
+                project_path=project,
+                review_mode="review",
+                target_path="src/a.py",
+                findings_count=1,
+                token_cost=0,
+                duration_ms=0,
+                created_at=datetime.now().isoformat(),
+            )
+            run2 = pipeline._pm.insert_review_run(
+                project_path=project,
+                review_mode="review",
+                target_path="src/b.py",
+                findings_count=1,
+                token_cost=0,
+                duration_ms=0,
+                created_at=datetime.now().isoformat(),
+            )
+            pipeline._pm.insert_review_finding(
+                review_run_id=run1,
+                rule_id=rule_id,
+                severity="HIGH",
+                file_path="src/a.py",
+                line_number=1,
+                message="Buffer overflow in run 1",
+            )
+            pipeline._pm.insert_review_finding(
+                review_run_id=run2,
+                rule_id=rule_id,
+                severity="HIGH",
+                file_path="src/b.py",
+                line_number=2,
+                message="Buffer overflow in run 2",
+            )
+
+            assert pipeline._get_recurrence_count(issue) == 2
 
     def test_init_with_m27_client(self):
         from muscle.code_review.learning_pipeline import LearningPipeline
@@ -1199,9 +1293,7 @@ class TestLearningPipelineSpecializations:
 
         pipeline = LearningPipeline(str(tmp_path))
 
-        with patch(
-            "muscle.code_review.learning_pipeline.PatternDetector"
-        ) as mock_detector_cls:
+        with patch("muscle.code_review.learning_pipeline.PatternDetector") as mock_detector_cls:
             mock_detector = MagicMock()
             mock_detector.detect_patterns.return_value = []
             mock_detector.get_skill_candidates.return_value = []
@@ -1219,9 +1311,7 @@ class TestLearningPipelineSpecializations:
 
         pipeline = LearningPipeline(str(tmp_path))
 
-        with patch(
-            "muscle.code_review.learning_pipeline.PatternDetector"
-        ) as mock_detector_cls:
+        with patch("muscle.code_review.learning_pipeline.PatternDetector") as mock_detector_cls:
             mock_detector = MagicMock()
             mock_detector.detect_patterns.return_value = []
             mock_detector.get_skill_candidates.return_value = []

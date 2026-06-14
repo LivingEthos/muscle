@@ -239,10 +239,13 @@ class LearningPipeline:
             return f"{issue.title} in `{issue.file_path}`"
 
     def _get_recurrence_count(self, issue: ReviewIssue) -> int:
-        """Get recurrence count for a finding from DB."""
-        # For now, start at 1 for new findings
-        # In future, could look up prior occurrences in review_findings table
-        return 1
+        """Count prior occurrences of this finding's rule in review_findings.
+
+        The current run's findings are written before scoring, so this returns 1
+        on first occurrence and grows as the same rule recurs across reviews.
+        """
+        rule_id = self._ingestor._issue_to_rule_id(issue)
+        return self._pm.count_findings_by_rule(str(self.project_path), rule_id)
 
     def _estimate_fix_success_rate(self, issue: ReviewIssue) -> float:
         """Estimate fix success rate based on issue properties."""
