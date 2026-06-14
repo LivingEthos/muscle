@@ -103,6 +103,7 @@ class VerificationLoop:
     auto_revert: bool = True
     _verified_fixes: list[VerificationResult] = field(default_factory=list)
     _failed_fixes: list[VerificationResult] = field(default_factory=list)
+    _rule_failure_counts: dict[str, int] = field(default_factory=dict)
     _runtime_context: dict[str, Any] = field(default_factory=dict)
 
     def configure_runtime(
@@ -155,6 +156,39 @@ class VerificationLoop:
                 )
             )
 
+        # Opus host: additionally flag a repeatedly-violated SAME rule with a
+        # sharper, rule-attributed escalation.  Gated on the host profile;
+        # default host is untouched.
+        if self._host_repeated_violation_escalation():
+            rule_id = result.issue.cwe_id or result.issue.title
+            rule_count = self._rule_failure_counts.get(rule_id, 0)
+            if rule_count >= policy.escalate_on_verification_failure_count:
+                recorder.emit(
+                    EscalationRecord(
+                        session_id=session_id,
+                        reason="repeated_rule_violation",
+                        source_module="verification_loop",
+                        issue_summary=(
+                            f"Rule '{rule_id}' failed verification {rule_count} time(s) "
+                            f"(latest: {result.issue.file_path}:{result.issue.line_number})."
+                        ),
+                        attempt_count=rule_count,
+                    )
+                )
+
+    def _host_repeated_violation_escalation(self) -> bool:
+        """Return True when the active host profile enables repeated-rule escalation."""
+        project_path = self._runtime_context.get("project_path")
+        if not project_path:
+            return False
+        try:
+            from ..model_profiles import resolve_host_learning_posture
+
+            return resolve_host_learning_posture(project_path).repeated_violation_escalation
+        except Exception:
+            logger.debug("learning posture resolution failed in verification loop", exc_info=True)
+            return False
+
     def verify_fix(self, issue: ReviewIssue, fixed_content: str) -> VerificationResult:
         """Verify a fix is valid before learning from it."""
         file_path = Path(issue.file_path)
@@ -191,6 +225,7 @@ class VerificationLoop:
                         result.reverted = True
                     result.fix_verified = False
                     result.failure_analysis = self._m27_analyze_failure(issue, verification_text)
+                    self._record_failure(result)
                     return result
 
             verification_passed = self._run_validation(file_path, issue)
@@ -219,10 +254,23 @@ class VerificationLoop:
         if result.fix_verified:
             self._verified_fixes.append(result)
         else:
-            self._failed_fixes.append(result)
-            self._check_escalation(result)
+            self._record_failure(result)
 
         return result
+
+    def _record_failure(self, result: VerificationResult) -> None:
+        """Record a failed verification and check escalation.
+
+        Called from both failure paths (M27 rejection and local-validation
+        failure); each failure reaches exactly one of them, so a failure is
+        recorded once. Increments the per-rule failure counter (keyed by
+        ``cwe_id or title``) before escalation so ``_check_escalation`` sees the
+        post-increment count.
+        """
+        self._failed_fixes.append(result)
+        rule_id = result.issue.cwe_id or result.issue.title
+        self._rule_failure_counts[rule_id] = self._rule_failure_counts.get(rule_id, 0) + 1
+        self._check_escalation(result)
 
     @staticmethod
     def _parse_verification_status(verification_text: str) -> VerificationStatus:
