@@ -13,6 +13,7 @@ from pathlib import Path
 from ..untrusted_content import (
     UntrustedPermissions,
     UntrustedSourceKind,
+    line_has_untrusted_instruction_signal,
     render_untrusted_content,
 )
 
@@ -73,6 +74,8 @@ class SourceContextBuilder:
     def build(
         self,
         fetch_source_packages: list[str] | None = None,
+        snippet_policy: str = "sanitize",
+        envelope_emphasis: str = "standard",
     ) -> SourceContextResult:
         project_root = self._resolve_project_root()
         if project_root is None:
@@ -118,13 +121,16 @@ class SourceContextBuilder:
                 skip_reason="Failed to fetch package sources via opensrc; continuing without dependency context"
             )
 
-        context = self._build_context(packages, listing, project_root)
+        context = self._build_context(
+            packages, listing, project_root, snippet_policy=snippet_policy
+        )
         if context:
             context = render_untrusted_content(
                 context,
                 source_kind=UntrustedSourceKind.DEPENDENCY_SOURCE,
                 permissions=UntrustedPermissions.CITATION_ONLY,
                 source_path=str(project_root),
+                emphasis=envelope_emphasis,
             )
         fetched = [p for p in packages if any(e.get("name") == p for e in listing)]
         return SourceContextResult(context=context, packages_fetched=fetched)
@@ -214,6 +220,7 @@ class SourceContextBuilder:
         packages: list[str],
         listing: list[dict],
         project_root: Path,
+        snippet_policy: str = "sanitize",
     ) -> str:
         index = {e.get("name", ""): e for e in listing}
         lines_budget = _MAX_TOTAL_LINES
@@ -270,17 +277,19 @@ class SourceContextBuilder:
             entry_files = _candidate_entry_files(pkg_dir, main, module, types)
             snippets: list[str] = []
             snippets_used = 0
-            for ef in entry_files:
-                if snippets_used >= _MAX_SNIPPETS_PER_PACKAGE or lines_budget <= 0:
-                    break
-                snippet = _read_snippet(ef, _MAX_LINES_PER_SNIPPET)
-                if snippet:
-                    cost = snippet.count("\n") + 1
-                    if lines_budget - cost < 0:
-                        continue
-                    snippets.append(f"### {ef.name}\n```\n{snippet}\n```")
-                    lines_budget -= cost
-                    snippets_used += 1
+            if snippet_policy != "metadata_only":
+                for ef in entry_files:
+                    if snippets_used >= _MAX_SNIPPETS_PER_PACKAGE or lines_budget <= 0:
+                        break
+                    snippet = _read_snippet(ef, _MAX_LINES_PER_SNIPPET)
+                    if snippet:
+                        cost = snippet.count("\n") + 1
+                        if lines_budget - cost < 0:
+                            continue
+                        snippet = _sanitize_snippet(snippet)
+                        snippets.append(f"### {ef.name}\n```\n{snippet}\n```")
+                        lines_budget -= cost
+                        snippets_used += 1
 
             section = "\n".join(header_lines)
             if snippets:
@@ -325,3 +334,19 @@ def _read_snippet(path: Path, max_lines: int) -> str:
         return "\n".join(lines[:max_lines])
     except OSError:
         return ""
+
+
+_SANITIZED_LINE_MARKER = "# [MUSCLE: instruction-signal line redacted]"
+
+
+def _sanitize_snippet(snippet: str) -> str:
+    """Neutralize injection-signal lines in a dependency snippet, line by line.
+
+    Suspicious lines are replaced with a marker (not dropped, so line structure is
+    preserved). Benign lines are returned verbatim. Closes the untrusted-upstream-
+    content hole while keeping review depth.
+    """
+    return "\n".join(
+        _SANITIZED_LINE_MARKER if line_has_untrusted_instruction_signal(line) else line
+        for line in snippet.split("\n")
+    )
