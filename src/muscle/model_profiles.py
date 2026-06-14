@@ -309,6 +309,23 @@ def _agent_identity(project_path: Path | None) -> ModelIdentity:
     )
 
 
+def resolve_agent_security_posture(project_path: Path | str | None) -> SecurityPosture:
+    """Resolve the active AGENT (executor) profile's SecurityPosture, defensively.
+
+    The agent is the model that reads the embedded dependency/untrusted content
+    during review, so it drives snippet policy + envelope emphasis. Returns the
+    conservative ``default`` posture (``sanitize`` deps, ``standard`` envelope) on
+    any resolution failure, so review never breaks on profile edge cases. Mirrors
+    host_memory_templates.resolve_host_fragment_keys.
+    """
+    try:
+        resolved = Path(project_path) if project_path is not None else None
+        return resolve_active_profiles(resolved).agent.security
+    except Exception:
+        logger.debug("resolve_agent_security_posture failed; using default posture", exc_info=True)
+        return PROFILES[DEFAULT_PROFILE_KEY].security
+
+
 def resolve_active_profiles(project_path: Path | None = None) -> ActiveProfiles:
     """Resolve host + agent profiles for the current context.
 

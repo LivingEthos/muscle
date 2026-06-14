@@ -13,6 +13,7 @@ from muscle.model_profiles import (
     SecurityPosture,
     profile_for,
     resolve_active_profiles,
+    resolve_agent_security_posture,
     validate_profile,
 )
 
@@ -184,3 +185,19 @@ def test_validate_profile_rejects_unknown_fragment_key():
 def test_opus_fragment_keys_are_all_valid():
     opus = PROFILES[OPUS_KEY]
     assert set(opus.host.doc_fragment_keys) <= VALID_DOC_FRAGMENT_KEYS
+
+
+def test_resolve_agent_security_posture_opus(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUSCLE_PROVIDER", "anthropic-api")
+    monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+    sec = resolve_agent_security_posture(tmp_path)
+    assert sec.dependency_snippet_policy == "metadata_only"
+    assert sec.untrusted_envelope_emphasis == "elevated"
+
+
+def test_resolve_agent_security_posture_default_is_sanitize_standard(monkeypatch, tmp_path):
+    monkeypatch.delenv("MUSCLE_PROVIDER", raising=False)
+    monkeypatch.delenv("MUSCLE_HOST_MODEL", raising=False)
+    sec = resolve_agent_security_posture(tmp_path)
+    assert sec.dependency_snippet_policy == "sanitize"
+    assert sec.untrusted_envelope_emphasis == "standard"

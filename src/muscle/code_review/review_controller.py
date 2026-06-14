@@ -1711,10 +1711,14 @@ class ReviewController:
     def _build_source_context(self) -> str:
         """Build supplemental JS/TS dependency context via opensrc. Never raises."""
         try:
+            from ..model_profiles import resolve_agent_security_posture
             from .source_context import SourceContextBuilder
 
+            sec = resolve_agent_security_posture(self.project_path)
             result = SourceContextBuilder(self.config.target_path).build(
                 fetch_source_packages=self.config.fetch_source_packages,
+                snippet_policy=sec.dependency_snippet_policy,
+                envelope_emphasis=sec.untrusted_envelope_emphasis,
             )
             if result.skip_reason:
                 logger.info("Source context skipped: %s", result.skip_reason)

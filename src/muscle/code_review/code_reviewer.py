@@ -431,6 +431,7 @@ def build_semantic_review_prompt(
     code: str,
     issues_block: str,
     proactive: bool,
+    envelope_emphasis: str = "standard",
 ) -> str:
     """Build the semantic-review user prompt deterministically.
 
@@ -438,12 +439,15 @@ def build_semantic_review_prompt(
     produce a byte-identical string so MiniMax-M3 prefix caching can hit across
     repeated calls. ``issues_block`` is the already-rendered
     ``_render_issue_block(issues)`` text (only used in the reactive branch).
+    ``envelope_emphasis`` is forwarded to every ``render_untrusted_content`` call
+    so the agent-appropriate framing is applied consistently.
     """
     path_block = render_untrusted_content(
         file_path,
         source_kind=UntrustedSourceKind.FILE,
         permissions=UntrustedPermissions.READ_ONLY,
         source_path=file_path,
+        emphasis=envelope_emphasis,
     )
     path_block = (
         f"===== BEGIN UNTRUSTED FILE PATH =====\n{path_block}\n===== END UNTRUSTED FILE PATH ====="
@@ -453,6 +457,7 @@ def build_semantic_review_prompt(
         source_kind=UntrustedSourceKind.FILE,
         permissions=UntrustedPermissions.READ_ONLY,
         source_path=file_path,
+        emphasis=envelope_emphasis,
     )
     code_block = f"===== BEGIN UNTRUSTED SOURCE CODE =====\n{code_block}\n===== END UNTRUSTED SOURCE CODE ====="
     if proactive:
@@ -477,6 +482,7 @@ Provide your findings in JSON format."""
         source_kind=UntrustedSourceKind.GENERATED_ARTIFACT,
         permissions=UntrustedPermissions.READ_ONLY,
         source_path=f"{file_path}:static-issues",
+        emphasis=envelope_emphasis,
     )
     issues_envelope = (
         "===== BEGIN UNTRUSTED STATIC ISSUES =====\n"
@@ -616,6 +622,19 @@ class CodeReviewer:
         self.max_issues_per_batch = max_issues_per_batch
         self.context_budgeter = context_budgeter
         self.project_path = project_path or str(Path.cwd())
+        try:
+            from ..model_profiles import resolve_agent_security_posture
+
+            self._envelope_emphasis = resolve_agent_security_posture(
+                self.project_path
+            ).untrusted_envelope_emphasis
+        except Exception:
+            logger.debug(
+                "resolve_agent_security_posture failed in CodeReviewer.__init__; "
+                "using standard emphasis",
+                exc_info=True,
+            )
+            self._envelope_emphasis = "standard"
         self.lesson_resolver = lesson_resolver
         self.include_patterns = include_patterns or ["*"]
         default_excludes = [
@@ -927,6 +946,7 @@ class CodeReviewer:
             code=prompt_code,
             issues_block=_render_issue_block(issues),
             proactive=proactive,
+            envelope_emphasis=self._envelope_emphasis,
         )
         if supplemental_context:
             user_prompt += (
